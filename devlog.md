@@ -29,3 +29,13 @@ Streaming audio input works. Need to convert to the right sample rate though.
 OK, now it's translated several utterances.
 
 It needs a fair bit of refinement before it's tidy and fast.
+
+## 2023-05-08
+
+Trying to stream data into the UI. Nearly there. Just struggling with closing the sender channel early even though it seems to be held by a closure.
+
+Error is 
+
+    thread '<unnamed>' panicked at 'Failed to receive data: receiving on a closed channel', src\whisper.rs:65:33
+
+Reading [Chapter 13: closures](https://doc.rust-lang.org/book/ch13-01-closures.html).
