@@ -460,15 +460,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake"
-version = "0.1.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1149,17 +1140,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libsoundio-sys"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2195f9ee34029c950787e2bdb014b6cd69bdff20f82e27b19170ca921d93a7f"
-dependencies = [
- "cc",
- "cmake",
- "pkg-config",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1832,15 +1812,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundio"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "642a63d018a712067f22e19e407d6f6f08e1a436c156771e26171f076f8db24c"
-dependencies = [
- "libsoundio-sys",
-]
-
-[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1866,7 +1837,6 @@ dependencies = [
  "eframe",
  "egui",
  "serde",
- "soundio",
  "tracing-subscriber",
  "tracing-wasm",
  "wasm-bindgen-futures",
