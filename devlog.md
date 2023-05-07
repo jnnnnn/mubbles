@@ -14,5 +14,12 @@ Soundio doesn't compile:
 
     C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.34.31933\include\stdatomic.h(15,1): fatal  error C1189: #error:  <stdatomic.h> is not yet supported when compiling as C, but this is planned for a future release. [C:\Users\J\Source\subbles\target\debug\build\libsoundio-sys-e7b60699a3621a70\out\build\libsoundio_static.vcxproj]
 
-Google (and copilot) suggests cpal. Try that instead.
+Google (and copilot) suggests cpal. Try that instead. Run the example. It works. Sweet, let's use that instead.
 
+OMG, it worked. I had to use the following libraries:
+ - whisper_rs
+ - cpal (for audio input)
+ - rubato (for resampling)
+ - hound (for writing wav files -- this won't be needed in the final app)
+
+Now to put it all together.
