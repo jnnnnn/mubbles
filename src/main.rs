@@ -6,6 +6,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::Resampler;
 
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
@@ -35,6 +37,12 @@ fn dosoundtest() {
 
     let (tx, rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
+    let ctx =
+        WhisperContext::new("C:/Users/J/.cache/whisper/base.bin").expect("failed to load model");
+    let state_id = "1";
+    // Create a state
+    ctx.create_key(state_id).expect("failed to create key");
+
     // A flag to indicate that recording is in progress.
     println!("Begin recording...");
 
@@ -49,10 +57,90 @@ fn dosoundtest() {
 
     stream.play().expect("Failed to play stream");
 
+    // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
+    // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
+    // then we can start recording the audio. Once we start recording, we can record for a 5 seconds
+    // and then stop recording. Once we stop recording, we can send the recorded audio to Whisper.
+    let mut under_threshold_count = 101;
+    let mut recording_buffer: Vec<f32> = Vec::new();
+
+    // get a threshold by recording some audio and finding the max value
+    let mut threshold = 0.0;
+    for _ in 0..100 {
+        let data = rx.recv().expect("Failed to receive data");
+        let mut max = 0.0;
+        for sample in data.iter() {
+            if *sample > max {
+                max = *sample;
+            }
+        }
+        if max > threshold {
+            threshold = max;
+        }
+    }
+    println!("Threshold: {}", threshold);
     loop {
         let data = rx.recv().expect("Failed to receive data");
+        let mut max = 0.0;
+        for sample in data.iter() {
+            if *sample > max {
+                max = *sample;
+            }
+        }
+        if max > threshold {
+            if under_threshold_count > 100 {
+                println!("Recording started");
+            }
+            under_threshold_count = 0;
+            recording_buffer.extend_from_slice(&data);
+        } else {
+            under_threshold_count += 1;
+            if under_threshold_count < 100 {
+                recording_buffer.extend_from_slice(&data);
+            } else {
+                if recording_buffer.len() > 0 {
+                    println!("Recording stopped");
+                    let resampled = convert_sample_rate(&recording_buffer, 48000, 16000).unwrap();
+                    println!("Resampled length: {}", resampled.len());
+                    whisperize(&ctx, &resampled);
+                    recording_buffer.clear();
+                }
+            }
+        }
+    }
+}
 
-        println!("Data, len: {}, max: {}", data.len(), data.iter().fold(0.0f32, |a, &b| a.max(b)));
+fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32]) {
+    // Create a params object for running the model.
+    // The number of past samples to consider defaults to 0.
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    // Run the model.
+    let state_id = "1";
+    ctx.full(&state_id, params, resampled)
+        .expect("failed to run model");
+
+    // Iterate through the segments of the transcript.
+    let num_segments = ctx
+        .full_n_segments(&state_id)
+        .expect("failed to get number of segments");
+    for i in 0..num_segments {
+        // Get the transcribed text and timestamps for the current segment.
+        let segment = ctx
+            .full_get_segment_text(&state_id, i)
+            .expect("failed to get segment");
+        let start_timestamp = ctx
+            .full_get_segment_t0(&state_id, i)
+            .expect("failed to get start timestamp");
+        let end_timestamp = ctx
+            .full_get_segment_t1(&state_id, i)
+            .expect("failed to get end timestamp");
+
+        // Print the segment to stdout.
+        println!("[{} - {}]: {}", start_timestamp, end_timestamp, segment);
     }
 }
 

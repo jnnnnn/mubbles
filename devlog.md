@@ -24,3 +24,8 @@ OMG, it worked. I had to use the following libraries:
 
 Now to put it all together.
 
+Streaming audio input works. Need to convert to the right sample rate though.
+
+OK, now it's translated several utterances.
+
+It needs a fair bit of refinement before it's tidy and fast.
