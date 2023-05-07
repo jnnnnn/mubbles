@@ -10,10 +10,12 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 pub enum WhisperUpdate {
     Recording(bool),
+    Transcribing(bool),
     Transcript(String),
 }
 
-pub fn start_listening(app: Sender<WhisperUpdate>) {
+// once the return value is dropped, listening stops
+pub fn start_listening(app: Sender<WhisperUpdate>) -> cpal::Stream {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -27,10 +29,8 @@ pub fn start_listening(app: Sender<WhisperUpdate>) {
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
     let err_fn = move |err| eprintln!("an error occurred on stream: {}", err);
-    let data_callback = move |data: &[f32], _: &_| {
-        let tx = audio_tx.clone();
-        tx.send(data.to_vec()).expect("Failed to send data");
-    };
+    let data_callback =
+        move |data: &[f32], _: &_| audio_tx.send(data.to_vec()).expect("Failed to send data");
     let stream = device
         .build_input_stream(&config.into(), data_callback, err_fn, None)
         .expect("Failed to build input stream");
@@ -40,6 +40,8 @@ pub fn start_listening(app: Sender<WhisperUpdate>) {
     thread::spawn(move || {
         listen_loop(app, audio_rx);
     });
+
+    stream
 }
 
 // convert an audio stream into a stream of text chunks using Whisper
@@ -57,12 +59,16 @@ fn listen_loop(app: Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
     // Create a state
     ctx.create_key(state_id).expect("failed to create key");
 
-    // get a threshold by recording some audio and finding the max value
+    // get a very simple threshold by recording one second of audio and finding the max value
     let mut threshold = 0.0;
     for _ in 0..100 {
-        let data = audio_rx
-            .recv()
-            .unwrap_or_else(|e| panic!("Failed to receive data: {}", e));
+        let data = match audio_rx.recv() {
+            Ok(data) => data,
+            Err(_) => {
+                println!("Audio stream closed");
+                return;
+            }
+        };
         let mut max = 0.0;
         for sample in data.iter() {
             if *sample > max {
@@ -75,9 +81,13 @@ fn listen_loop(app: Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
     }
     println!("Threshold: {}", threshold);
     loop {
-        let data = audio_rx
-            .recv()
-            .unwrap_or_else(|e| panic!("Failed to receive data: {}", e));
+        let data = match audio_rx.recv() {
+            Ok(data) => data,
+            Err(_) => {
+                println!("Audio stream closed");
+                return;
+            }
+        };
         let mut max = 0.0;
         for sample in data.iter() {
             if *sample > max {
@@ -118,6 +128,8 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
     params.set_print_timestamps(false);
     // Run the model.
     let state_id = "1";
+    app.send(WhisperUpdate::Transcribing(true))
+        .expect("Failed to send transcribing update");
     ctx.full(&state_id, params, resampled)
         .expect("failed to run model");
 
@@ -140,6 +152,8 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
         app.send(WhisperUpdate::Transcript(segment.clone()))
             .expect("Failed to send transcript update");
     }
+    app.send(WhisperUpdate::Transcribing(false))
+        .expect("Failed to send transcribing update");
 }
 
 fn convert_sample_rate(

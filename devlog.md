@@ -38,4 +38,10 @@ Error is
 
     thread '<unnamed>' panicked at 'Failed to receive data: receiving on a closed channel', src\whisper.rs:65:33
 
-Reading [Chapter 13: closures](https://doc.rust-lang.org/book/ch13-01-closures.html).
+Reading [Chapter 13: closures](https://doc.rust-lang.org/book/ch13-01-closures.html#capturing-references-or-moving-ownership).
+
+OK, all that code is ok. the problem is actually that I am dropping `stream` which holds the last channel sender.
+
+So I need to keep that somewhere. Return it.
+
+Ah, that's better. The app now works.

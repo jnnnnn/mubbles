@@ -1,4 +1,7 @@
-use std::sync::mpsc::{self, TryRecvError};
+use std::{
+    sync::mpsc::{self, TryRecvError},
+    time::Duration,
+};
 
 use crate::whisper::WhisperUpdate;
 
@@ -6,25 +9,30 @@ use crate::whisper::WhisperUpdate;
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct MubblesApp {
-    // Example stuff:
     text: String,
 
-    // this how you opt-out of serialization of a member
     #[serde(skip)]
     recording: bool,
 
     #[serde(skip)]
+    transcribing: bool,
+
+    #[serde(skip)]
     from_whisper: mpsc::Receiver<WhisperUpdate>,
+
+    #[serde(skip)]
+    stream: Option<cpal::Stream>,
 }
 
 impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        crate::whisper::start_listening(tx);
         Self {
             text: "".to_owned(),
             recording: false,
+            transcribing: false,
             from_whisper: rx,
+            stream: Some(crate::whisper::start_listening(tx)),
         }
     }
 }
@@ -54,7 +62,9 @@ impl eframe::App for MubblesApp {
         let Self {
             text,
             recording,
+            transcribing,
             from_whisper,
+            ..
         } = self;
         let whisper_update_result = from_whisper.try_recv();
         match whisper_update_result {
@@ -64,6 +74,9 @@ impl eframe::App for MubblesApp {
             Ok(WhisperUpdate::Recording(r)) => {
                 *recording = r;
             }
+            Ok(WhisperUpdate::Transcribing(t)) => {
+                *transcribing = t;
+            }
             Err(TryRecvError::Empty) => {
                 ();
             }
@@ -71,8 +84,12 @@ impl eframe::App for MubblesApp {
                 panic!("Whisper channel disconnected");
             }
         }
+        // eframe will go to sleep when data is waiting.. this is a hack to keep it awake.
+        // it would be better for the channel to call this when it has posted data.
+        ctx.request_repaint_after(Duration::from_millis(100));
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.checkbox(recording, "Recording");
+            ui.checkbox(transcribing, "Transcribing");
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.text_edit_multiline(text);
