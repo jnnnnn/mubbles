@@ -3,6 +3,11 @@ use std::{
     time::Duration,
 };
 
+use cpal::{
+    traits::{DeviceTrait, HostTrait},
+    Device,
+};
+
 use crate::whisper::WhisperUpdate;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -22,17 +27,49 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     stream: Option<cpal::Stream>,
+
+    #[serde(skip)]
+    devices: Vec<Device>,
+
+    #[serde(skip)]
+    selected_device: usize,
+
+    #[serde(skip)]
+    whisper_tx: mpsc::Sender<WhisperUpdate>,
+}
+
+#[derive(Debug, PartialEq)]
+struct DeviceOption {
+    name: String,
 }
 
 impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
+        let host = cpal::default_host();
+        let default_device = host
+            .default_input_device()
+            .expect("no default input device");
+        let devices: Vec<Device> = host
+            .input_devices()
+            .expect("No input devices on default host")
+            .collect();
+        let selected_device = devices
+            .iter()
+            .position(|d| {
+                d.name().expect("device name") == default_device.name().expect("device name")
+            })
+            .expect("default device index error");
+
         Self {
             text: "".to_owned(),
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: Some(crate::whisper::start_listening(tx)),
+            stream: Some(crate::whisper::start_listening(&tx, &default_device)),
+            devices: devices,
+            selected_device: selected_device,
+            whisper_tx: tx,
         }
     }
 }
@@ -64,12 +101,17 @@ impl eframe::App for MubblesApp {
             recording,
             transcribing,
             from_whisper,
+            devices,
+            selected_device,
+            stream,
+            whisper_tx,
             ..
         } = self;
         let whisper_update_result = from_whisper.try_recv();
         match whisper_update_result {
             Ok(WhisperUpdate::Transcript(t)) => {
                 text.push_str(&t);
+                text.push_str("\n");
             }
             Ok(WhisperUpdate::Recording(r)) => {
                 *recording = r;
@@ -88,11 +130,26 @@ impl eframe::App for MubblesApp {
         // it would be better for the channel to call this when it has posted data.
         ctx.request_repaint_after(Duration::from_millis(100));
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.checkbox(recording, "Recording");
-            ui.checkbox(transcribing, "Transcribing");
+            ui.horizontal(|ui| {
+                let source = egui::ComboBox::from_label("Sound device").show_index(
+                    ui,
+                    selected_device,
+                    devices.len(),
+                    |i| devices[i].name().expect("Device name"),
+                );
+                if source.changed() {
+                    let device = &devices[*selected_device];
+                    *stream = Some(crate::whisper::start_listening(whisper_tx, device));
+                }
+                ui.checkbox(recording, "Recording");
+                ui.checkbox(transcribing, "Transcribing");
+                if ui.button("Clear").clicked() {
+                    text.clear()
+                }
+            });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.text_edit_multiline(text);
+            ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
         });
     }
 }

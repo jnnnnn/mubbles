@@ -45,3 +45,5 @@ OK, all that code is ok. the problem is actually that I am dropping `stream` whi
 So I need to keep that somewhere. Return it.
 
 Ah, that's better. The app now works.
+
+Need to add newlines between each utterance, and make the textbox bigger.

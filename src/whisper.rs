@@ -3,7 +3,7 @@ use std::{
     thread,
 };
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{traits::{DeviceTrait, HostTrait, StreamTrait}, Device};
 use rubato::Resampler;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
@@ -15,16 +15,12 @@ pub enum WhisperUpdate {
 }
 
 // once the return value is dropped, listening stops
-pub fn start_listening(app: Sender<WhisperUpdate>) -> cpal::Stream {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .expect("no default input device");
-    println!("Input device: {}", device.name().expect("Name not found"));
+pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> cpal::Stream {
     let config = device
         .default_input_config()
         .expect("Failed to get default input config");
     println!("Default input config: {:?}", config);
+    println!("Listening on device: {}", device.name().expect("device name"));
 
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
@@ -37,15 +33,16 @@ pub fn start_listening(app: Sender<WhisperUpdate>) -> cpal::Stream {
 
     stream.play().expect("Failed to play stream");
 
+    let app = app.clone();
     thread::spawn(move || {
-        listen_loop(app, audio_rx);
+        listen_loop(&app, audio_rx);
     });
 
     stream
 }
 
 // convert an audio stream into a stream of text chunks using Whisper
-fn listen_loop(app: Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
+fn listen_loop(app: &Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
     // then we can start recording the audio. Once we start recording, we can record for a 5 seconds
@@ -110,6 +107,7 @@ fn listen_loop(app: Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
                     app.send(WhisperUpdate::Recording(false))
                         .expect("Failed to send recording update");
                     let resampled = convert_sample_rate(&recording_buffer, 48000, 16000).unwrap();
+                    // todo: run whisper in a separate thread so it doesn't block the UI updates about recording / (future) levels
                     whisperize(&ctx, &resampled, &app);
                     recording_buffer.clear();
                 }
@@ -121,11 +119,15 @@ fn listen_loop(app: Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
 fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
     // Create a params object for running the model.
     // The number of past samples to consider defaults to 0.
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
+    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+        beam_size: 5,
+        patience: 0f32,
+    });
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    
     // Run the model.
     let state_id = "1";
     app.send(WhisperUpdate::Transcribing(true))
@@ -142,13 +144,6 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
         let segment = ctx
             .full_get_segment_text(&state_id, i)
             .expect("failed to get segment");
-        let start_timestamp = ctx
-            .full_get_segment_t0(&state_id, i)
-            .expect("failed to get start timestamp");
-        let end_timestamp = ctx
-            .full_get_segment_t1(&state_id, i)
-            .expect("failed to get end timestamp");
-
         app.send(WhisperUpdate::Transcript(segment.clone()))
             .expect("Failed to send transcript update");
     }
