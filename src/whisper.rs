@@ -4,7 +4,7 @@ use std::{
 };
 
 use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, StreamTrait},
     Device,
 };
 use rubato::Resampler;
@@ -63,7 +63,7 @@ fn listen_loop(app: &Sender<WhisperUpdate>, audio_rx: Receiver<Vec<f32>>) {
     ctx.create_key(state_id).expect("failed to create key");
 
     // get a very simple threshold by recording one second of audio and finding the max value
-    let mut threshold = 0.0;
+    let mut threshold = 0.05f32;
     for _ in 0..100 {
         let data = match audio_rx.recv() {
             Ok(data) => data,
@@ -126,8 +126,8 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
     // Create a params object for running the model.
     // The number of past samples to consider defaults to 0.
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 5,
-        patience: 0f32,
+        beam_size: 8,
+        patience: 1f32,
     });
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -152,7 +152,10 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
             .expect("failed to get segment");
         // if trimmed segment starts with punctuation, it's probably something
         // like [BLANK_AUDIO] or (crickets chirping) so we can ignore it
-        if segment.trim_start().starts_with(|c: char| c.is_ascii_punctuation()) {
+        if segment
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_punctuation())
+        {
             continue;
         }
         app.send(WhisperUpdate::Transcript(segment.clone()))
