@@ -3,7 +3,10 @@ use std::{
     thread,
 };
 
-use cpal::{traits::{DeviceTrait, HostTrait, StreamTrait}, Device};
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    Device,
+};
 use rubato::Resampler;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
@@ -20,7 +23,10 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> cpal::St
         .default_input_config()
         .expect("Failed to get default input config");
     println!("Default input config: {:?}", config);
-    println!("Listening on device: {}", device.name().expect("device name"));
+    println!(
+        "Listening on device: {}",
+        device.name().expect("device name")
+    );
 
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
@@ -127,7 +133,7 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    
+
     // Run the model.
     let state_id = "1";
     app.send(WhisperUpdate::Transcribing(true))
@@ -144,6 +150,11 @@ fn whisperize(ctx: &WhisperContext<&str>, resampled: &[f32], app: &Sender<Whispe
         let segment = ctx
             .full_get_segment_text(&state_id, i)
             .expect("failed to get segment");
+        // if trimmed segment starts with punctuation, it's probably something
+        // like [BLANK_AUDIO] or (crickets chirping) so we can ignore it
+        if segment.trim_start().starts_with(|c: char| c.is_ascii_punctuation()) {
+            continue;
+        }
         app.send(WhisperUpdate::Transcript(segment.clone()))
             .expect("Failed to send transcript update");
     }
