@@ -149,7 +149,9 @@ impl eframe::App for MubblesApp {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
+            });
         });
     }
 }
