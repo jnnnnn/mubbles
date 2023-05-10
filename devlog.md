@@ -2,13 +2,13 @@
 
 ## 2023-05-06
 
-started dev. I tried out a few other whisper desktop things but they don't work very well. 
+started dev. I tried out a few other whisper desktop things but they don't work very well.
 
 I also didn't find one that will record what both the mic and the speakers are saying, in two separate columns. I feel like that's a pretty cool feature.
 
 ## 2023-05-07
 
-First step: get the audio from the mic and the speakers. Seems like the best rust audio library is soundio.  See if I can get it to work at all.
+First step: get the audio from the mic and the speakers. Seems like the best rust audio library is soundio. See if I can get it to work at all.
 
 Soundio doesn't compile:
 
@@ -17,10 +17,11 @@ Soundio doesn't compile:
 Google (and copilot) suggests cpal. Try that instead. Run the example. It works. Sweet, let's use that instead.
 
 OMG, it worked. I had to use the following libraries:
- - whisper_rs
- - cpal (for audio input)
- - rubato (for resampling)
- - hound (for writing wav files -- this won't be needed in the final app)
+
+-   whisper_rs
+-   cpal (for audio input)
+-   rubato (for resampling)
+-   hound (for writing wav files -- this won't be needed in the final app)
 
 Now to put it all together.
 
@@ -34,7 +35,7 @@ It needs a fair bit of refinement before it's tidy and fast.
 
 Trying to stream data into the UI. Nearly there. Just struggling with closing the sender channel early even though it seems to be held by a closure.
 
-Error is 
+Error is
 
     thread '<unnamed>' panicked at 'Failed to receive data: receiving on a closed channel', src\whisper.rs:65:33
 
@@ -47,3 +48,32 @@ So I need to keep that somewhere. Return it.
 Ah, that's better. The app now works.
 
 Need to add newlines between each utterance, and make the textbox bigger.
+
+OK, made a few more fixes:
+
+-   whisper in a separate thread (mostly just so that the UI updates while a transcribe is running, can take several seconds)
+-   show recording level
+-   hide noisy outputs like `[BLANK AUDIO]` and `(crickets chirping)`
+-   add a newline between each utterance
+-   the textbox is now scrollable
+-   you can now choose your microphone source
+-   dual-channel microphones now work
+-   the default level is 0.05 instead of 0 so that being quiet doesn't trigger a transcription
+
+CPU usage is basically zero unless a transcription is running.
+
+I'm testing with the base model.
+
+It'd be nice to report transcription speed and also for the user to be able to
+set the beam size (I'm using 8 at the moment, it seems to take a few seconds to
+transcribe). Higher will be more accurate but also slower. 1 was pretty fast but
+terribly inaccurate. A beam size of 0 could just be the Greedy algorithm (which
+is the default in the demo).
+
+I think it's time to post this.
+
+Actually, one more thing. I need to make it download models if necessary, and automatically cache models in the users' home.
+
+This is tricky because the only way I know to convert the model from the huggingface download is with a python script. Ew.
+
+I think it makes the most sense to release them both together.
