@@ -1521,6 +1521,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mubbles"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "cpal",
+ "dirs 5.0.1",
+ "eframe",
+ "egui",
+ "rubato",
+ "serde",
+ "tracing-subscriber",
+ "tracing-wasm",
+ "wasm-bindgen-futures",
+ "whisper-rs",
+]
+
+[[package]]
 name = "ndk"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2278,23 +2295,6 @@ name = "strict-num"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df65f20698aeed245efdde3628a6b559ea1239bbb871af1b6e3b58c413b2bd1"
-
-[[package]]
-name = "subbles"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "cpal",
- "dirs 5.0.1",
- "eframe",
- "egui",
- "rubato",
- "serde",
- "tracing-subscriber",
- "tracing-wasm",
- "wasm-bindgen-futures",
- "whisper-rs",
-]
 
 [[package]]
 name = "syn"

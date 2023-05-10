@@ -1,5 +1,5 @@
 [package]
-name = "subbles"
+name = "mubbles"
 version = "0.1.0"
 authors = ["Jonathan Newnham"]
 edition = "2021"
