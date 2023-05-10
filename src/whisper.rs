@@ -96,14 +96,23 @@ fn whisper_loop(
     filtered_rx: Receiver<Vec<f32>>,
 ) {
     loop {
-        let data = match filtered_rx.recv() {
+        // first recv needs to be blocking to prevent the thread from spinning
+        let mut aggregated_data = match filtered_rx.recv() {
             Ok(data) => data,
             Err(_) => {
                 println!("Filtered stream closed");
                 return;
             }
         };
-        whisperize(&ctx, &data, &app);
+        // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's 
+        // worth aggregating several chunks of audio before sending it to whisper (if they are available)
+        while aggregated_data.len() < 48000 * 30 {
+            match filtered_rx.try_recv() {
+                Ok(data) => aggregated_data.extend(data),
+                Err(_) => break,
+            }
+        }
+        whisperize(&ctx, &aggregated_data, &app);
     }
 }
 
@@ -116,8 +125,7 @@ fn filter_audio_loop(
 ) {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
-    // then we can start recording the audio. Once we start recording, we can record for a 5 seconds
-    // and then stop recording. Once we stop recording, we can send the recorded audio to Whisper.
+    // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
     let mut under_threshold_count = 101;
     let mut recording_buffer: Vec<f32> = Vec::new();
 
