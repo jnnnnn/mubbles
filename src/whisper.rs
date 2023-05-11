@@ -68,7 +68,7 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> StreamSt
             .into_string()
             .expect("No path conversion?");
         WhisperContext::new(model.as_str())
-            .expect("failed to load model from ~/.cache/whisper/base.bin")
+            .expect("failed to load model from ~/.cache/whisper/tiny.bin")
     };
     let state_id = 1usize;
     ctx.create_key(state_id).expect("failed to create key");
