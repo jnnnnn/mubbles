@@ -21,6 +21,8 @@ cpal = "0.15.2"
 rubato = "0.12.0"
 whisper-rs = { version = "0.6.0" }
 dirs = "5.0.1"
+image = { version = "0.24.6", default_features = false, features = ["png"] }
+winput = "0.2.5"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

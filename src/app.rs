@@ -39,6 +39,10 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     level: f32,
+
+    autotype: bool,
+
+    always_on_top: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -74,6 +78,8 @@ impl Default for MubblesApp {
             selected_device: selected_device,
             whisper_tx: tx,
             level: 0f32,
+            autotype: false,
+            always_on_top: false,
         }
     }
 }
@@ -99,7 +105,7 @@ impl eframe::App for MubblesApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let Self {
             text,
             recording,
@@ -110,6 +116,7 @@ impl eframe::App for MubblesApp {
             stream,
             whisper_tx,
             level,
+            autotype,
             ..
         } = self;
         // drain from_whisper channel
@@ -119,6 +126,11 @@ impl eframe::App for MubblesApp {
                 Ok(WhisperUpdate::Transcript(t)) => {
                     text.push_str(&t.trim());
                     text.push_str("\n");
+                    // if autotype enabled and this window is in the background, send the text
+                    let _focused = !frame.info().window_info.minimized;
+                    if *autotype {
+                        winput::send_str(&t);
+                    }
                 }
                 Ok(WhisperUpdate::Recording(r)) => *recording = r,
                 Ok(WhisperUpdate::Transcribing(t)) => *transcribing = t,
@@ -131,6 +143,8 @@ impl eframe::App for MubblesApp {
         // eframe will go to sleep when data is waiting.. this is a hack to keep it awake.
         // it would be better for the channel to call this when it has posted data.
         ctx.request_repaint_after(Duration::from_millis(100));
+
+        // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Level: {:.2}", level));
@@ -144,8 +158,17 @@ impl eframe::App for MubblesApp {
                     let device = &devices[*selected_device];
                     *stream = Some(crate::whisper::start_listening(whisper_tx, device));
                 }
-                ui.checkbox(recording, "Recording");
-                ui.checkbox(transcribing, "Transcribing");
+                ui.add_enabled_ui(false, |ui| {
+                    ui.checkbox(recording, "Recording");
+                    ui.checkbox(transcribing, "Transcribing");
+                });
+                ui.checkbox(autotype, "Autotype").on_hover_text(
+                    "Type whatever is said into other applications on this computer",
+                );
+                // remove this for now because it's annoying
+                // if ui.checkbox(always_on_top, "Always on top").changed() {
+                //     frame.set_always_on_top(*always_on_top);
+                // }
                 if ui.button("Clear").clicked() {
                     text.clear()
                 }

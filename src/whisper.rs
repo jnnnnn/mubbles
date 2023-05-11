@@ -214,7 +214,7 @@ fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<Whisp
     });
     params.set_print_special(false);
     params.set_print_progress(false);
-    params.set_print_realtime(true);
+    params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
     // Run the model.
