@@ -209,7 +209,7 @@ fn filter_audio_loop(
 fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
     // Consider making the beam size configurable for user performance tuning.
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 3,
+        beam_size: 8,
         patience: 1f32,
     });
     params.set_print_special(false);
