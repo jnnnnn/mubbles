@@ -77,3 +77,25 @@ Actually, one more thing. I need to make it download models if necessary, and au
 This is tricky because the only way I know to convert the model from the huggingface download is with a python script. Ew.
 
 I think it makes the most sense to release them both together.
+
+## 2023-05-15
+
+https://lib.rs/crates/wasapi can do loopback audio recording. cpal doesn't.
+
+It's a pretty horrible interface though. The example shows how loopback works. I guess I'll try it.
+
+https://github.com/HEnquist/wasapi-rs/blob/master/examples/loopback.rs is the
+example. It's not actually capturing output audio though. It points at the
+[windows WASAPI docs](https://learn.microsoft.com/en-us/windows/win32/coreaudio/core-audio-interfaces)
+anyway. Read those. And [about loopback specifically](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording).
+
+> To open a stream in loopback mode, the client must:
+
+>    Obtain an IMMDevice interface for the rendering endpoint device.
+>    Initialize a capture stream in loopback mode on the rendering endpoint device.
+
+Derp. After looking through various docs and the cpal code, I found that the place where I would add WASAPI loopback in CPAL is already configured for it! https://github.com/RustAudio/cpal/commit/78e84521507a3aa4760ec81ac62943165f5218cd . I just need to treat an output device as input.
+
+Struggling with this a bit. My test is getting `StreamTypeNotSupported`. There have been several pull requests about this as part of cpal. Here's some example code for using loopback:
+
+https://github.com/RustAudio/cpal/pull/478

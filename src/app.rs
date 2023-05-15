@@ -55,10 +55,10 @@ impl Default for MubblesApp {
         let (tx, rx) = mpsc::channel();
         let host = cpal::default_host();
         let default_device = host
-            .default_input_device()
+            .default_output_device()
             .expect("no default input device");
         let devices: Vec<Device> = host
-            .input_devices()
+            .output_devices()
             .expect("No input devices on default host")
             .collect();
         let selected_device = devices
@@ -73,7 +73,7 @@ impl Default for MubblesApp {
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: Some(crate::whisper::start_listening(&tx, &default_device)),
+            stream: crate::whisper::start_listening(&tx, &default_device),
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
@@ -156,7 +156,7 @@ impl eframe::App for MubblesApp {
                 );
                 if source.changed() {
                     let device = &devices[*selected_device];
-                    *stream = Some(crate::whisper::start_listening(whisper_tx, device));
+                    *stream = crate::whisper::start_listening(whisper_tx, device);
                 }
                 ui.add_enabled_ui(false, |ui| {
                     ui.checkbox(recording, "Recording");

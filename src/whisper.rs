@@ -26,17 +26,19 @@ pub struct StreamState {
 }
 
 // once the return value is dropped, listening stops
-pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> StreamState {
+pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> Option<StreamState> {
     let config = device
-        .default_input_config()
-        .expect("Failed to get default input config");
+        .default_output_config()
+        .map_err(|e| eprintln!("Failed to get default output config: {}", e))
+        .ok()?;
+
     println!("Default input config: {:?}", config);
     println!(
         "Listening on device: {}",
         device.name().expect("device name")
     );
 
-    let channels = config.channels();
+    let channels: u16 = config.channels();
 
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
@@ -84,10 +86,10 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> StreamSt
         whisper_loop(app2, ctx, filtered_rx);
     });
 
-    StreamState {
+    Some(StreamState {
         stream,
         whisper_state_id: state_id,
-    }
+    })
 }
 
 fn whisper_loop(
@@ -104,7 +106,7 @@ fn whisper_loop(
                 return;
             }
         };
-        // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's 
+        // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
         // worth aggregating several chunks of audio before sending it to whisper (if they are available)
         while aggregated_data.len() < 48000 * 30 {
             match filtered_rx.try_recv() {
@@ -131,25 +133,25 @@ fn filter_audio_loop(
 
     // get a very simple threshold by recording one second of audio and finding the max value
     // a dynamic threshold (or something like silero-vad) would be better
-    let mut threshold = 0.02f32;
-    for _ in 0..100 {
-        let data = match audio_rx.recv() {
-            Ok(data) => data,
-            Err(_) => {
-                println!("Audio stream closed");
-                return;
-            }
-        };
-        let mut max = 0.0;
-        for sample in data.iter() {
-            if *sample > max {
-                max = *sample;
-            }
-        }
-        if max > threshold {
-            threshold = max;
-        }
-    }
+    let threshold = 0.02f32;
+    // for _ in 0..100 {
+    //     let data = match audio_rx.recv() {
+    //         Ok(data) => data,
+    //         Err(_) => {
+    //             println!("Audio stream closed");
+    //             return;
+    //         }
+    //     };
+    //     let mut max = 0.0;
+    //     for sample in data.iter() {
+    //         if *sample > max {
+    //             max = *sample;
+    //         }
+    //     }
+    //     if max > threshold {
+    //         threshold = max;
+    //     }
+    // }
 
     println!("Threshold: {}", threshold);
 
@@ -180,7 +182,8 @@ fn filter_audio_loop(
         }
         app.send(WhisperUpdate::Level(max))
             .expect("Failed to send level update");
-        if max > threshold {
+        let some_seconds_of_samples = 480 * 30 * 100;
+        if max > threshold && recording_buffer.len() < some_seconds_of_samples {
             if under_threshold_count > 100 {
                 app.send(WhisperUpdate::Recording(true))
                     .expect("Failed to send recording update");
@@ -189,7 +192,7 @@ fn filter_audio_loop(
             under_threshold_count = 0;
         } else {
             under_threshold_count += 1;
-            if under_threshold_count < 100 {
+            if under_threshold_count < 100 && recording_buffer.len() < some_seconds_of_samples {
                 recording_buffer.extend_from_slice(&data);
             } else {
                 if recording_buffer.len() > 0 {
