@@ -3,12 +3,9 @@ use std::{
     time::Duration,
 };
 
-use cpal::{
-    traits::{DeviceTrait, HostTrait},
-    Device,
-};
+use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{StreamState, WhisperUpdate};
+use crate::whisper::{get_devices, AppDevice, StreamState, WhisperUpdate};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -29,7 +26,7 @@ pub struct MubblesApp {
     stream: Option<StreamState>,
 
     #[serde(skip)]
-    devices: Vec<Device>,
+    devices: Vec<AppDevice>,
 
     #[serde(skip)]
     selected_device: usize,
@@ -53,19 +50,15 @@ struct DeviceOption {
 impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
+        let devices = get_devices();
         let host = cpal::default_host();
-        let default_device = host
-            .default_output_device()
-            .expect("no default input device");
-        let devices: Vec<Device> = host
-            .output_devices()
-            .expect("No input devices on default host")
-            .collect();
+        let default_device_name = match host.default_input_device() {
+            Some(d) => d.name().unwrap_or(String::from("Unknown")).to_owned(),
+            None => "Unkown".to_owned(),
+        };
         let selected_device = devices
             .iter()
-            .position(|d| {
-                d.name().expect("device name") == default_device.name().expect("device name")
-            })
+            .position(|d| d.name == default_device_name)
             .expect("default device index error");
 
         Self {
@@ -73,7 +66,7 @@ impl Default for MubblesApp {
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: crate::whisper::start_listening(&tx, &default_device),
+            stream: crate::whisper::start_listening(&tx, &devices[selected_device]),
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
@@ -152,7 +145,7 @@ impl eframe::App for MubblesApp {
                     ui,
                     selected_device,
                     devices.len(),
-                    |i| devices[i].name().expect("Device name"),
+                    |i| devices[i].name.clone(),
                 );
                 if source.changed() {
                     let device = &devices[*selected_device];

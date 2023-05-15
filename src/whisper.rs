@@ -5,7 +5,7 @@ use std::{
 };
 
 use cpal::{
-    traits::{DeviceTrait, StreamTrait},
+    traits::{DeviceTrait, HostTrait, StreamTrait},
     Device,
 };
 use rubato::Resampler;
@@ -25,28 +25,85 @@ pub struct StreamState {
     whisper_state_id: usize,
 }
 
-// once the return value is dropped, listening stops
-pub fn start_listening(app: &Sender<WhisperUpdate>, device: &Device) -> Option<StreamState> {
-    let config = device
-        .default_output_config()
-        .map_err(|e| eprintln!("Failed to get default output config: {}", e))
-        .ok()?;
+pub struct AppDevice {
+    pub name: String,
+    device: Device,
+    config: cpal::SupportedStreamConfig,
+}
 
-    println!("Default input config: {:?}", config);
+pub fn get_devices() -> Vec<AppDevice> {
+    let host = cpal::default_host();
+    let mut all = Vec::new();
+    let input_devices = match host.input_devices() {
+        Ok(devices) => devices.collect(),
+        Err(whatever) => {
+            println!("Failed to get input devices: {}", whatever);
+            Vec::new()
+        }
+    };
+    for device in input_devices {
+        let config = match device.default_input_config() {
+            Ok(config) => config,
+            Err(whatever) => {
+                println!("Failed to get config for {:?}: {}", device.name(), whatever);
+                continue;
+            }
+        };
+        let name = device.name().unwrap_or("Unknown".to_string());
+        all.push(AppDevice {
+            name,
+            device,
+            config,
+        });
+    }
+    let output_devices = match host.output_devices() {
+        Ok(devices) => devices.collect(),
+        Err(whatever) => {
+            println!("Failed to get output devices: {}", whatever);
+            Vec::new()
+        }
+    };
+    for device in output_devices {
+        let config = match device.default_output_config() {
+            Ok(config) => config,
+            Err(whatever) => {
+                println!("Failed to get config for {:?}: {}", device.name(), whatever);
+                continue;
+            }
+        };
+        let name = device.name().unwrap_or("Unknown".to_string());
+        all.push(AppDevice {
+            name,
+            device,
+            config,
+        });
+    }
+
+    all
+}
+
+// once the return value is dropped, listening stops
+pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> Option<StreamState> {
     println!(
         "Listening on device: {}",
-        device.name().expect("device name")
+        app_device.device.name().expect("device name")
     );
 
-    let channels: u16 = config.channels();
+    let channels: u16 = app_device.config.channels();
 
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
     let err_fn = move |err| eprintln!("an error occurred on stream: {}", err);
     let data_callback =
         move |data: &[f32], _: &_| audio_tx.send(data.to_vec()).expect("Failed to send data");
-    let stream = device
-        .build_input_stream(&config.into(), data_callback, err_fn, None)
+    let stream = app_device
+        .device
+        .build_input_stream(
+            &app_device.config.clone().into(),
+            data_callback,
+            err_fn,
+            None,
+        )
         .expect("Failed to build input stream");
 
     stream.play().expect("Failed to play stream");
@@ -131,29 +188,8 @@ fn filter_audio_loop(
     let mut under_threshold_count = 101;
     let mut recording_buffer: Vec<f32> = Vec::new();
 
-    // get a very simple threshold by recording one second of audio and finding the max value
     // a dynamic threshold (or something like silero-vad) would be better
     let threshold = 0.02f32;
-    // for _ in 0..100 {
-    //     let data = match audio_rx.recv() {
-    //         Ok(data) => data,
-    //         Err(_) => {
-    //             println!("Audio stream closed");
-    //             return;
-    //         }
-    //     };
-    //     let mut max = 0.0;
-    //     for sample in data.iter() {
-    //         if *sample > max {
-    //             max = *sample;
-    //         }
-    //     }
-    //     if max > threshold {
-    //         threshold = max;
-    //     }
-    // }
-
-    println!("Threshold: {}", threshold);
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
@@ -211,6 +247,7 @@ fn filter_audio_loop(
 
 fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
     // Consider making the beam size configurable for user performance tuning.
+    // a beam_size of 6 is recommended; 1 is fast but use Greedy instead of BeamSearch; 16 crashes.
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
         beam_size: 8,
         patience: 1f32,
