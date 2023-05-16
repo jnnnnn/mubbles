@@ -257,7 +257,10 @@ fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<Whisp
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
-    // Run the model.
+    ctx.reset_timings();
+
+
+    // Run the entire model: PCM -> log mel spectrogram -> encoder -> decoder -> text
     let state_id = 1usize;
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");

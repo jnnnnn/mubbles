@@ -99,3 +99,49 @@ Derp. After looking through various docs and the cpal code, I found that the pla
 Struggling with this a bit. My test is getting `StreamTypeNotSupported`. There have been several pull requests about this as part of cpal. Here's some example code for using loopback:
 
 https://github.com/RustAudio/cpal/pull/478
+
+## 2023-05-16
+
+OK, got WASAPI loopback working last night. The user (me) can now choose any input or output for recording, so I can avoid missing what someone said in a meeting.
+
+I think the last thing is to add better Voice Activity Detection. My earlier research uncovered Silero, which unfortunately doesn't have rust bindings. My earlier research also uncovered Rust-onnx, which is a common format for ML models. It turns out there is an [onnx release](https://github.com/snakers4/silero-models#onnx) of silero. Hooray!
+
+OMG. Silero has an absolutely amazing [Text To Speech model](https://thegradient.pub/towards-an-imagenet-moment-for-speech-to-text/). It's beautiful.
+
+```py
+import torch
+
+device = torch.device('cuda')
+torch.set_num_threads(4)
+
+model, example_text = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='en', speaker='v3_en')
+model.to(device)
+path = model.save_wav(text="Hello world!", speaker='random', sample_rate=48000)
+```
+
+Ugh that sounds bad. Wow, the v3 model is heaps better. 55MB. The first voice is great. The random voices are terrible.
+
+```py
+# V3
+import os
+import torch
+
+device = torch.device('cpu')
+torch.set_num_threads(4)
+local_file = 'v3_en.pt'
+
+if not os.path.isfile(local_file):
+    torch.hub.download_url_to_file('https://models.silero.ai/models/tts/en/v3_en.pt',
+                                   local_file)  
+
+model = torch.package.PackageImporter(local_file).load_pickle("tts_models", "model")
+model.to(device)
+
+example_text = '''Crab bucket, thought Glenda as they hurried towards the Night Kitchen. That's how it works. People from the Sisters disapproving when a girl takes the trolley bus. That's crab bucket. Practically everything my mum ever told me, that's crab bucket. Practically everything I've ever told Juliet, that's crab bucket, too. Maybe it's just another word for the Shove. It's so nice and warm on the inside that you forget that there's an outside. The worst of it is, the crab that mostly keeps you down is you... The realization had her mind on fire.'''
+sample_rate = 48000
+speaker='en_0'
+model.save_wav(text=example_text, sample_rate=sample_rate, speaker=speaker)
+```
+
+Ah, much better. And much faster. Generates the above in about 4 seconds. 8 cpu threads is 2 seconds. Not bad.
+

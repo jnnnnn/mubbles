@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::mpsc::{self, TryRecvError},
     time::Duration,
 };
@@ -6,6 +7,8 @@ use std::{
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::whisper::{get_devices, AppDevice, StreamState, WhisperUpdate};
+
+use egui::plot::{Line, Plot, PlotPoints};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -35,7 +38,7 @@ pub struct MubblesApp {
     whisper_tx: mpsc::Sender<WhisperUpdate>,
 
     #[serde(skip)]
-    level: f32,
+    level: VecDeque<f32>,
 
     autotype: bool,
 
@@ -70,7 +73,7 @@ impl Default for MubblesApp {
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
-            level: 0f32,
+            level: VecDeque::with_capacity(100),
             autotype: false,
             always_on_top: false,
         }
@@ -127,7 +130,12 @@ impl eframe::App for MubblesApp {
                 }
                 Ok(WhisperUpdate::Recording(r)) => *recording = r,
                 Ok(WhisperUpdate::Transcribing(t)) => *transcribing = t,
-                Ok(WhisperUpdate::Level(l)) => *level = l,
+                Ok(WhisperUpdate::Level(l)) => {
+                    if level.len() > 99 {
+                        level.pop_front();
+                    }
+                    level.push_back(l);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => panic!("Whisper channel disconnected"),
             }
@@ -140,7 +148,8 @@ impl eframe::App for MubblesApp {
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Level: {:.2}", level));
+                plot_level(level, ui);
+
                 let source = egui::ComboBox::from_label("Sound device").show_index(
                     ui,
                     selected_device,
@@ -173,4 +182,22 @@ impl eframe::App for MubblesApp {
             });
         });
     }
+}
+
+fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
+    let pairs: PlotPoints = level
+        .iter()
+        .enumerate()
+        .map(|(i, v)| [i as f64, *v as f64])
+        .collect();
+    let line = Line::new(pairs);
+    ui.add_enabled_ui(false, |ui| {
+        Plot::new("my_plot")
+            .width(100f32)
+            .height(30f32)
+            .include_y(0f32)
+            .include_y(1f32)
+            .view_aspect(2.0)
+            .show(ui, |plot_ui| plot_ui.line(line));
+    });
 }
