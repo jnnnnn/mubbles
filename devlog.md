@@ -91,8 +91,8 @@ anyway. Read those. And [about loopback specifically](https://learn.microsoft.co
 
 > To open a stream in loopback mode, the client must:
 
->    Obtain an IMMDevice interface for the rendering endpoint device.
->    Initialize a capture stream in loopback mode on the rendering endpoint device.
+> Obtain an IMMDevice interface for the rendering endpoint device.
+> Initialize a capture stream in loopback mode on the rendering endpoint device.
 
 Derp. After looking through various docs and the cpal code, I found that the place where I would add WASAPI loopback in CPAL is already configured for it! https://github.com/RustAudio/cpal/commit/78e84521507a3aa4760ec81ac62943165f5218cd . I just need to treat an output device as input.
 
@@ -132,7 +132,7 @@ local_file = 'v3_en.pt'
 
 if not os.path.isfile(local_file):
     torch.hub.download_url_to_file('https://models.silero.ai/models/tts/en/v3_en.pt',
-                                   local_file)  
+                                   local_file)
 
 model = torch.package.PackageImporter(local_file).load_pickle("tts_models", "model")
 model.to(device)
@@ -144,4 +144,49 @@ model.save_wav(text=example_text, sample_rate=sample_rate, speaker=speaker)
 ```
 
 Ah, much better. And much faster. Generates the above in about 4 seconds. 8 cpu threads is 2 seconds. Not bad.
+
+## 2023-05-21
+
+Porting whisper.cpp to pure rust. Loading the model is working. The functions I'm currently calling from mubbles are
+
+```
+whisper_init_state
+whisper_full_with_state
+```
+
+That's it! Let's have a quick read through of the code to see what I'm in for. The first one looks pretty simple. The second one is [long](https://github.com/ggerganov/whisper.cpp/blob/fd01209d0923de14bd0640eb4e386e937789d063/whisper.cpp#L4065) but noisy.
+
+```
+whisper_pcm_to_mel_with_state
+whisper_lang_auto_detect_with_state
+get_signal_energy
+main loop starts
+    whisper_encode_internal
+    for each temperature
+        whisper_decode_internal
+        whisper_process_logits
+        for each decoder
+            whisper_sample_token
+        whisper_sequence_score
+```
+
+OK, this seems reasonably manageable. I haven't got down to the level of tensors yet.
+
+There's a few references to the original python/pytorch whisper code. I see that there are Rust bindings to torch as well. That would be an easy way to get accelerators running.
+
+Googling about tflops. This computer's Nvidia Geforce 1080 is 8 or so. A current Mac that can run large whisper [in milliseconds](https://github.com/ggerganov/whisper.cpp/issues/89) is 15. So a properly-optimized implementation running on a cuda backend should be good.
+
+https://github.com/Const-me/Whisper is whisper.cpp implemented on DirectCompute to get to graphics cards. it's 3 times faster than the original Pytorch. It also uses [this approach](https://www.researchgate.net/publication/255667085_A_simple_but_efficient_real-time_voice_activity_detection_algorithm) for voice activity detection.
+
+https://github.com/guillaumekln/faster-whisper uses CTranslate2. It's about 4 times faster than the original.
+
+> CTranslate2 is a C++ and Python library for efficient inference with Transformer models. The project implements a custom runtime that applies many performance optimization techniques such as weights quantization, layers fusion, batch reordering, etc., to accelerate and reduce the memory usage of Transformer models on CPU and GPU. 
+
+https://github.com/sanchit-gandhi/whisper-jax claims to be 70x faster on TPUs but idgaf because you can't buy TPUs. It also claims 10x on the original pytorch. It also mentions that the HuggingFace Transformers library implementation of whisper is 3x faster than the original.
+
+Modal [seems like](https://modal.com/docs/guide/llm-voice-chat) a pretty good platform for cloud apps. I wonder how the cost works out.
+
+Trying out https://github.com/metavoicexyz/tortoise-tts . 1.2G model. Sucks at downloading. Demo is impressive though.
+
+
 
