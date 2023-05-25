@@ -20,6 +20,8 @@ pub enum WhisperUpdate {
 }
 
 pub struct StreamState {
+    // the app holds this handle to keep the stream open (and the whisper context / thread alive)
+    #[allow(dead_code)]
     stream: cpal::Stream,
 }
 
@@ -251,7 +253,6 @@ fn whisperize(state: &mut WhisperState<'_>, resampled: &[f32], app: &Sender<Whis
     //write_raw_floats_to_file(resampled);
 
     // Run the entire model: PCM -> log mel spectrogram -> encoder -> decoder -> text
-    let state_id = 1usize;
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
     state.full(params, resampled).expect("failed to run model");

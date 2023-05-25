@@ -420,3 +420,10 @@ Disable sccache. Pointing all cargo builds at the same target directory with `CA
 
 Oh bugger, updating the patch just means `cargo update`. Oh well, I now know about `~/.cargo` caching lots of stuff.
 
+Ok, I didn't push my patch branch. Delete checkout. OK, that's better.
+
+Use local filesystem anyway. Next error:
+
+    fatal error LNK1181: cannot open input file 'culibos.lib
+
+Ugh. Comes from https://github.com/jnnnnn/whisper-rs/blob/b9079343c034a95fe54417b41864a246bced9b15/sys/build.rs#L37 . Try commenting it out.

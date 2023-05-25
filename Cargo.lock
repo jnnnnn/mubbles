@@ -2855,7 +2855,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs"
 version = "0.8.0"
-source = "git+https://github.com/jnnnnn/whisper-rs?branch=cuda-windows#9c172d508af06bd4d8972d248bc8eeb6b00de6bf"
+source = "git+https://github.com/jnnnnn/whisper-rs?branch=cuda-windows#ce8d0f8cb70e39577b80ed1736213fd8d6ecb889"
 dependencies = [
  "whisper-rs-sys",
 ]
@@ -2863,7 +2863,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.6.0"
-source = "git+https://github.com/jnnnnn/whisper-rs?branch=cuda-windows#9c172d508af06bd4d8972d248bc8eeb6b00de6bf"
+source = "git+https://github.com/jnnnnn/whisper-rs?branch=cuda-windows#ce8d0f8cb70e39577b80ed1736213fd8d6ecb889"
 dependencies = [
  "bindgen",
  "cfg-if",
