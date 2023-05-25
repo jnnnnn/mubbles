@@ -15,3 +15,7 @@ cargo run
 ```
 
 You may need to remove the `cuda` feature from the `whisper-rs` dependency if you don't have a CUDA-capable GPU (and the cuda tookit installed). In this case, I would recommend using the Tiny model.
+
+## Screenshot
+
+![mubbles screenshot.png](./doc/mubbles-screenshot.png)
