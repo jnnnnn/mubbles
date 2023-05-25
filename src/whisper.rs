@@ -114,21 +114,22 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
     // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
     // if you need to convert a pytorch model to ggml
 
+    let model_file = "small.bin";
     // check for a local model first
-    let ctx = if Path::new("whisper.bin").exists() {
+    let ctx = if Path::new(model_file).exists() {
         println!("Loading local model");
-        WhisperContext::new("whisper.bin").expect("failed to load model from base.bin")
+        WhisperContext::new(model_file).expect("failed to load model from base.bin")
     } else {
         let model = dirs::home_dir()
             .expect("No home")
             .join(".cache")
             .join("whisper")
-            .join("tiny.bin") // tiny is faster (we're running on CPU) and quality is still pretty good
+            .join(model_file) // tiny is faster (we're running on CPU) and quality is still pretty good
             .into_os_string()
             .into_string()
             .expect("No path conversion?");
         WhisperContext::new(model.as_str())
-            .expect("failed to load model from ~/.cache/whisper/tiny.bin")
+            .expect("failed to load model from local directory and ~/.cache/whisper/")
     };
 
     let app2 = app.clone();
@@ -242,7 +243,7 @@ fn whisperize(state: &mut WhisperState<'_>, resampled: &[f32], app: &Sender<Whis
     // Consider making the beam size configurable for user performance tuning.
     // a beam_size of 6 is recommended; 1 is fast but use Greedy instead of BeamSearch; 16 crashes.
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 8,
+        beam_size: 2,
         patience: 1f32,
     });
     params.set_print_special(false);

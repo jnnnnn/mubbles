@@ -427,3 +427,11 @@ Use local filesystem anyway. Next error:
     fatal error LNK1181: cannot open input file 'culibos.lib
 
 Ugh. Comes from https://github.com/jnnnnn/whisper-rs/blob/b9079343c034a95fe54417b41864a246bced9b15/sys/build.rs#L37 . Try commenting it out.
+
+Ok, fixed properly. [PR](https://github.com/tazz4843/whisper-rs/pull/60) for whisper-rs. 
+
+Wow, even the large model runs in about 8s on this Nvidia GeForce 1080. Nice.
+
+The small model runs a 30s full transcription in about 3s with a beam size of 5. Good enough, and it uses way less GPU so I can still do other things. Dropping the beam size down to 2 takes it down to 2s.
+
+I can speak in french or spanish and it translates to english. I'm impressed.
