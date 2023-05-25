@@ -7,8 +7,8 @@ rust-version = "1.65"
 
 
 [dependencies]
-egui = "0.21.0"
-eframe = { version = "0.21.0", default-features = false, features = [
+egui = "0.22.0"
+eframe = { version = "0.22.0", default-features = false, features = [
     "accesskit",     # Make egui comptaible with screen readers. NOTE: adds a lot of dependencies.
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
@@ -19,7 +19,7 @@ eframe = { version = "0.21.0", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 cpal = "0.15.2"
 rubato = "0.12.0"
-whisper-rs = { version = "0.6.0" }
+whisper-rs = { version = "0.8.0", features = ["cuda"] }
 dirs = "5.0.1"
 image = { version = "0.24.6", default_features = false, features = ["png"] }
 winput = "0.2.5"
@@ -53,3 +53,6 @@ opt-level = 2
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
+
+
+whisper-rs = { git = "https://github.com/jnnnnn/whisper-rs", branch = "cuda-windows" }

@@ -10,7 +10,7 @@ use cpal::{
 };
 use rubato::Resampler;
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState};
 
 pub enum WhisperUpdate {
     Recording(bool),
@@ -19,10 +19,8 @@ pub enum WhisperUpdate {
     Level(f32),
 }
 
-#[allow(dead_code)] // we need to keep a handle of stream; state id will be used when transcribing audio out is implemented as there will be two streams
 pub struct StreamState {
     stream: cpal::Stream,
-    whisper_state_id: usize,
 }
 
 pub struct AppDevice {
@@ -83,6 +81,7 @@ pub fn get_devices() -> Vec<AppDevice> {
 }
 
 // once the return value is dropped, listening stops
+// and the sender is closed
 pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> Option<StreamState> {
     println!(
         "Listening on device: {}",
@@ -129,8 +128,6 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
         WhisperContext::new(model.as_str())
             .expect("failed to load model from ~/.cache/whisper/tiny.bin")
     };
-    let state_id = 1usize;
-    ctx.create_key(state_id).expect("failed to create key");
 
     let app2 = app.clone();
     let (filtered_tx, filtered_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
@@ -143,17 +140,11 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
         whisper_loop(app2, ctx, filtered_rx);
     });
 
-    Some(StreamState {
-        stream,
-        whisper_state_id: state_id,
-    })
+    Some(StreamState { stream })
 }
 
-fn whisper_loop(
-    app: Sender<WhisperUpdate>,
-    ctx: WhisperContext<usize>,
-    filtered_rx: Receiver<Vec<f32>>,
-) {
+fn whisper_loop(app: Sender<WhisperUpdate>, ctx: WhisperContext, filtered_rx: Receiver<Vec<f32>>) {
+    let mut state = ctx.create_state().expect("failed to create state");
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
         let mut aggregated_data = match filtered_rx.recv() {
@@ -171,7 +162,7 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        whisperize(&ctx, &aggregated_data, &app);
+        whisperize(&mut state, &aggregated_data, &app);
     }
 }
 
@@ -245,7 +236,7 @@ fn filter_audio_loop(
     }
 }
 
-fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
+fn whisperize(state: &mut WhisperState<'_>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
     // Consider making the beam size configurable for user performance tuning.
     // a beam_size of 6 is recommended; 1 is fast but use Greedy instead of BeamSearch; 16 crashes.
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
@@ -257,24 +248,22 @@ fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<Whisp
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
-    ctx.reset_timings();
-
+    //write_raw_floats_to_file(resampled);
 
     // Run the entire model: PCM -> log mel spectrogram -> encoder -> decoder -> text
     let state_id = 1usize;
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
-    ctx.full(&state_id, params, resampled)
-        .expect("failed to run model");
+    state.full(params, resampled).expect("failed to run model");
 
     // Iterate through the segments of the transcript.
-    let num_segments = ctx
-        .full_n_segments(&state_id)
+    let num_segments = state
+        .full_n_segments()
         .expect("failed to get number of segments");
     for i in 0..num_segments {
         // Get the transcribed text and timestamps for the current segment.
-        let segment = ctx
-            .full_get_segment_text(&state_id, i)
+        let segment = state
+            .full_get_segment_text(i)
             .expect("failed to get segment");
         // if trimmed segment starts with punctuation, it's probably something
         // like [BLANK_AUDIO] or (crickets chirping). Better to ignore this sort
@@ -290,6 +279,18 @@ fn whisperize(ctx: &WhisperContext<usize>, resampled: &[f32], app: &Sender<Whisp
     }
     app.send(WhisperUpdate::Transcribing(false))
         .expect("Failed to send transcribing update");
+}
+
+#[allow(dead_code)]
+fn write_raw_floats_to_file(resampled: &[f32]) {
+    // write resampled to a binary file
+    let contents = unsafe {
+        std::slice::from_raw_parts(
+            resampled.as_ptr() as *const u8,
+            resampled.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    std::fs::write("resampled.bin", contents).expect("Unable to write file");
 }
 
 fn convert_sample_rate(
