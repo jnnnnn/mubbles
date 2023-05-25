@@ -1,8 +1,8 @@
 # Mubbles
 
-Multiple real-time sub titles.
+An Egui wrapper around Whisper.cpp, the OpenAI speech-to-text model.
 
-A tool to help you keep track of what people were saying while you weren't paying attention.
+Can record from microphone and speakers.
 
 ## Usage
 
@@ -13,3 +13,5 @@ Once you have a model file, run the app:
 ```sh
 cargo run
 ```
+
+You may need to remove the `cuda` feature from the `whisper-rs` dependency if you don't have a CUDA-capable GPU (and the cuda tookit installed). In this case, I would recommend using the Tiny model.
