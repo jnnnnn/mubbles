@@ -6,7 +6,7 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device,
+    Device, SupportedStreamConfig,
 };
 use rubato::Resampler;
 
@@ -90,8 +90,6 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
         app_device.device.name().expect("device name")
     );
 
-    let channels: u16 = app_device.config.channels();
-
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
     let err_fn = move |err| eprintln!("an error occurred on stream: {}", err);
@@ -118,7 +116,7 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
     // check for a local model first
     let ctx = if Path::new(model_file).exists() {
         println!("Loading local model");
-        WhisperContext::new(model_file).expect("failed to load model from base.bin")
+        WhisperContext::new(model_file).expect("failed to load model from local folder")
     } else {
         let model = dirs::home_dir()
             .expect("No home")
@@ -134,8 +132,9 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
 
     let app2 = app.clone();
     let (filtered_tx, filtered_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
+    let config2 = app_device.config.clone();
     thread::spawn(move || {
-        filter_audio_loop(app2, audio_rx, filtered_tx, channels);
+        filter_audio_loop(app2, audio_rx, filtered_tx, config2);
     });
 
     let app2 = app.clone();
@@ -174,7 +173,7 @@ fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<Vec<f32>>,
     filtered_tx: Sender<Vec<f32>>,
-    channels: u16,
+    device_config: SupportedStreamConfig,
 ) {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
@@ -198,9 +197,9 @@ fn filter_audio_loop(
         // Convert audio to 16KHz mono f32 samples, as required by the model.
         // These utilities are provided for convenience, but can be replaced with custom conversion logic.
         // SIMD variants of these functions are also available on nightly Rust (see the docs).
-        if channels == 2 {
+        if device_config.channels() == 2 {
             data = whisper_rs::convert_stereo_to_mono_audio(&data).expect("monoize");
-        } else if channels != 1 {
+        } else if device_config.channels() != 1 {
             panic!(">2 channels unsupported");
         }
 
@@ -212,29 +211,40 @@ fn filter_audio_loop(
         }
         app.send(WhisperUpdate::Level(max))
             .expect("Failed to send level update");
-        let some_seconds_of_samples = 480 * 30 * 100;
-        if max > threshold && recording_buffer.len() < some_seconds_of_samples {
+
+        let sample_rate = device_config.sample_rate().0 as usize;
+        let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
+
+        if max > threshold {
             if under_threshold_count > 100 {
+                // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
                 app.send(WhisperUpdate::Recording(true))
                     .expect("Failed to send recording update");
             }
             recording_buffer.extend_from_slice(&data);
             under_threshold_count = 0;
         } else {
+            // the incoming audio is below the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
-            if under_threshold_count < 100 && recording_buffer.len() < some_seconds_of_samples {
+            if under_threshold_count < 100 {
+                // not long enough, keep listening
                 recording_buffer.extend_from_slice(&data);
             } else {
                 if recording_buffer.len() > 0 {
                     app.send(WhisperUpdate::Recording(false))
                         .expect("Failed to send recording update");
-                    let resampled = convert_sample_rate(&recording_buffer, 48000, 16000).unwrap();
-                    filtered_tx
-                        .send(resampled)
-                        .expect("Send filtered audio to whisper thread");
+                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                    filtered_tx.send(resampled).expect("Send filtered");
                     recording_buffer.clear();
                 }
             }
+        }
+
+        // Whisper is trained to process 30 seconds at a time. So if we've got that much, send it now.
+        if recording_buffer.len() >= full_whisper_buffer {
+            let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+            filtered_tx.send(resampled).expect("Send filtered");
+            recording_buffer.clear();
         }
     }
 }
@@ -242,10 +252,8 @@ fn filter_audio_loop(
 fn whisperize(state: &mut WhisperState<'_>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
     // Consider making the beam size configurable for user performance tuning.
     // a beam_size of 6 is recommended; 1 is fast but use Greedy instead of BeamSearch; 16 crashes.
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 2,
-        patience: 1f32,
-    });
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -297,8 +305,7 @@ fn write_raw_floats_to_file(resampled: &[f32]) {
 
 fn convert_sample_rate(
     audio: &[f32],
-    original_sample_rate: u32,
-    target_sample_rate: i32,
+    original_sample_rate: usize,
 ) -> Result<Vec<f32>, &'static str> {
     let params = rubato::InterpolationParameters {
         sinc_len: 256,
@@ -307,7 +314,8 @@ fn convert_sample_rate(
         oversampling_factor: 256,
         window: rubato::WindowFunction::BlackmanHarris2,
     };
-    let ratio = target_sample_rate as f64 / original_sample_rate as f64;
+    const TARGET_SAMPLE_RATE: f64 = 16000.;
+    let ratio = TARGET_SAMPLE_RATE / original_sample_rate as f64;
     let mut resampler =
         rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
 

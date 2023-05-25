@@ -390,7 +390,7 @@ Remove V140 and install cuda again. Ah, uninstall Visual Studio Code 2015. That
 took ages. Update VSCommunity 2022. Try build again. `No CUDA toolset found.`
 Installs to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\` .
 
-Now error is `Cannot find source file: ggml-cuda.cu`. 
+Now error is `Cannot find source file: ggml-cuda.cu`.
 
 It's still using whisper-rs-sys-0.6.0. SHould be 0.8 ? Try `cargo clean`, wait three minutes for a full build.
 
@@ -404,15 +404,15 @@ This is starting to get frustrating.
 
 It's definitely there, at `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\lib\x64\cublas.lib`. Check linker command. Ah, the libpaths are:
 
-    "/LIBPATH:C:\\Users\\J\\Source\\TARGET\\release\\deps" 
-    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.42.2\\lib" 
-    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.48.0\\lib" 
-    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.34.0\\lib" 
-    "/LIBPATH:C:\\Users\\J\\Source\\TARGET\\release\\build\\whisper-rs-sys-945773be75e1cb0b\\out" 
-    "/LIBPATH:/usr/local/cuda/lib64" 
-    "/LIBPATH:/opt/cuda/lib64" 
-    "/LIBPATH:C:\\Users\\J\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib" 
-    "/LIBPATH:C:\\Users\\J\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib" 
+    "/LIBPATH:C:\\Users\\J\\Source\\TARGET\\release\\deps"
+    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.42.2\\lib"
+    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.48.0\\lib"
+    "/LIBPATH:C:\\Users\\J\\.cargo\\registry\\src\\github.com-1ecc6299db9ec823\\windows_x86_64_msvc-0.34.0\\lib"
+    "/LIBPATH:C:\\Users\\J\\Source\\TARGET\\release\\build\\whisper-rs-sys-945773be75e1cb0b\\out"
+    "/LIBPATH:/usr/local/cuda/lib64"
+    "/LIBPATH:/opt/cuda/lib64"
+    "/LIBPATH:C:\\Users\\J\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib"
+    "/LIBPATH:C:\\Users\\J\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib"
 
 So nothing pointing at the cuda lib folder. The usr local looks weird too, I bet that's coming from whisper-rs. [Yup](https://github.com/jnnnnn/whisper-rs/blob/805dfcf36a19dbc20ac4595ea13595cf88dd6207/sys/build.rs#L40).
 
@@ -428,10 +428,105 @@ Use local filesystem anyway. Next error:
 
 Ugh. Comes from https://github.com/jnnnnn/whisper-rs/blob/b9079343c034a95fe54417b41864a246bced9b15/sys/build.rs#L37 . Try commenting it out.
 
-Ok, fixed properly. [PR](https://github.com/tazz4843/whisper-rs/pull/60) for whisper-rs. 
+Ok, fixed properly. [PR](https://github.com/tazz4843/whisper-rs/pull/60) for whisper-rs.
 
 Wow, even the large model runs in about 8s on this Nvidia GeForce 1080. Nice.
 
 The small model runs a 30s full transcription in about 3s with a beam size of 5. Good enough, and it uses way less GPU so I can still do other things. Dropping the beam size down to 2 takes it down to 2s.
 
 I can speak in french or spanish and it translates to english. I'm impressed.
+
+Try quantized model? https://github.com/ggerganov/whisper.cpp#quantization and the following models still have a Word Error Rate of below
+
+```sh
+winget install GnuWin32.Make
+cd whisper.cpp
+# this command builds without cuda
+cmake --build .
+# this command sets WHISPER_CUBLAS=1 to build with cuda
+cmake --build . --config Release --target whisper -- WHISPER_CUBLAS=1
+
+# build all in visual studio
+./bin/release/quantize ~/.cache/whisper/small.bin ~/.cache/whisper/small-q5_0.bin q5_0
+```
+
+Compare results
+
+```sh
+ffmpeg -i "The TV Screen.mp3" -ar 16000 -ac 1 -c:a pcm_s16le tvscreen.wav
+./main -m small.bin tvscreen.wav  > small.txt 2>&1
+./main -m small-q5_0.bin tvscreen.wav  > small-q5_0.txt 2>&1
+```
+
+Both take about 40 seconds. The q5 one is noticably worse in transcription quality. It also uses 447MB instead of 743MB.
+
+Conclusion: This code is not well optimized for BLAS. The developer is clearly focusing more on CoreML optimization.
+
+In particular, the encoder is cuda, but the decoder is not, and the decoder is half the runtime:
+
+```
+# small model timings
+
+  load time =  1275.67 ms
+  fallbacks =   1 p /   0 h
+   mel time =  1729.96 ms
+sample time =   829.62 ms /   971 runs (    0.85 ms per run)
+encode time = 14815.59 ms /     9 runs ( 1646.18 ms per run)
+decode time = 20371.54 ms /   970 runs (   21.00 ms per run)
+ total time = 39081.51 ms
+```
+
+Also it's only using half my CPU and barely any GPU, an average of about 10%.
+
+We can definitely do better than this. Continue rust rewrite, and plan for some sort of accelerated backend, as explored above.
+
+```
+# medium model timings
+
+  load time =   876.60 ms
+  fallbacks =   2 p /   0 h
+   mel time =  1739.46 ms
+sample time =   835.96 ms /   980 runs (    0.85 ms per run)
+encode time = 16327.36 ms /    10 runs ( 1632.74 ms per run)
+decode time = 16713.51 ms /   978 runs (   17.09 ms per run)
+ total time = 36558.70 ms
+```
+
+Interestingly, the gg_mat_mul benchmark is wicked fast:
+
+```
+  64 x   64: Q4_0     1.3 GFLOPS (128 runs) | Q4_1     1.3 GFLOPS (128 runs)
+  64 x   64: Q5_0     1.3 GFLOPS (128 runs) | Q5_1     1.4 GFLOPS (128 runs) | Q8_0     1.4 GFLOPS (128 runs)
+  64 x   64: F16      1.3 GFLOPS (128 runs) | F32      1.3 GFLOPS (128 runs)
+ 128 x  128: Q4_0    10.9 GFLOPS (128 runs) | Q4_1    10.9 GFLOPS (128 runs)
+ 128 x  128: Q5_0     9.3 GFLOPS (128 runs) | Q5_1    10.7 GFLOPS (128 runs) | Q8_0    10.5 GFLOPS (128 runs)
+ 128 x  128: F16     10.5 GFLOPS (128 runs) | F32     11.0 GFLOPS (128 runs)
+ 256 x  256: Q4_0    84.7 GFLOPS (128 runs) | Q4_1    85.8 GFLOPS (128 runs)
+ 256 x  256: Q5_0    84.0 GFLOPS (128 runs) | Q5_1    84.0 GFLOPS (128 runs) | Q8_0    85.8 GFLOPS (128 runs)
+ 256 x  256: F16     83.7 GFLOPS (128 runs) | F32     68.2 GFLOPS (128 runs)
+ 512 x  512: Q4_0   365.5 GFLOPS (128 runs) | Q4_1   412.9 GFLOPS (128 runs)
+ 512 x  512: Q5_0   387.7 GFLOPS (128 runs) | Q5_1   412.1 GFLOPS (128 runs) | Q8_0   337.9 GFLOPS (128 runs)
+ 512 x  512: F16    381.0 GFLOPS (128 runs) | F32    353.7 GFLOPS (128 runs)
+1024 x 1024: Q4_0  1211.4 GFLOPS (128 runs) | Q4_1  1106.4 GFLOPS (128 runs)
+1024 x 1024: Q5_0  1244.4 GFLOPS (128 runs) | Q5_1  1149.9 GFLOPS (128 runs) | Q8_0  1166.5 GFLOPS (128 runs)
+1024 x 1024: F16   1094.8 GFLOPS (128 runs) | F32    719.8 GFLOPS (128 runs)
+2048 x 2048: Q4_0  2268.0 GFLOPS (128 runs) | Q4_1  2266.9 GFLOPS (128 runs)
+2048 x 2048: Q5_0  2378.0 GFLOPS (128 runs) | Q5_1  2325.3 GFLOPS (128 runs) | Q8_0  2263.9 GFLOPS (128 runs)
+2048 x 2048: F16   1991.8 GFLOPS (116 runs) | F32   1900.0 GFLOPS (111 runs)
+4096 x 4096: Q4_0  3744.3 GFLOPS ( 28 runs) | Q4_1  3734.2 GFLOPS ( 28 runs)
+4096 x 4096: Q5_0  3704.3 GFLOPS ( 27 runs) | Q5_1  3677.2 GFLOPS ( 27 runs) | Q8_0  3636.7 GFLOPS ( 27 runs)
+4096 x 4096: F16   2527.6 GFLOPS ( 19 runs) | F32   3157.8 GFLOPS ( 23 runs)
+```
+
+And there's no explanation of how F32 is faster than F16! I wonder if that's the
+Nvidia fuckery about hobbling consumer-grade hardware to sell more datacenter
+shit.
+
+And there's no explanation of why it's so far away from [the theoretical
+limit](https://www.techpowerup.com/gpu-specs/geforce-gtx-1080.c2839) of 8873
+GFLOPS. It's only getting to 35% of the theoretical limit. Ugh.
+
+Well, hopefully cublas does better. Gotta finish coding first though.
+
+Wow, the 4090 [can do](https://www.techpowerup.com/gpu-specs/geforce-rtx-4090.c3889) 82 TFLOPS.
+That's pretty amazing. I guess memory bandwidth is going to be the bottleneck.
