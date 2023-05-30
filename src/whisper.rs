@@ -82,9 +82,17 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
+pub struct WhisperParams {
+    pub accuracy: usize, // 1 for greedy, more for beam search
+}
+
 // once the return value is dropped, listening stops
 // and the sender is closed
-pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> Option<StreamState> {
+pub fn start_listening(
+    app: &Sender<WhisperUpdate>,
+    app_device: &AppDevice,
+    params: WhisperParams,
+) -> Option<StreamState> {
     println!(
         "Listening on device: {}",
         app_device.device.name().expect("device name")
@@ -139,13 +147,18 @@ pub fn start_listening(app: &Sender<WhisperUpdate>, app_device: &AppDevice) -> O
 
     let app2 = app.clone();
     thread::spawn(move || {
-        whisper_loop(app2, ctx, filtered_rx);
+        whisper_loop(app2, ctx, filtered_rx, params);
     });
 
     Some(StreamState { stream })
 }
 
-fn whisper_loop(app: Sender<WhisperUpdate>, ctx: WhisperContext, filtered_rx: Receiver<Vec<f32>>) {
+fn whisper_loop(
+    app: Sender<WhisperUpdate>,
+    ctx: WhisperContext,
+    filtered_rx: Receiver<Vec<f32>>,
+    params: WhisperParams,
+) {
     let mut state = ctx.create_state().expect("failed to create state");
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
@@ -164,7 +177,7 @@ fn whisper_loop(app: Sender<WhisperUpdate>, ctx: WhisperContext, filtered_rx: Re
                 Err(_) => break,
             }
         }
-        whisperize(&mut state, &aggregated_data, &app);
+        whisperize(&mut state, &aggregated_data, &app, &params);
     }
 }
 
@@ -249,10 +262,22 @@ fn filter_audio_loop(
     }
 }
 
-fn whisperize(state: &mut WhisperState<'_>, resampled: &[f32], app: &Sender<WhisperUpdate>) {
+fn whisperize(
+    state: &mut WhisperState<'_>,
+    resampled: &[f32],
+    app: &Sender<WhisperUpdate>,
+    params: &WhisperParams,
+) {
     // Consider making the beam size configurable for user performance tuning.
     // a beam_size of 6 is recommended; 1 is fast but use Greedy instead of BeamSearch; 16 crashes.
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
+    let mut params = FullParams::new(match params.accuracy {
+        1 => SamplingStrategy::Greedy { best_of: 1 },
+        _ => SamplingStrategy::BeamSearch {
+            beam_size: params.accuracy as i32,
+            patience: 1.0,
+        },
+    });
 
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -307,10 +332,10 @@ fn convert_sample_rate(
     audio: &[f32],
     original_sample_rate: usize,
 ) -> Result<Vec<f32>, &'static str> {
-    let params = rubato::InterpolationParameters {
+    let params = rubato::SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
-        interpolation: rubato::InterpolationType::Linear,
+        interpolation: rubato::SincInterpolationType::Linear,
         oversampling_factor: 256,
         window: rubato::WindowFunction::BlackmanHarris2,
     };

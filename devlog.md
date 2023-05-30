@@ -530,3 +530,42 @@ Well, hopefully cublas does better. Gotta finish coding first though.
 
 Wow, the 4090 [can do](https://www.techpowerup.com/gpu-specs/geforce-rtx-4090.c3889) 82 TFLOPS.
 That's pretty amazing. I guess memory bandwidth is going to be the bottleneck.
+
+## 2023-05-26
+
+The medium model with a Greedy search seems to work really well. I'm going to keep implementing the pure rust version now.
+
+## 2023-05-30
+
+Got right into the guts of ggml.c today. It turns out that computations are queued up into a graph, and then a rudimentary scheduler executes them all.
+
+Basically the sort of thing that tokio excels at?
+
+So now I'm wondering what approach to take.
+
+Do I:
+
+1. convert ggml graph to imperative Rust, and not bother building a complete graph at any point
+2. convert ggml graph to Rust graph, and have to write an evaluation engine for it
+
+I think 2 is the way to go if I'm going to want to implement accelerators.
+
+I think 1 is probably simpler. But actually that might not be true. I might just do a full translation of the ggml stuff -- the scheduler etc. is not very complicated.
+
+Owning the tensors in the graph is going to be a nightmare. I think I'll have the graph own them for now? Nah, that probably won't work. Ugh.
+
+Ah, I understand why GGML is not using much GPU now. Most of the operations are not accelerated, only matrix multiplications. There are nearly fifty other ops.
+
+Additionally, for each accelerated operation, the memory is copied to the GPU, the operation is performed, and then the memory is copied back. That's a lot of copying.
+
+I mean, it works as a first pass but it's a long way from optimal.
+
+I think it might be time to try the onnx implementation, it seems like that's what I'm going to end up implementing anyway.
+
+Upon further reading, it's not much better. https://github.com/zhuzilin/whisper-openvino reports about a 2x speedup over the original Pytorch implementation. Fuck.
+
+Now I am starting to understand all that stuff about tensorflow-lite exports. Google had the right idea all along. I should have bloody known, they invented this field.
+
+Read openai's tiktoken. It's [in rust](https://github.com/openai/tiktoken/blob/main/src/lib.rs#L184)! And python.
+
+Continue with rust conversion. Use approach 2, ggml graph. Fun. I need to write some actual tests, I'm never going to be able to get it all right first try. At least the compiler will stop me doing anything really stupid.

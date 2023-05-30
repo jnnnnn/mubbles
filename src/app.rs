@@ -6,7 +6,7 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{get_devices, AppDevice, StreamState, WhisperUpdate};
+use crate::whisper::{get_devices, AppDevice, StreamState, WhisperUpdate, WhisperParams};
 
 use egui::plot::{Line, Plot, PlotPoints};
 
@@ -43,6 +43,8 @@ pub struct MubblesApp {
     autotype: bool,
 
     always_on_top: bool,
+
+    accuracy: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -69,13 +71,14 @@ impl Default for MubblesApp {
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: crate::whisper::start_listening(&tx, &devices[selected_device]),
+            stream: crate::whisper::start_listening(&tx, &devices[selected_device], WhisperParams { accuracy: 1 }),
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
             autotype: false,
             always_on_top: false,
+            accuracy: 1,
         }
     }
 }
@@ -113,6 +116,7 @@ impl eframe::App for MubblesApp {
             whisper_tx,
             level,
             autotype,
+            accuracy,
             ..
         } = self;
         // drain from_whisper channel
@@ -158,7 +162,7 @@ impl eframe::App for MubblesApp {
                 );
                 if source.changed() {
                     let device = &devices[*selected_device];
-                    *stream = crate::whisper::start_listening(whisper_tx, device);
+                    *stream = crate::whisper::start_listening(whisper_tx, device, WhisperParams { accuracy: *accuracy });
                 }
                 ui.add_enabled_ui(false, |ui| {
                     ui.checkbox(recording, "Recording");
@@ -173,6 +177,10 @@ impl eframe::App for MubblesApp {
                 // }
                 if ui.button("Clear").clicked() {
                     text.clear()
+                }
+
+                if ui.add(egui::Slider::new( accuracy, 1..=8).text("Accuracy")).changed() {
+                    *stream = crate::whisper::start_listening(whisper_tx, &devices[*selected_device], WhisperParams { accuracy: *accuracy });
                 }
             });
         });

@@ -18,7 +18,7 @@ eframe = { version = "0.22.0", default-features = false, features = [
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
 cpal = "0.15.2"
-rubato = "0.12.0"
+rubato = "0.13.0"
 whisper-rs = { version = "0.8.0", features = ["cuda"] }
 dirs = "5.0.1"
 image = { version = "0.24.6", default_features = false, features = ["png"] }
@@ -55,4 +55,4 @@ opt-level = 2
 # eframe = { path = "../egui/crates/eframe" }
 
 
-whisper-rs = { git = "https://github.com/jnnnnn/whisper-rs", branch = "cuda-windows" }
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", branch = "master" }

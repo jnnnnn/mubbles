@@ -18,4 +18,5 @@ You may need to remove the `cuda` feature from the `whisper-rs` dependency if yo
 
 ## Screenshot
 
-![mubbles screenshot.png](./doc/mubbles-screenshot.png)
+![mubbles screenshot.png](./doc/mubbles-screenshot.png) 
+
