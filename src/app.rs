@@ -57,7 +57,7 @@ impl Default for MubblesApp {
         let (tx, rx) = mpsc::channel();
         let devices = get_devices();
         let host = cpal::default_host();
-        let default_device_name = match host.default_input_device() {
+        let default_device_name = match host.default_output_device() {
             Some(d) => d.name().unwrap_or(String::from("Unknown")).to_owned(),
             None => "Unkown".to_owned(),
         };
