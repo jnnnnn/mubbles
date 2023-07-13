@@ -151,7 +151,7 @@ impl eframe::App for MubblesApp {
 
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(true).with_cross_align(egui::Align::TOP), |ui| {
                 plot_level(level, ui);
 
                 let source = egui::ComboBox::from_label("Sound device").show_index(

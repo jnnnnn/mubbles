@@ -568,4 +568,175 @@ Now I am starting to understand all that stuff about tensorflow-lite exports. Go
 
 Read openai's tiktoken. It's [in rust](https://github.com/openai/tiktoken/blob/main/src/lib.rs#L184)! And python.
 
-Continue with rust conversion. Use approach 2, ggml graph. Fun. I need to write some actual tests, I'm never going to be able to get it all right first try. At least the compiler will stop me doing anything really stupid.
+Continue with rust conversion. Use approach 2, ggml graph. Fun. I need to write
+some actual tests, I'm never going to be able to get it all right first try. At
+least the compiler will stop me doing anything really stupid.
+
+### Implementing ggml_graph_compute
+
+OK, there's a fair bit to do here.
+
+1. Work out how memory allocation is going to work -- where to put the tensor elements?
+2. figure out what's going on with the various `use_buf` of the state
+3. transate the various ggml_mul and so on to build the graph
+4. Translate ggml_build_forward_expand
+5. Translate ggml_graph_compute
+
+I think I'll do the last one first, just to see what data structures fall out of the logic. Maybe that will help with memory usage.
+
+## 2023-06-02
+
+I've had chatgpt have a few attempts at the `ggml_cgraph` and related structs. I
+can't find a neat way to get around Rust's single-mutable-reference rule. I
+think the problem is really that ownership is implicit in the CPP and so the
+Rust translation doesn't really have a way forward. I can't see how to make
+parts of the graph mutable and have the rust compiler understand that it's safe.
+
+The first step is probably to make the graph immutable, and then see if I can
+make it mutable again. I think I'll have to use interior mutability.
+
+That means I'll have to use `RefCell` and `Rc` and `Cell` and `Ref` and `RefMut`. I'm not sure how to use them yet.
+
+After some reading, here are the definitions and typical usages:
+
+### RefCell
+
+A mutable memory location with dynamically checked borrow rules. Pretty similar to a `Box` but with runtime borrow checking.
+
+```rust
+let x = RefCell::new(vec![1, 2, 3, 4]);
+let y = x.borrow();
+let z = x.borrow_mut(); // panic
+```
+
+A RefCell is a single-threaded RwLock (not mutex). It's not thread safe.
+
+### Rc
+
+A reference-counted pointer. It's not thread safe. It's like a `Box` but with reference counting.
+
+```rust
+let x = Rc::new(vec![1, 2, 3, 4]);
+let y = x.clone();
+let z = x.clone();
+```
+
+### Cell
+
+A mutable memory location with statically checked borrow rules. It's like a `Box` but with compile-time borrow checking.
+
+```rust
+
+```
+
+### Internet advice
+
+[src](https://www.reddit.com/r/rust/comments/11ie1n9/comment/jayegyh/?utm_source=share&utm_medium=web2x&context=3)
+
+> Trees and more general graphs are a classic case where reference-counting is a good idea. It may still be not the best idea, mind you. If you're trying to write a performant data structure, you should carefully think about memory allocations, when you want to free memory and how you'd want to synchronize multithreaded accesses. Perhaps you'd like to go with immutable data structures and use `Rc` without inner `RefCell`. Perhaps you'd want to use `Box` instead of `Rc`, if you don't plan to clone around your subgraphs. Perhaps you'd want to allocate all nodes in an arena, to amortize memory allocation costs, or maybe you would even use a garbage collector. There are many options, but `Rc<RefCell<T>>` is certainly a valid possibility.
+
+Ah, look into arenas. Ah, [here](https://lib.rs/memory-management) we go:
+
+1. bumpalo has 2M downloads, looks promising. support for `Box` allocations in a bump arena.
+2. typed_arena is a bit more barebones, it only supports allocating a single type of object. All objects have the same lifetime so that simplifies cyclic dependencies.
+
+https://github.com/gfx-rs/wgpu
+
+> wgpu is a cross-platform, safe, pure-rust graphics api. It runs natively on Vulkan, Metal, D3D12, D3D11, and OpenGLES; and on top of WebGPU on wasm.
+>
+> The api is based on the WebGPU standard. It serves as the core of the WebGPU integration in Firefox, Servo, and Deno.
+
+Here's [some good advice](https://manishearth.github.io/blog/2015/05/27/wrapper-types-in-rust-choosing-your-guarantees/#composition) about memory abstractions:
+
+> When choosing a composed type, we must do the reverse; figure out which guarantees we want, and at which point of the composition we need them. For example, if there is a choice between Vec<RefCell<T>> and RefCell<Vec<T>>, we should figure out the tradeoffs as done above and pick one.
+
+### Implementing forward expand
+
+I'm going to try to implement `ggml_build_forward_expand` first, and skip all the grad stuff. That should simplify things a fair bit.
+
+Each tensor can just own its own Vec. To figure out mutability, I'm going to walk through the code and see what it mutates. Seems obvious now that it's occurred to me.
+
+OK, walking is pretty simple. Here's the algorithm:
+
+```py
+# each node is a tensor with a vec of elements and a shape, and pointers to other tensors (src0, src1, opt[0..3])
+for each node in graph:
+    ggml_compute_forward(INIT)
+for each node in graph:
+    ggml_compute_forward(COMPUTE)
+for each node in graph:
+    ggml_compute_forward(FINALIZE)
+```
+
+I think the only data that gets modified is the `data` field of each tensor. So I can just make that a `RefCell<Vec<f32>>` and then I can mutate it. However, I've just read some advice saying it's actually better to use the type system as much as possible -- if something is only meant to be called once, have the method return a different type. Applying this pattern, Copilot suggests:
+
+1. a `ggml_compute_forward` that returns a `ggml_compute_forward_compute` that returns a `ggml_compute_forward_finalize`
+2. a tensor that has a `data` field that is something like
+
+    ```rust
+    enum TensorData {
+        Uncomputed(RefCell<Vec<f32>>),
+        Computed(Vec<f32>),
+    }
+    ```
+
+I would pass a mutable graph to the compute method. This would allow me to mutate the nodes of the graph. Except I could not construct such a graph, because the nodes would have immutable references to other nodes, which the borrow checker wouldn't allow. Hmm. I think I'll have to use interior mutability. Google some more first.
+[interconnected futures](https://stackoverflow.com/questions/70646911/a-collection-of-interconnected-futures-in-async-rust-w-tokio)?
+[mutable directed graph](https://users.rust-lang.org/t/appropriate-way-to-model-mutable-directed-graph-for-realtime-dataflow-computation/39830/2)?
+
+> The standard suggestion for graph structures is to use indexes into a vector instead of references.
+
+Huh, that's pretty much what the first one recommends as well. Can't see how
+that would work in this case. Maybe it's best to just use an RWLock, there are
+only 1200 tensors in the largest Whisper model. Although I guess the graph could
+apply the same tensors over and over..
+
+Let's keep it simple for the first prototype and sort out the rest later. Everything's behind RWLocks.
+
+### trying whisper-faster
+
+    .\whisper-faster.exe --compute_type int8 --word_timestamps True --model small --model_dir c:\users\j\.cache\whisper "G:\videos\Captures\Zoom Meeting 2023-03-07 14-35-55.mp4"
+    RuntimeError: Library cublas64_11.dll is not found or cannot be loaded
+
+argh, I've got cuda 12 installed as the default, but this python shit can't find 11. 
+
+    CUDA_PATH_V11_1=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1
+
+has the dll this thing wants. Maybe I'll add the bin folder to the path. in a cmd shell: 
+
+```cmd
+set PATH=%PATH%;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\
+```
+
+Ugh setting paths doesn't work either. https://stackoverflow.com/a/64303856/412529 -- python 3.8 changed to use add_dll_directory as a security fix.
+
+### back to prs
+
+It's probably also possible to not allocate so much memory all the time. the whole graph being allocated at once is almost certainly unnecessary -- we can free earlier results that are already incorporated into later nodes and won't be used again, and we don't need to allocate data arrays for later nodes until it's time to write to them.
+
+Yeah GGML_MAX_NODES = 4096 so RWlocks are fine. 4096 write locks is not a performance problem.
+
+How to store references to the other tensors? src0 and src1 are references to previous tensors in the graph. Let's just go with Rc for now? Arc? `Arc<RwLock<Tensor>>`?
+
+### dfdx
+
+https://github.com/coreylowman/dfdx
+
+aha. This is what I would have eventually ended up writing! I think I should switch to using this instead of ggml. I wonder if there is already a whisper implementation using this.
+
+There's a llama! but no whisper.
+
+fun.
+
+base it on the original pytorch code I think.
+
+## 2023-06-04
+
+https://github.com/sonos/tract is a simple pure-rust Tensorflow/onnx inference engine. Interesting docs. They store their nodes in a vec and (following the same pattern as was recommended above) reference them from the graph structure [using indices](https://github.com/sonos/tract/blob/main/doc/graph.md).
+
+The pytorch whisper is not very long but I'm finding it hard to read. I think the next step is to do a few pytorch tutorials.
+
+## 2023-07-11
+
+Update deps.
+
