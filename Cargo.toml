@@ -1,6 +1,6 @@
 [package]
 name = "mubbles"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Jonathan Newnham"]
 edition = "2021"
 rust-version = "1.65"
@@ -23,7 +23,7 @@ whisper-rs = { version = "0.8.0", features = ["cuda"] }
 dirs = "5.0.1"
 image = { version = "0.24.6", default_features = false, features = ["png"] }
 winput = "0.2.5"
-wasapi = "0.12.0"
+wasapi = "0.13.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

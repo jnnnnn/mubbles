@@ -117,6 +117,7 @@ impl eframe::App for MubblesApp {
             level,
             autotype,
             accuracy,
+            always_on_top,
             ..
         } = self;
         // drain from_whisper channel
@@ -172,9 +173,9 @@ impl eframe::App for MubblesApp {
                     "Type whatever is said into other applications on this computer",
                 );
                 // remove this for now because it's annoying
-                // if ui.checkbox(always_on_top, "Always on top").changed() {
-                //     frame.set_always_on_top(*always_on_top);
-                // }
+                if ui.checkbox(always_on_top, "Always on top").changed() {
+                    frame.set_always_on_top(*always_on_top);
+                }
                 if ui.button("Clear").clicked() {
                     text.clear()
                 }

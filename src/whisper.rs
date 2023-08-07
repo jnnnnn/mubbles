@@ -86,6 +86,32 @@ pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
 }
 
+pub fn load_whisper_model() -> WhisperContext {
+    // load the model from either the local directory or from
+    // ~/.cache/whisper/base.bin it must be in ggml format -- use
+    // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
+    // if you need to convert a pytorch model to ggml
+    let model_file = "small.bin";
+    // check for a local model first
+    let ctx = if Path::new(model_file).exists() {
+        println!("Loading local model");
+        WhisperContext::new(model_file).expect("failed to load model from local folder")
+    } else {
+        let model = dirs::home_dir()
+            .expect("No home")
+            .join(".cache")
+            .join("whisper")
+            .join(model_file) // tiny is faster (we're running on CPU) and quality is still pretty good
+            .into_os_string()
+            .into_string()
+            .expect("No path conversion?");
+        WhisperContext::new(model.as_str())
+            .expect("failed to load model from local directory and ~/.cache/whisper/")
+    };
+    ctx
+}
+
+
 // once the return value is dropped, listening stops
 // and the sender is closed
 pub fn start_listening(
@@ -115,29 +141,6 @@ pub fn start_listening(
 
     stream.play().expect("Failed to play stream");
 
-    // load the model from either the local directory or from
-    // ~/.cache/whisper/base.bin it must be in ggml format -- use
-    // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
-    // if you need to convert a pytorch model to ggml
-
-    let model_file = "small.bin";
-    // check for a local model first
-    let ctx = if Path::new(model_file).exists() {
-        println!("Loading local model");
-        WhisperContext::new(model_file).expect("failed to load model from local folder")
-    } else {
-        let model = dirs::home_dir()
-            .expect("No home")
-            .join(".cache")
-            .join("whisper")
-            .join(model_file) // tiny is faster (we're running on CPU) and quality is still pretty good
-            .into_os_string()
-            .into_string()
-            .expect("No path conversion?");
-        WhisperContext::new(model.as_str())
-            .expect("failed to load model from local directory and ~/.cache/whisper/")
-    };
-
     let app2 = app.clone();
     let (filtered_tx, filtered_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
     let config2 = app_device.config.clone();
@@ -147,7 +150,7 @@ pub fn start_listening(
 
     let app2 = app.clone();
     thread::spawn(move || {
-        whisper_loop(app2, ctx, filtered_rx, params);
+        whisper_loop(app2, filtered_rx, params);
     });
 
     Some(StreamState { stream })
@@ -155,10 +158,10 @@ pub fn start_listening(
 
 fn whisper_loop(
     app: Sender<WhisperUpdate>,
-    ctx: WhisperContext,
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
 ) {
+    let ctx = load_whisper_model();
     let mut state = ctx.create_state().expect("failed to create state");
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
