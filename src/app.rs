@@ -42,6 +42,7 @@ pub struct MubblesApp {
 
     autotype: bool,
 
+    #[serde(skip)]
     always_on_top: bool,
 
     accuracy: usize,
