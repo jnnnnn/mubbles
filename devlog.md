@@ -740,3 +740,13 @@ The pytorch whisper is not very long but I'm finding it hard to read. I think th
 
 Update deps.
 
+## 2023-08-09
+
+[Candle](https://github.com/huggingface/candle/tree/main/candle-examples/examples/whisper) Time! No more cmake. yay.
+
+## 2023-08-21
+
+Experimenting with candle whisper. It's fast as. cudnn helps too. plus tracer makes it easier to optimize. The example transcribes (tiny.en, JFK example) in 0.6s on my GTX1080. Downloading small and medium models now.
+
+https://github.com/Lisoveliy/StarCoderEx + StarCoder: LLM specialized to code generation. from https://github.com/huggingface/candle = local copilot?
+

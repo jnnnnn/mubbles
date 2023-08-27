@@ -6,7 +6,7 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{get_devices, AppDevice, StreamState, WhisperUpdate, WhisperParams};
+use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate};
 
 use egui::plot::{Line, Plot, PlotPoints};
 
@@ -72,7 +72,11 @@ impl Default for MubblesApp {
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: crate::whisper::start_listening(&tx, &devices[selected_device], WhisperParams { accuracy: 1 }),
+            stream: crate::whisper::start_listening(
+                &tx,
+                &devices[selected_device],
+                WhisperParams { accuracy: 1 },
+            ),
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
@@ -153,38 +157,72 @@ impl eframe::App for MubblesApp {
 
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(true).with_cross_align(egui::Align::TOP), |ui| {
-                plot_level(level, ui);
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP),
+                |ui| {
+                    plot_level(level, ui);
 
-                let source = egui::ComboBox::from_label("Sound device").show_index(
-                    ui,
-                    selected_device,
-                    devices.len(),
-                    |i| devices[i].name.clone(),
-                );
-                if source.changed() {
-                    let device = &devices[*selected_device];
-                    *stream = crate::whisper::start_listening(whisper_tx, device, WhisperParams { accuracy: *accuracy });
-                }
-                ui.add_enabled_ui(false, |ui| {
-                    ui.checkbox(recording, "Recording");
-                    ui.checkbox(transcribing, "Transcribing");
-                });
-                ui.checkbox(autotype, "Autotype").on_hover_text(
-                    "Type whatever is said into other applications on this computer",
-                );
-                // remove this for now because it's annoying
-                if ui.checkbox(always_on_top, "Always on top").changed() {
-                    frame.set_always_on_top(*always_on_top);
-                }
-                if ui.button("Clear").clicked() {
-                    text.clear()
-                }
+                    let source = egui::ComboBox::from_label("Sound device").show_index(
+                        ui,
+                        selected_device,
+                        devices.len(),
+                        |i| devices[i].name.clone(),
+                    );
+                    if source.changed() {
+                        let device = &devices[*selected_device];
+                        *stream = crate::whisper::start_listening(
+                            whisper_tx,
+                            device,
+                            WhisperParams {
+                                accuracy: *accuracy,
+                            },
+                        );
+                    }
+                },
+            );
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP),
+                |ui| {
+                    ui.add_enabled_ui(false, |ui| {
+                        ui.checkbox(recording, "Recording");
+                        ui.checkbox(transcribing, "Transcribing");
+                    });
 
-                if ui.add(egui::Slider::new( accuracy, 1..=8).text("Accuracy")).changed() {
-                    *stream = crate::whisper::start_listening(whisper_tx, &devices[*selected_device], WhisperParams { accuracy: *accuracy });
-                }
-            });
+                    if ui
+                        .add(egui::Slider::new(accuracy, 1..=8).text("Accuracy"))
+                        .changed()
+                    {
+                        *stream = crate::whisper::start_listening(
+                            whisper_tx,
+                            &devices[*selected_device],
+                            WhisperParams {
+                                accuracy: *accuracy,
+                            },
+                        );
+                    }
+                },
+            );
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP),
+                |ui| {
+                    ui.checkbox(autotype, "Autotype").on_hover_text(
+                        "Type whatever is said into other applications on this computer",
+                    );
+                    // remove this for now because it's annoying
+                    if ui.checkbox(always_on_top, "Always on top").changed() {
+                        frame.set_always_on_top(*always_on_top);
+                    }
+                    if ui.button("Clear").clicked() {
+                        text.clear()
+                    }
+                },
+            );
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
