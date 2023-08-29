@@ -1,4 +1,3 @@
 /target
 /dist
-log.log
-log.txt
+*.log

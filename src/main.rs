@@ -60,7 +60,7 @@ use tracing_subscriber::prelude::*;
 fn set_up_tracing() -> Box<dyn std::any::Any> {
     // keep ten days of logs in daily files up to 1MB
     let file_appender = rolling_file::BasicRollingFileAppender::new(
-        "./log.log",
+        "./mubbles.log",
         rolling_file::RollingConditionBasic::new()
             .daily()
             .max_size(1024 * 1024),
