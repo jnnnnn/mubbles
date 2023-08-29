@@ -100,6 +100,7 @@ impl MubblesApp {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
 
+        log::info!("Startup");
         Default::default()
     }
 }
@@ -132,6 +133,7 @@ impl eframe::App for MubblesApp {
                 Ok(WhisperUpdate::Transcript(t)) => {
                     text.push_str(&t.trim());
                     text.push_str("\n");
+                    log::info!("{}", t);
                     // if autotype enabled and this window is in the background, send the text
                     let _focused = !frame.info().window_info.minimized;
                     if *autotype {
