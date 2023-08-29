@@ -4,7 +4,7 @@
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
-    set_up_tracing();
+    let _trace_state = set_up_tracing();
 
     let mut native_options = eframe::NativeOptions::default();
     native_options.icon_data = Some(load_icon());
@@ -55,13 +55,10 @@ pub(crate) fn load_icon() -> eframe::IconData {
     }
 }
 
-use tracing_subscriber::{prelude::*, Registry};
+use tracing_subscriber::prelude::*;
 
-fn set_up_tracing() {
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let subscriber = Registry::default().with(stdout_log);
-
-    // keep one week of logs in daily files
+fn set_up_tracing() -> Box<dyn std::any::Any> {
+    // keep ten days of logs in daily files up to 1MB
     let file_appender = rolling_file::BasicRollingFileAppender::new(
         "./log.log",
         rolling_file::RollingConditionBasic::new()
@@ -70,11 +67,22 @@ fn set_up_tracing() {
         10,
     )
     .expect("Couldn't open log file");
-
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    let file_layer = tracing_subscriber::fmt::layer().with_writer(non_blocking);
 
-    let subscriber = subscriber.with(file_layer);
+    let console_layer = tracing_subscriber::fmt::Layer::new()
+        .with_writer(std::io::stdout.with_max_level(tracing::Level::INFO))
+        .pretty();
+    let file_layer = tracing_subscriber::fmt::Layer::new()
+        .with_writer(non_blocking.with_max_level(tracing::Level::INFO))
+        .with_ansi(false)
+        .without_time();
 
-    tracing::subscriber::set_global_default(subscriber).expect("Unable to set global subscriber");
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(file_layer),
+    )
+    .expect("Couldn't set up tracing");
+
+    Box::new(_guard)
 }

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2
+ - Log to file in case of accidental clear
+
 ## 1.1 
 
  - Always on Top checkbox keeps the window visible while Zoom is open.

@@ -91,6 +91,7 @@ impl Default for MubblesApp {
 impl MubblesApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        tracing::info!("Startup at {}", chrono::Local::now());
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -100,7 +101,6 @@ impl MubblesApp {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
 
-        log::info!("Startup");
         Default::default()
     }
 }
@@ -131,9 +131,9 @@ impl eframe::App for MubblesApp {
             let whisper_update_result = from_whisper.try_recv();
             match whisper_update_result {
                 Ok(WhisperUpdate::Transcript(t)) => {
-                    text.push_str(&t.trim());
+                    text.push_str(t.trim());
                     text.push_str("\n");
-                    log::info!("{}", t);
+                    tracing::info!("{}", t.trim());
                     // if autotype enabled and this window is in the background, send the text
                     let _focused = !frame.info().window_info.minimized;
                     if *autotype {
