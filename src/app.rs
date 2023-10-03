@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate};
 
-use egui::plot::{Line, Plot, PlotPoints};
+use egui_plot::{Line, Plot, PlotPoints};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -44,6 +44,9 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     always_on_top: bool,
+
+    #[serde(skip)]
+    changed: bool,
 
     accuracy: usize,
 }
@@ -83,6 +86,7 @@ impl Default for MubblesApp {
             level: VecDeque::with_capacity(100),
             autotype: false,
             always_on_top: false,
+            changed: false,
             accuracy: 1,
         }
     }
@@ -124,6 +128,7 @@ impl eframe::App for MubblesApp {
             autotype,
             accuracy,
             always_on_top,
+            changed,
             ..
         } = self;
         // drain from_whisper channel
@@ -133,6 +138,8 @@ impl eframe::App for MubblesApp {
                 Ok(WhisperUpdate::Transcript(t)) => {
                     text.push_str(t.trim());
                     text.push_str("\n");
+                    *changed = true;
+
                     tracing::info!("{}", t.trim());
                     // if autotype enabled and this window is in the background, send the text
                     let _focused = !frame.info().window_info.minimized;
@@ -227,7 +234,12 @@ impl eframe::App for MubblesApp {
             );
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            let scroll_area = egui::ScrollArea::vertical();
+            let scroll_area = if *changed { 
+                *changed = false;
+                scroll_area.vertical_scroll_offset(10000000f32)
+            } else { scroll_area };
+            scroll_area.show(ui, |ui| {
                 ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
             });
         });
