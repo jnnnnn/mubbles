@@ -228,7 +228,9 @@ impl eframe::App for MubblesApp {
                         frame.set_always_on_top(*always_on_top);
                     }
                     if ui.button("Clear").clicked() {
-                        text.clear()
+                        text.clear();
+                        // log the time as well as a message
+                        tracing::info!("Cleared text, time: {}", chrono::Local::now());
                     }
                 },
             );
