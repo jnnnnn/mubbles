@@ -37,7 +37,7 @@ pub fn get_devices() -> Vec<AppDevice> {
     let input_devices = match host.input_devices() {
         Ok(devices) => devices.collect(),
         Err(whatever) => {
-            println!("Failed to get input devices: {}", whatever);
+            tracing::warn!("Failed to get input devices: {}", whatever);
             Vec::new()
         }
     };
@@ -45,7 +45,7 @@ pub fn get_devices() -> Vec<AppDevice> {
         let config = match device.default_input_config() {
             Ok(config) => config,
             Err(whatever) => {
-                println!("Failed to get config for {:?}: {}", device.name(), whatever);
+                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
                 continue;
             }
         };
@@ -59,7 +59,7 @@ pub fn get_devices() -> Vec<AppDevice> {
     let output_devices = match host.output_devices() {
         Ok(devices) => devices.collect(),
         Err(whatever) => {
-            println!("Failed to get output devices: {}", whatever);
+            tracing::warn!("Failed to get output devices: {}", whatever);
             Vec::new()
         }
     };
@@ -67,7 +67,7 @@ pub fn get_devices() -> Vec<AppDevice> {
         let config = match device.default_output_config() {
             Ok(config) => config,
             Err(whatever) => {
-                println!("Failed to get config for {:?}: {}", device.name(), whatever);
+                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
                 continue;
             }
         };
@@ -94,7 +94,7 @@ pub fn load_whisper_model() -> WhisperContext {
     let model_file = "small.bin";
     // check for a local model first
     let ctx = if Path::new(model_file).exists() {
-        println!("Loading local model");
+        tracing::info!("Loading local model");
         WhisperContext::new(model_file).expect("failed to load model from local folder")
     } else {
         let model = dirs::home_dir()
@@ -119,14 +119,14 @@ pub fn start_listening(
     app_device: &AppDevice,
     params: WhisperParams,
 ) -> Option<StreamState> {
-    println!(
+    tracing::info!(
         "Listening on device: {}",
         app_device.device.name().expect("device name")
     );
 
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
-    let err_fn = move |err| eprintln!("an error occurred on stream: {}", err);
+    let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
     let data_callback =
         move |data: &[f32], _: &_| audio_tx.send(data.to_vec()).expect("Failed to send data");
     let stream = app_device
@@ -168,7 +168,7 @@ fn whisper_loop(
         let mut aggregated_data = match filtered_rx.recv() {
             Ok(data) => data,
             Err(_) => {
-                println!("Filtered stream closed");
+                tracing::info!("Filtered stream closed");
                 return;
             }
         };
@@ -205,7 +205,7 @@ fn filter_audio_loop(
         let mut data = match audio_rx.recv() {
             Ok(data) => data,
             Err(_) => {
-                println!("Audio stream closed");
+                tracing::info!("Audio stream closed");
                 return;
             }
         };
