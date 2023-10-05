@@ -232,15 +232,30 @@ impl eframe::App for MubblesApp {
                         // log the time as well as a message
                         tracing::info!("Cleared text, time: {}", chrono::Local::now());
                     }
+                    if ui.button("Open Log").clicked() {
+                        let logpath = // current exe directory + "mubbles.log":
+                            std::env::current_exe()
+                                .expect("Error getting current exe directory")
+                                .parent()
+                                .expect("Error getting parent directory")
+                                .to_path_buf(); 
+                            // don't add this because it breaks -- user can open the file themselves
+                            //.join("mubbles.log");
+                        if let Err(err) = open::that(logpath) {
+                            tracing::error!("Error opening log: {}", err);
+                        }
+                    }
                 },
             );
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             let scroll_area = egui::ScrollArea::vertical();
-            let scroll_area = if *changed { 
+            let scroll_area = if *changed {
                 *changed = false;
                 scroll_area.vertical_scroll_offset(10000000f32)
-            } else { scroll_area };
+            } else {
+                scroll_area
+            };
             scroll_area.show(ui, |ui| {
                 ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
             });
