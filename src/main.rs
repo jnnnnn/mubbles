@@ -1,6 +1,7 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
@@ -64,7 +65,7 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
         rolling_file::RollingConditionBasic::new()
             .daily()
             .max_size(1024 * 1024),
-        10,
+        30,
     )
     .expect("Couldn't open log file");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);

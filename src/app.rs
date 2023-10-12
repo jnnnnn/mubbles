@@ -8,6 +8,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate};
 
+use crate::summary;
+
 use egui_plot::{Line, Plot, PlotPoints};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -48,6 +50,12 @@ pub struct MubblesApp {
     #[serde(skip)]
     changed: bool,
 
+    #[serde(skip)]
+    show_summary: bool,
+
+    #[serde(skip)]
+    summary: summary::SummaryState,
+
     accuracy: usize,
 }
 
@@ -72,6 +80,7 @@ impl Default for MubblesApp {
 
         Self {
             text: "".to_owned(),
+            summary: summary::SummaryState::default(),
             recording: false,
             transcribing: false,
             from_whisper: rx,
@@ -87,6 +96,7 @@ impl Default for MubblesApp {
             autotype: false,
             always_on_top: false,
             changed: false,
+            show_summary: false,
             accuracy: 1,
         }
     }
@@ -140,7 +150,6 @@ impl eframe::App for MubblesApp {
                     text.push_str("\n");
                     *changed = true;
 
-                    tracing::info!("{}", t.trim());
                     // if autotype enabled and this window is in the background, send the text
                     let _focused = !frame.info().window_info.minimized;
                     if *autotype {
@@ -238,9 +247,9 @@ impl eframe::App for MubblesApp {
                                 .expect("Error getting current exe directory")
                                 .parent()
                                 .expect("Error getting parent directory")
-                                .to_path_buf(); 
-                            // don't add this because it breaks -- user can open the file themselves
-                            //.join("mubbles.log");
+                                .to_path_buf();
+                        // don't add this because it breaks -- user can open the file themselves
+                        //.join("mubbles.log");
                         if let Err(err) = open::that(logpath) {
                             tracing::error!("Error opening log: {}", err);
                         }
@@ -249,6 +258,30 @@ impl eframe::App for MubblesApp {
             );
         });
         egui::CentralPanel::default().show(ctx, |ui| {
+            // tabs for either raw transcript or summary:
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.show_summary, false, "Transcript");
+                ui.selectable_value(&mut self.show_summary, true, "Summary");
+            });
+
+            if self.show_summary {
+                let changed = ui
+                    .add(
+                        egui::Slider::new(&mut self.summary.input_lines, 1..=20)
+                            .text("Input lines per summary line"),
+                    )
+                    .changed()
+                    || ui
+                        .add(
+                            egui::Slider::new(&mut self.summary.output_words, 1..=10)
+                                .text("Output words for summary line"),
+                        )
+                        .changed();
+                if changed {
+                    summary::summarize(text, &mut self.summary);
+                }
+            }
+
             let scroll_area = egui::ScrollArea::vertical();
             let scroll_area = if *changed {
                 *changed = false;
@@ -257,7 +290,14 @@ impl eframe::App for MubblesApp {
                 scroll_area
             };
             scroll_area.show(ui, |ui| {
-                ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(if self.show_summary {
+                        &mut self.summary.text
+                    } else {
+                        text
+                    }),
+                );
             });
         });
     }

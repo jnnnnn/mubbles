@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4
+ - statistical summary shows five most unusual words for each ten lines of transcript
+
+## 1.3 
+ - auto-scrolling each time transcription is added
+
 ## 1.2
  - Log to file in case of accidental clear
 

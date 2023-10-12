@@ -312,6 +312,8 @@ fn whisperize(
         {
             continue;
         }
+        
+        tracing::info!("scribe: {}", segment.trim());
         app.send(WhisperUpdate::Transcript(segment.clone()))
             .expect("Failed to send transcript update");
     }
