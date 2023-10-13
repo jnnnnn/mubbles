@@ -53,7 +53,6 @@ pub struct MubblesApp {
     #[serde(skip)]
     show_summary: bool,
 
-    #[serde(skip)]
     summary: summary::SummaryState,
 
     accuracy: usize,

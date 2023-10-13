@@ -6,12 +6,16 @@ use std::{
 use reqwest::blocking::Client;
 use serde_json::json;
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(default)]
 pub struct SummaryState {
     offset: usize, // everything before this character has already been summarized
     pub text: String,
     output_words: usize,
     input_lines: usize,
+    #[serde(skip)]
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
+    #[serde(skip)]
     rx: std::sync::mpsc::Receiver<SummaryUpdate>,
 }
 
@@ -49,44 +53,85 @@ pub fn summary_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut Stri
     if changed {
         summarize(text, summary);
     }
+
+    // this is the only way for the user to clear the offset for generating new AI summary
+    if ui.button("Reset summary").clicked() {
+        summary.offset = 0;
+        summary.text = String::new();
+    }
+    
+    // this last button triggers an OpenAI summary request
+    if ui.button("AI summary").clicked() {
+        trigger_summarization_request(summary, text);
+    }
+
+    // Since we're on the main thread here, we can see if there's any responses
+    // that have been returned by a summary thread through the mpsc channel
+    while let Ok(update) = summary.rx.try_recv() {
+        match update {
+            SummaryUpdate::Additional(additional) => {
+                summary.text.push_str(format!("\n{}", additional).as_str());
+            }
+        }
+    }
 }
 
-fn trigger_summarization_request(state: &SummaryState, raw: &str) {
+fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
+    // 8000 chars is ~1500 tokens. Allowing for 10 lines of response (100
+    // tokens) and 10 lines of context (100 tokens), we have a total size of
+    // 1700 tokens. gpt-3.5-turbo-16k has a max_tokens of 16k; -turbo has a
+    // max_tokens of 8k. So use whichever model makes sense (the smaller model
+    // is half the price). So we can safely take 14k tokens of transcript, which
+    // is 14k * 8000 / 1500 = 75k chars.
+    //
+    // change of plan
+    //
+    // after some quick tests, I find that this skips too much. Each request
+    // seems to return about ten lines of summary, so taking 8000 chars (~160
+    // lines) gives us one line of summary for every 16 lines of transcript. So
+    // we'll take 8000 chars of transcript at a time.
     let additional = raw
         .chars()
-        .skip(state.offset)
-        .take(8000)
+        .skip(summary.offset)
+        .take(8000) 
         .collect::<String>();
+    if additional.len() < 100 {
+        tracing::warn!("{} chars is not enough additional text to summarize", additional.len());
+        return;
+    }
     // call openai to generate summary of additional text.
     tracing::info!(
         "requesting summary. Offset: {}, chars: {}",
-        state.offset,
+        summary.offset,
         additional.len()
     );
+    summary.offset += additional.len();
+    
     let user_prompt = format!(
         "
     Summary so far: 
     {}
 
-    Additional raw transcript:
+    Additional raw meeting transcript:
     {}
 
     ",
-        state.text, additional
+        // take the last 10 lines of the summary so far, will be about 500 chars or ~100 tokens
+        summary.text
+            .lines()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        additional
     );
-    let system_prompt = format!(
-        "
-    You are a concise and helpful secretary. 
-    Given the additional raw text, 
-    fix up the summary so far 
-    by adding additional points. 
-    Each point can be either an action item 
-    or an important fact. 
-    Each point begins with a heading, followed by a colon.
-    "
-    );
+    let system_prompt = "Please generate a summary of the additional raw meeting transcript that the user presents.
+    Include key points, action items, and follow-up questions in bullet point format. 
+    Do not include anything except bullet points.
+    Each line should start with a concise summary (up to a few words) followed by a colon, and then
+    provide up to ten additional words for context. Thank you!".to_string();
 
-    let sender = state.tx.clone();
+    let sender = summary.tx.clone();
 
     thread::spawn(move || {
         openai_request(user_prompt, system_prompt, sender);
@@ -100,12 +145,18 @@ fn openai_request(
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
 ) {
     let client = Client::new();
+    // if user + system > 35k chars, use -16k model
+    let model = if user_prompt.len() + system_prompt.len() > 35000 {
+        "gpt-3.5-turbo-16k"
+    } else {
+        "gpt-3.5-turbo"
+    };
     let body = json!({
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
         ],
-        "model": "gpt-3.5-turbo-16k",
+        "model": model,
         "temperature": 0.7,
         "max_tokens": 256,
         "stop": ["\n\n", " Human:", " AI:"]
@@ -113,7 +164,7 @@ fn openai_request(
     let apikey = if let Ok(key) = std::env::var("OPENAI_API_KEY") {
         key
     } else {
-        tracing::error!("OPENAI_API_KEY not set");
+        tracing::error!("OPENAI_API_KEY not set. Create an account and then a key at https://platform.openai.com/account/usage .");
         return;
     };
     let response = client
@@ -125,9 +176,12 @@ fn openai_request(
         .expect("failed to send request");
     let response_json: serde_json::Value = response.json().expect("failed to parse response");
     tracing::info!("response: {:?}", response_json);
-    let summary = response_json["choices"][0]["text"]
+    let summary = response_json["choices"][0]["message"]["content"]
         .as_str()
-        .unwrap()
+        .unwrap_or_else(|| {
+            tracing::error!("failed to parse response: {:?}", response_json);
+            ""
+        })
         .to_string();
     tx.send(SummaryUpdate::Additional(summary))
         .expect("failed to send summary");
