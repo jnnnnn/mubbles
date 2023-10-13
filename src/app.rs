@@ -117,6 +117,7 @@ impl MubblesApp {
 
         Default::default()
     }
+
 }
 
 impl eframe::App for MubblesApp {
@@ -265,21 +266,7 @@ impl eframe::App for MubblesApp {
             });
 
             if self.show_summary {
-                let changed = ui
-                    .add(
-                        egui::Slider::new(&mut self.summary.input_lines, 1..=20)
-                            .text("Input lines per summary line"),
-                    )
-                    .changed()
-                    || ui
-                        .add(
-                            egui::Slider::new(&mut self.summary.output_words, 1..=10)
-                                .text("Output words for summary line"),
-                        )
-                        .changed();
-                if changed {
-                    summary::summarize(text, &mut self.summary);
-                }
+                summary::summary_ui(&mut self.summary, ui, text);
             }
 
             let scroll_area = egui::ScrollArea::vertical();

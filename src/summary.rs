@@ -7,12 +7,12 @@ use reqwest::blocking::Client;
 use serde_json::json;
 
 pub struct SummaryState {
-    pub offset: usize, // everything before this character has already been summarized
+    offset: usize, // everything before this character has already been summarized
     pub text: String,
-    pub output_words: usize,
-    pub input_lines: usize,
+    output_words: usize,
+    input_lines: usize,
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
-    pub rx: std::sync::mpsc::Receiver<SummaryUpdate>,
+    rx: std::sync::mpsc::Receiver<SummaryUpdate>,
 }
 
 pub enum SummaryUpdate {
@@ -30,6 +30,24 @@ impl Default for SummaryState {
             tx,
             rx,
         }
+    }
+}
+
+pub fn summary_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
+    let changed = ui
+        .add(
+            egui::Slider::new(&mut summary.input_lines, 1..=20)
+                .text("Input lines per summary line"),
+        )
+        .changed()
+        || ui
+            .add(
+                egui::Slider::new(&mut summary.output_words, 1..=10)
+                    .text("Output words for summary line"),
+            )
+            .changed();
+    if changed {
+        summarize(text, summary);
     }
 }
 
