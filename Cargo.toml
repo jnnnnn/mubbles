@@ -19,7 +19,7 @@ eframe = { version = "0.23.0", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 cpal = "0.15.2"
 rubato = "0.14.1"
-whisper-rs = { version = "0.8.0", features = ["cuda"] }
+whisper-rs = { version = "0.8.0", features = ["test-with-tiny-model"] }
 dirs = "5.0.1"
 image = { version = "0.24.6", default_features = false, features = ["png"] }
 winput = "0.2.5"

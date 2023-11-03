@@ -750,3 +750,16 @@ Experimenting with candle whisper. It's fast as. cudnn helps too. plus tracer ma
 
 https://github.com/Lisoveliy/StarCoderEx + StarCoder: LLM specialized to code generation. from https://github.com/huggingface/candle = local copilot?
 
+## 2023-11-03
+
+Day off! I get to work on this again.
+
+Trying to build on laptop without cuda. ugh. 
+
+* install clang (via the option in build tools in Visual Studio Installer) because whisper-rs requires it
+* install cmake because whisper-rs requires it
+* set whisper-rs to `simd` instead of cuda in `Cargo.toml`
+* `rustup default nightly` as `simd` apparently uses `#feature`
+* `cargo build --release`
+
+Ugh, there's a bug in whisper-rs simd ? 
