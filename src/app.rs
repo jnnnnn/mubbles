@@ -21,10 +21,7 @@ pub struct MubblesApp {
     text: String,
 
     #[serde(skip)]
-    recording: bool,
-
-    #[serde(skip)]
-    transcribing: bool,
+    status: Status,
 
     #[serde(skip)]
     from_whisper: mpsc::Receiver<WhisperUpdate>,
@@ -40,9 +37,6 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     whisper_tx: mpsc::Sender<WhisperUpdate>,
-
-    #[serde(skip)]
-    level: VecDeque<f32>,
 
     autotype: bool,
 
@@ -65,6 +59,12 @@ struct DeviceOption {
     name: String,
 }
 
+struct Status {
+    recording: bool,
+    transcribing: bool,
+    level: VecDeque<f32>,
+}
+
 impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
@@ -82,8 +82,6 @@ impl Default for MubblesApp {
         Self {
             text: "".to_owned(),
             summary: summary::SummaryState::default(),
-            recording: false,
-            transcribing: false,
             from_whisper: rx,
             stream: crate::whisper::start_listening(
                 &tx,
@@ -97,7 +95,7 @@ impl Default for MubblesApp {
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
-            level: VecDeque::with_capacity(100),
+            status: Status { recording: false, transcribing: false, level: VecDeque::with_capacity(100), },
             autotype: false,
             always_on_top: false,
             changed: false,
@@ -151,14 +149,12 @@ impl eframe::App for MubblesApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let Self {
             text,
-            recording,
-            transcribing,
             from_whisper,
             devices,
             selected_device,
             stream,
             whisper_tx,
-            level,
+            status,
             autotype,
             params,
             always_on_top,
@@ -180,13 +176,13 @@ impl eframe::App for MubblesApp {
                         winput::send_str(&t);
                     }
                 }
-                Ok(WhisperUpdate::Recording(r)) => *recording = r,
-                Ok(WhisperUpdate::Transcribing(t)) => *transcribing = t,
+                Ok(WhisperUpdate::Recording(r)) => status.recording = r,
+                Ok(WhisperUpdate::Transcribing(t)) => status.transcribing = t,
                 Ok(WhisperUpdate::Level(l)) => {
-                    if level.len() > 99 {
-                        level.pop_front();
+                    if status.level.len() > 99 {
+                        status.level.pop_front();
                     }
-                    level.push_back(l);
+                    status.level.push_back(l);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => panic!("Whisper channel disconnected"),
@@ -204,7 +200,7 @@ impl eframe::App for MubblesApp {
                     .with_main_wrap(true)
                     .with_cross_align(egui::Align::TOP),
                 |ui| {
-                    plot_level(level, ui);
+                    plot_level(&status.level, ui);
 
                     let source = egui::ComboBox::from_label("Sound device").show_index(
                         ui,
@@ -224,8 +220,8 @@ impl eframe::App for MubblesApp {
                     .with_cross_align(egui::Align::TOP),
                 |ui| {
                     ui.add_enabled_ui(false, |ui| {
-                        ui.checkbox(recording, "Recording");
-                        ui.checkbox(transcribing, "Transcribing");
+                        ui.checkbox(&mut status.recording, "Recording");
+                        ui.checkbox(&mut status.transcribing, "Transcribing");
                     });
 
                     // choose a model, from WhichModel

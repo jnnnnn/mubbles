@@ -246,7 +246,7 @@ impl Decoder {
                     }
                 }
                 Err(err) => {
-                    println!("Error running at {t}: {err}")
+                    tracing::error!("Error running at {t}: {err}")
                 }
             }
         }
@@ -266,7 +266,7 @@ impl Decoder {
             let dr = self.decode_with_fallback(&mel_segment)?;
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
-                println!("no speech detected, skipping {seek} {dr:?}");
+                tracing::info!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
             let segment = Segment {
@@ -275,7 +275,7 @@ impl Decoder {
                 dr,
             };
             if self.timestamps {
-                println!(
+                tracing::info!(
                     "{:.1}s -- {:.1}s",
                     segment.start,
                     segment.start + segment.duration,
@@ -294,7 +294,7 @@ impl Decoder {
                                 .tokenizer
                                 .decode(&tokens_to_decode, true)
                                 .map_err(E::msg)?;
-                            println!("  {:.1}s-{:.1}s: {}", prev_timestamp_s, timestamp_s, text);
+                            tracing::info!("  {:.1}s-{:.1}s: {}", prev_timestamp_s, timestamp_s, text);
                             tokens_to_decode.clear()
                         }
                         prev_timestamp_s = timestamp_s;
@@ -308,12 +308,12 @@ impl Decoder {
                         .decode(&tokens_to_decode, true)
                         .map_err(E::msg)?;
                     if !text.is_empty() {
-                        println!("  {:.1}s-...: {}", prev_timestamp_s, text);
+                        tracing::info!("  {:.1}s-...: {}", prev_timestamp_s, text);
                     }
                     tokens_to_decode.clear()
                 }
             } else {
-                println!(
+                tracing::info!(
                     "{:.1}s -- {:.1}s: {}",
                     segment.start,
                     segment.start + segment.duration,
@@ -321,7 +321,7 @@ impl Decoder {
                 )
             }
             if self.verbose {
-                println!("{seek}: {segment:?}, in {:?}", start.elapsed());
+                tracing::trace!("{seek}: {segment:?}, in {:?}", start.elapsed());
             }
             segments.push(segment)
         }
