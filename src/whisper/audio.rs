@@ -2,7 +2,7 @@
 // Major tasks include
 // 1. enumerating audio devices,
 // 2. starting a stream from a selected audio device,
-// 3. converting audio from whatever bit depth and rate to Whisper's required mono 16Khz,
+// 3. converting audio from whatever bit depth and rate to Whisper's required 16bit mono 16Khz,
 // 4. filtering out silence, and
 // 5. sending chunks of filtered audio to a channel that Whisper can read it from.
 

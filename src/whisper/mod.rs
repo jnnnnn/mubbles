@@ -6,6 +6,10 @@ use std::{
 mod audio;
 pub use audio::{AppDevice, get_devices};
 
+mod transcribe;
+
+pub mod candle_example;
+
 use cpal::traits::{DeviceTrait, StreamTrait};
 
 
@@ -22,8 +26,11 @@ pub struct StreamState {
     pub(crate) stream: cpal::Stream,
 }
 
+#[derive(Clone, Copy)]
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
+    pub model: candle_example::WhichModel,
+    pub quantized: bool,
 }
 
 
@@ -71,7 +78,7 @@ pub fn start_listening(
 
     let app2 = app.clone();
     thread::spawn(move || {
-        //whisper_loop(app2, filtered_rx, params);
+        transcribe::whisper_loop(app2, filtered_rx, params);
     });
 
     Some(StreamState { stream })

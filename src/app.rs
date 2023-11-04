@@ -6,7 +6,7 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate};
+use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate, candle_example::WhichModel};
 
 use crate::summary;
 
@@ -86,7 +86,7 @@ impl Default for MubblesApp {
             stream: crate::whisper::start_listening(
                 &tx,
                 &devices[selected_device],
-                WhisperParams { accuracy: 1 },
+                WhisperParams { accuracy: 1, model: WhichModel::TinyEn, quantized: true },
             ),
             devices: devices,
             selected_device: selected_device,
@@ -195,6 +195,8 @@ impl eframe::App for MubblesApp {
                             device,
                             WhisperParams {
                                 accuracy: *accuracy,
+                                model: WhichModel::TinyEn,
+                                quantized: true,
                             },
                         );
                     }
@@ -219,6 +221,8 @@ impl eframe::App for MubblesApp {
                             &devices[*selected_device],
                             WhisperParams {
                                 accuracy: *accuracy,
+                                model: WhichModel::TinyEn,
+                                quantized: true,
                             },
                         );
                     }

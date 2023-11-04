@@ -9,11 +9,11 @@ extern crate intel_mkl_src;
 use anyhow::{Error as E, Result};
 use candle::{Device, IndexOp, Tensor};
 use candle_nn::{ops::softmax, VarBuilder};
+use clap::{Parser, ValueEnum};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::{distributions::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
-mod multilingual;
 use candle_transformers::models::whisper::{self as m, audio, Config};
 
 pub enum Model {
@@ -59,9 +59,9 @@ impl Model {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct DecodingResult {
+pub struct DecodingResult {
     tokens: Vec<u32>,
-    text: String,
+    pub text: String,
     avg_logprob: f64,
     no_speech_prob: f64,
     temperature: f64,
@@ -70,13 +70,13 @@ struct DecodingResult {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct Segment {
+pub struct Segment {
     start: f64,
     duration: f64,
-    dr: DecodingResult,
+    pub dr: DecodingResult,
 }
 
-struct Decoder {
+pub struct Decoder {
     model: Model,
     rng: rand::rngs::StdRng,
     task: Option<Task>,
@@ -95,7 +95,7 @@ struct Decoder {
 
 impl Decoder {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub fn new(
         model: Model,
         tokenizer: Tokenizer,
         seed: u64,
@@ -252,7 +252,7 @@ impl Decoder {
         unreachable!()
     }
 
-    fn run(&mut self, mel: &Tensor) -> Result<Vec<Segment>> {
+    pub fn run(&mut self, mel: &Tensor) -> Result<Vec<Segment>> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
         let mut segments = vec![];
@@ -336,13 +336,13 @@ pub fn token_id(tokenizer: &Tokenizer, token: &str) -> candle::Result<u32> {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum Task {
+pub enum Task {
     Transcribe,
     Translate,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum WhichModel {
+pub(crate) enum WhichModel {
     Tiny,
     #[value(name = "tiny.en")]
     TinyEn,
@@ -364,7 +364,7 @@ enum WhichModel {
 }
 
 impl WhichModel {
-    fn is_multilingual(&self) -> bool {
+    pub fn is_multilingual(&self) -> bool {
         match self {
             Self::Tiny
             | Self::Base
@@ -379,7 +379,7 @@ impl WhichModel {
         }
     }
 
-    fn model_and_revision(&self) -> (&'static str, &'static str) {
+    pub(crate) fn model_and_revision(&self) -> (&'static str, &'static str) {
         match self {
             Self::Tiny => ("openai/whisper-tiny", "main"),
             Self::TinyEn => ("openai/whisper-tiny.en", "refs/pr/15"),
@@ -452,18 +452,8 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    use tracing_chrome::ChromeLayerBuilder;
-    use tracing_subscriber::prelude::*;
-
     let args = Args::parse();
-    let _guard = if args.tracing {
-        let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
-        tracing_subscriber::registry().with(chrome_layer).init();
-        Some(guard)
-    } else {
-        None
-    };
-    let device = candle_examples::device(args.cpu)?;
+    let device = candle::Device::cuda_if_available(0)?;
     let (default_model, default_revision) = if args.quantized {
         ("lmz/candle-whisper", "main")
     } else {
@@ -547,7 +537,7 @@ fn main() -> Result<()> {
     };
 
     let language_token = match (args.model.is_multilingual(), args.language) {
-        (true, None) => Some(multilingual::detect_language(&mut model, &tokenizer, &mel)?),
+        (true, None) => Some(50259), // default to {|en|} for now
         (false, None) => None,
         (true, Some(language)) => match token_id(&tokenizer, &format!("<|{language}|>")) {
             Ok(token_id) => Some(token_id),
