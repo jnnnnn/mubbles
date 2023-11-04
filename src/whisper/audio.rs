@@ -100,7 +100,7 @@ pub fn filter_audio_loop(
         // These utilities are provided for convenience, but can be replaced with custom conversion logic.
         // SIMD variants of these functions are also available on nightly Rust (see the docs).
         if device_config.channels() == 2 {
-            data = whisper_rs::convert_stereo_to_mono_audio(&data).expect("monoize");
+            data = convert_stereo_to_mono_audio(&data).expect("monoize");
         } else if device_config.channels() != 1 {
             panic!(">2 channels unsupported");
         }
@@ -149,6 +149,18 @@ pub fn filter_audio_loop(
             recording_buffer.clear();
         }
     }
+}
+
+fn convert_stereo_to_mono_audio(samples: &[f32]) -> Result<Vec<f32>, &'static str> {
+    if samples.len() & 1 != 0 {
+        return Err("The stereo audio vector has an odd number of samples. \
+            This means a half-sample is missing somewhere");
+    }
+
+    Ok(samples
+        .chunks_exact(2)
+        .map(|x| (x[0] + x[1]) / 2.0)
+        .collect())
 }
 
 use cpal::traits::DeviceTrait;

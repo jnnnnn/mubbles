@@ -6,7 +6,9 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate, candle_example::WhichModel};
+use crate::whisper::{
+    candle_example::WhichModel, get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate,
+};
 
 use crate::summary;
 
@@ -55,7 +57,7 @@ pub struct MubblesApp {
 
     summary: summary::SummaryState,
 
-    accuracy: usize,
+    params: WhisperParams,
 }
 
 #[derive(Debug, PartialEq)]
@@ -86,7 +88,11 @@ impl Default for MubblesApp {
             stream: crate::whisper::start_listening(
                 &tx,
                 &devices[selected_device],
-                WhisperParams { accuracy: 1, model: WhichModel::TinyEn, quantized: true },
+                WhisperParams {
+                    accuracy: 1,
+                    model: WhichModel::TinyEn,
+                    quantized: true,
+                },
             ),
             devices: devices,
             selected_device: selected_device,
@@ -96,7 +102,11 @@ impl Default for MubblesApp {
             always_on_top: false,
             changed: false,
             show_summary: false,
-            accuracy: 1,
+            params: WhisperParams {
+                accuracy: 1,
+                model: WhichModel::TinyEn,
+                quantized: true,
+            },
         }
     }
 }
@@ -116,8 +126,22 @@ impl MubblesApp {
 
         Default::default()
     }
-
 }
+
+static MODELS: [WhichModel; 12] = [
+    WhichModel::Tiny,
+    WhichModel::TinyEn,
+    WhichModel::Base,
+    WhichModel::BaseEn,
+    WhichModel::Small,
+    WhichModel::SmallEn,
+    WhichModel::Medium,
+    WhichModel::MediumEn,
+    WhichModel::Large,
+    WhichModel::LargeV2,
+    WhichModel::DistilMediumEn,
+    WhichModel::DistilLargeV2,
+];
 
 impl eframe::App for MubblesApp {
     /// Called by the frame work to save state before shutdown.
@@ -136,7 +160,7 @@ impl eframe::App for MubblesApp {
             whisper_tx,
             level,
             autotype,
-            accuracy,
+            params,
             always_on_top,
             changed,
             ..
@@ -190,15 +214,7 @@ impl eframe::App for MubblesApp {
                     );
                     if source.changed() {
                         let device = &devices[*selected_device];
-                        *stream = crate::whisper::start_listening(
-                            whisper_tx,
-                            device,
-                            WhisperParams {
-                                accuracy: *accuracy,
-                                model: WhichModel::TinyEn,
-                                quantized: true,
-                            },
-                        );
+                        *stream = crate::whisper::start_listening(whisper_tx, device, *params);
                     }
                 },
             );
@@ -212,18 +228,24 @@ impl eframe::App for MubblesApp {
                         ui.checkbox(transcribing, "Transcribing");
                     });
 
-                    if ui
-                        .add(egui::Slider::new(accuracy, 1..=8).text("Accuracy"))
-                        .changed()
-                    {
+                    // choose a model, from WhichModel
+                    let cb = egui::ComboBox::from_label("Model")
+                        .selected_text(format!("{:?}", params.model))
+                        .show_ui(ui, |ui| {
+                            for model in MODELS.iter() {
+                                ui.selectable_value(
+                                    &mut params.model,
+                                    *model,
+                                    format!("{:?}", model),
+                                );
+                            }
+                        });
+
+                    if cb.response.changed {
                         *stream = crate::whisper::start_listening(
                             whisper_tx,
                             &devices[*selected_device],
-                            WhisperParams {
-                                accuracy: *accuracy,
-                                model: WhichModel::TinyEn,
-                                quantized: true,
-                            },
+                            *params,
                         );
                     }
                 },

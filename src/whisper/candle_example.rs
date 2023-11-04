@@ -1,4 +1,5 @@
 // from https://github.com/huggingface/candle/blob/e08fbb654370ab465f01ba79f9f7b533cff03d15/candle-examples/examples/whisper/main.rs
+// I have left it as original as possible while adding pub where necessary to allow access from outside the crate
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
@@ -341,7 +342,7 @@ pub enum Task {
     Translate,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum, serde::Deserialize, serde::Serialize)]
 pub(crate) enum WhichModel {
     Tiny,
     #[value(name = "tiny.en")]
@@ -526,7 +527,7 @@ fn main() -> Result<()> {
     println!("loaded mel: {:?}", mel.dims());
 
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
-    let mut model = if args.quantized {
+    let model = if args.quantized {
         let vb =
             candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&weights_filename)?;
         Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)

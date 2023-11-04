@@ -7,7 +7,6 @@ use tokenizers::Tokenizer;
 
 use crate::whisper::candle_example::{Decoder, Model, WhichModel, Task};
 
-use super::WhisperParams;
 struct WhisperState {
     decoder: Decoder,
     device: candle::Device,
@@ -62,13 +61,18 @@ pub(crate) fn whisper_loop(
                 Err(_) => break,
             }
         }
-        match whisperize(&mut state, &aggregated_data, &app, &params) {
-            Ok(_) => (),
+        app.send(super::WhisperUpdate::Transcribing(true)).expect("Failed to send update");
+        match whisperize(&mut state, &aggregated_data, &app) {
+            Ok(_) => {
+                app.send(super::WhisperUpdate::Transcribing(false)).expect("Failed to send update");
+            },
             Err(err) => {
                 tracing::error!("Failed to transcribe: {}", err);
+                app.send(super::WhisperUpdate::Transcribing(false)).expect("Failed to send update");
                 return;
             }
         }
+
     }
 }
 
@@ -76,7 +80,6 @@ fn whisperize(
     state: &mut WhisperState,
     pcm_data: &[f32],
     app: &Sender<super::WhisperUpdate>,
-    params: &super::WhisperParams,
 ) -> Result<(), String> {
     let mel = audio::pcm_to_mel(&pcm_data, &state.mel_filters);
     let mel_len = mel.len();
@@ -123,7 +126,6 @@ fn load_whisper_model(params: super::WhisperParams) -> Result<WhisperState, Whis
 
     let (config_filename, tokenizer_filename, weights_filename) = {
         let api = Api::new()?;
-        let dataset = api.dataset("Narsil/candle-examples".to_string());
         let repo = api.repo(Repo::with_revision(
             model_id.to_owned(),
             RepoType::Model,
@@ -157,7 +159,7 @@ fn load_whisper_model(params: super::WhisperParams) -> Result<WhisperState, Whis
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
 
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
-    let mut model = if params.quantized {
+    let model = if params.quantized {
         let vb =
             candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&weights_filename)?;
         Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)
@@ -169,9 +171,9 @@ fn load_whisper_model(params: super::WhisperParams) -> Result<WhisperState, Whis
     };
 
     // Detected language: <|en|> u32:50259
-    let language_token = match (params.model.is_multilingual()) {
-        (true) => Some(50259),
-        (false) => None,
+    let language_token = match params.model.is_multilingual() {
+        true => Some(50259),
+        false => None,
     };
     let dc = Decoder::new(
         model,

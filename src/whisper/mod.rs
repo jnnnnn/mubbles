@@ -26,7 +26,7 @@ pub struct StreamState {
     pub(crate) stream: cpal::Stream,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
     pub model: candle_example::WhichModel,
