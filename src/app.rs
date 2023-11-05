@@ -63,6 +63,7 @@ struct Status {
     recording: bool,
     transcribing: bool,
     level: VecDeque<f32>,
+    buffer_size: usize,
 }
 
 impl Default for MubblesApp {
@@ -95,7 +96,12 @@ impl Default for MubblesApp {
             devices: devices,
             selected_device: selected_device,
             whisper_tx: tx,
-            status: Status { recording: false, transcribing: false, level: VecDeque::with_capacity(100), },
+            status: Status {
+                recording: false,
+                transcribing: false,
+                level: VecDeque::with_capacity(100),
+                buffer_size: 0,
+            },
             autotype: false,
             always_on_top: false,
             changed: false,
@@ -184,6 +190,9 @@ impl eframe::App for MubblesApp {
                     }
                     status.level.push_back(l);
                 }
+                Ok(WhisperUpdate::BufferSize(b)) => {
+                    status.buffer_size = b;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => panic!("Whisper channel disconnected"),
             }
@@ -222,6 +231,7 @@ impl eframe::App for MubblesApp {
                     ui.add_enabled_ui(false, |ui| {
                         ui.checkbox(&mut status.recording, "Recording");
                         ui.checkbox(&mut status.transcribing, "Transcribing");
+                        ui.label(format!("Buffer size: {}", status.buffer_size));
                     });
 
                     // choose a model, from WhichModel

@@ -5,7 +5,7 @@ use candle_transformers::models::whisper::{self as m, audio, Config};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
-use crate::whisper::candle_example::{Decoder, Model, WhichModel, Task};
+use crate::whisper::candle_example::{Decoder, Model, Task, WhichModel};
 
 struct WhisperState {
     decoder: Decoder,
@@ -55,24 +55,23 @@ pub(crate) fn whisper_loop(
         };
         // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
         // worth aggregating several chunks of audio before sending it to whisper (if they are available)
-        while aggregated_data.len() < 48000 * 30 {
+        loop {
             match filtered_rx.try_recv() {
                 Ok(data) => aggregated_data.extend(data),
                 Err(_) => break,
             }
         }
-        app.send(super::WhisperUpdate::Transcribing(true)).expect("Failed to send update");
-        match whisperize(&mut state, &aggregated_data, &app) {
-            Ok(_) => {
-                app.send(super::WhisperUpdate::Transcribing(false)).expect("Failed to send update");
-            },
-            Err(err) => {
-                tracing::error!("Failed to transcribe: {}", err);
-                app.send(super::WhisperUpdate::Transcribing(false)).expect("Failed to send update");
-                return;
-            }
+        app.send(super::WhisperUpdate::BufferSize(
+            aggregated_data.len() / 16000,
+        ))
+        .expect("Failed to send update");
+        app.send(super::WhisperUpdate::Transcribing(true))
+            .expect("Failed to send update");
+        if let Err(err) = whisperize(&mut state, &aggregated_data, &app) {
+            tracing::error!("Failed to transcribe: {}", err);
         }
-
+        app.send(super::WhisperUpdate::Transcribing(false))
+            .expect("Failed to send update");
     }
 }
 
@@ -81,8 +80,15 @@ fn whisperize(
     pcm_data: &[f32],
     app: &Sender<super::WhisperUpdate>,
 ) -> Result<(), String> {
+    // record the start time so that we can measure how long it takes to generate the mel
+    let start = std::time::Instant::now();
     let mel = audio::pcm_to_mel(&pcm_data, &state.mel_filters);
     let mel_len = mel.len();
+    tracing::info!(
+        "Mel generation for {:.0}s of audio took {:?}",
+        pcm_data.len() / 16000,
+        start.elapsed()
+    );
     let mel = match Tensor::from_vec(mel, (1, m::N_MELS, mel_len / m::N_MELS), &state.device) {
         Ok(mel) => mel,
         Err(err) => {
@@ -90,7 +96,9 @@ fn whisperize(
         }
     };
 
+    let start = std::time::Instant::now();
     let result = state.decoder.run(&mel);
+    tracing::info!("Decoder run took {:?}", start.elapsed());
     match result {
         Err(err) => {
             return Err(format!("Failed to run decoder: {}", err.to_string()));
@@ -165,7 +173,11 @@ fn load_whisper_model(params: super::WhisperParams) -> Result<WhisperState, Whis
         Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)
     } else {
         let vb = unsafe {
-            candle_nn::VarBuilder::from_mmaped_safetensors(&[weights_filename], candle::DType::F32, &device)?
+            candle_nn::VarBuilder::from_mmaped_safetensors(
+                &[weights_filename],
+                candle::DType::F32,
+                &device,
+            )?
         };
         Model::Normal(m::model::Whisper::load(&vb, config)?)
     };
@@ -182,8 +194,8 @@ fn load_whisper_model(params: super::WhisperParams) -> Result<WhisperState, Whis
         &device,
         language_token,
         Some(Task::Transcribe),
-        true,
-        true,
+        false,
+        false,
     )?;
     Ok(WhisperState {
         decoder: dc,

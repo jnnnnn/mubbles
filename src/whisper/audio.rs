@@ -115,7 +115,10 @@ pub fn filter_audio_loop(
             .expect("Failed to send level update");
 
         let sample_rate = device_config.sample_rate().0 as usize;
-        let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
+        //let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
+
+        // as an experiment, call a "full" buffer a 1s buffer so that we transcribe every 1s if we can
+        let full_whisper_buffer = 1 * sample_rate;
 
         if max > threshold {
             if under_threshold_count > 100 {
@@ -132,6 +135,7 @@ pub fn filter_audio_loop(
                 // not long enough, keep listening
                 recording_buffer.extend_from_slice(&data);
             } else {
+                // been silent for more than 100 frames (1 second), so stop recording and send the audio to Whisper
                 if recording_buffer.len() > 0 {
                     app.send(WhisperUpdate::Recording(false))
                         .expect("Failed to send recording update");

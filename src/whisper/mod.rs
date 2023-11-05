@@ -18,6 +18,7 @@ pub enum WhisperUpdate {
     Transcribing(bool),
     Transcript(String),
     Level(f32),
+    BufferSize(usize),
 }
 
 pub struct StreamState {
