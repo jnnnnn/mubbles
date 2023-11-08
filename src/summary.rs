@@ -37,7 +37,7 @@ impl Default for SummaryState {
     }
 }
 
-pub fn summary_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
+pub fn statistical_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
     let changed = ui
         .add(
             egui::Slider::new(&mut summary.input_lines, 1..=20)
@@ -53,16 +53,18 @@ pub fn summary_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut Stri
     if changed {
         summarize(text, summary);
     }
+}
+
+pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
+    // this button triggers an OpenAI summary request
+    if ui.button("Request OpenAI summary").clicked() {
+        trigger_summarization_request(summary, text);
+    }
 
     // this is the only way for the user to clear the offset for generating new AI summary
-    if ui.button("Reset summary").clicked() {
+    if ui.button("Clear summary").clicked() {
         summary.offset = 0;
         summary.text = String::new();
-    }
-    
-    // this last button triggers an OpenAI summary request
-    if ui.button("AI summary").clicked() {
-        trigger_summarization_request(summary, text);
     }
 
     // Since we're on the main thread here, we can see if there's any responses
@@ -71,6 +73,7 @@ pub fn summary_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut Stri
         match update {
             SummaryUpdate::Additional(additional) => {
                 summary.text.push_str(format!("\n{}", additional).as_str());
+                trigger_summarization_request(summary, text);
             }
         }
     }
@@ -93,10 +96,13 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
     let additional = raw
         .chars()
         .skip(summary.offset)
-        .take(8000) 
+        .take(8000)
         .collect::<String>();
     if additional.len() < 100 {
-        tracing::warn!("{} chars is not enough additional text to summarize", additional.len());
+        tracing::warn!(
+            "{} chars is not enough additional text to summarize",
+            additional.len()
+        );
         return;
     }
     // call openai to generate summary of additional text.
@@ -106,7 +112,7 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         additional.len()
     );
     summary.offset += additional.len();
-    
+
     let user_prompt = format!(
         "
     Summary so far: 
@@ -117,7 +123,8 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
 
     ",
         // take the last 10 lines of the summary so far, will be about 500 chars or ~100 tokens
-        summary.text
+        summary
+            .text
             .lines()
             .rev()
             .take(10)
@@ -125,11 +132,15 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
             .join("\n"),
         additional
     );
-    let system_prompt = "Please generate a summary of the additional raw meeting transcript that the user presents.
-    Include key points, action items, and follow-up questions in bullet point format. 
+    let system_prompt = r#"Act as a meeting secretary and write minutes for the additional transcript, following on from the summary so far.
+    Each additional bullet point should start with one of 
+        question: (for finding out more), 
+        fact: (for recording specific details), or 
+        action: (for assigning a task).
     Do not include anything except bullet points.
-    Each line should start with a concise summary (up to a few words) followed by a colon, and then
-    provide up to ten additional words for context. Thank you!".to_string();
+    Be very concise, and do not include any unnecessary words like "they mention" or "discuss"
+    Record only the most important specific details.
+    Thank you!"#.to_string();
 
     let sender = summary.tx.clone();
 
@@ -213,10 +224,11 @@ fn statistical_summary(
     state.offset += additional.len();
 
     let ignored = get_ignore_words();
-    // count the words, splitting at any non-alpha character and ignoring whitespace
+    // count the words, splitting at any non-alpha character except ' and - and ignoring whitespace
     let mut word_counts = HashMap::new();
-    for (index, word) in additional.split(|c: char| !c.is_alphabetic()).enumerate() {
-        // strip non-alpha
+    let wordchar = |c: char| !c.is_alphabetic() && c != '\'' && c != '-';
+    for (index, word) in additional.split(wordchar).enumerate() {
+        // strip non-alpha as count_1w.txt doesn't have apostrophes or similar
         let word = word
             .chars()
             .filter(|c| c.is_alphabetic())

@@ -91,7 +91,7 @@ pub fn load_whisper_model() -> WhisperContext {
     // ~/.cache/whisper/base.bin it must be in ggml format -- use
     // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
     // if you need to convert a pytorch model to ggml
-    let model_file = "small.bin";
+    let model_file = "medium.en.bin";
     // check for a local model first
     let ctx = if Path::new(model_file).exists() {
         tracing::info!("Loading local model");
@@ -287,6 +287,9 @@ fn whisperize(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
+    // record start time
+    let start = std::time::Instant::now();
+
     //write_raw_floats_to_file(resampled);
 
     // Run the entire model: PCM -> log mel spectrogram -> encoder -> decoder -> text
@@ -319,6 +322,16 @@ fn whisperize(
     }
     app.send(WhisperUpdate::Transcribing(false))
         .expect("Failed to send transcribing update");
+
+    // trace how long it took and how long the input was
+    let duration = start.elapsed().as_secs() as f64;
+    let input_duration = resampled.len() as f64 / 16000.;
+    tracing::info!(
+        "Transcribed {} seconds of audio in {} seconds",
+        input_duration,
+        duration
+    );
+
 }
 
 #[allow(dead_code)]

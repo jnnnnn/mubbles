@@ -12,6 +12,13 @@ use crate::summary;
 
 use egui_plot::{Line, Plot, PlotPoints};
 
+#[derive(Debug, PartialEq)]
+enum AppTab {
+    Transcript,
+    StatisticalSummary,
+    AISummary,
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -51,9 +58,10 @@ pub struct MubblesApp {
     changed: bool,
 
     #[serde(skip)]
-    show_summary: bool,
+    tab: AppTab,
 
-    summary: summary::SummaryState,
+    statistical_summary: summary::SummaryState,
+    ai_summary: summary::SummaryState,
 
     accuracy: usize,
 }
@@ -79,7 +87,8 @@ impl Default for MubblesApp {
 
         Self {
             text: "".to_owned(),
-            summary: summary::SummaryState::default(),
+            statistical_summary: summary::SummaryState::default(),
+            ai_summary: summary::SummaryState::default(),
             recording: false,
             transcribing: false,
             from_whisper: rx,
@@ -95,7 +104,7 @@ impl Default for MubblesApp {
             autotype: false,
             always_on_top: false,
             changed: false,
-            show_summary: false,
+            tab: AppTab::Transcript,
             accuracy: 1,
         }
     }
@@ -260,12 +269,17 @@ impl eframe::App for MubblesApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // tabs for either raw transcript or summary:
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.show_summary, false, "Transcript");
-                ui.selectable_value(&mut self.show_summary, true, "Summary");
+                ui.selectable_value(&mut self.tab, AppTab::Transcript, "Transcript");
+                ui.selectable_value( &mut self.tab, AppTab::StatisticalSummary, "Statistical Summary");
+                ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
             });
 
-            if self.show_summary {
-                summary::summary_ui(&mut self.summary, ui, text);
+            if self.tab == AppTab::StatisticalSummary {
+                summary::statistical_ui(&mut self.statistical_summary, ui, text);
+            }
+
+            if self.tab == AppTab::AISummary {
+                summary::ai_ui(&mut self.ai_summary, ui, text);
             }
 
             let scroll_area = egui::ScrollArea::vertical();
@@ -278,11 +292,13 @@ impl eframe::App for MubblesApp {
             scroll_area.show(ui, |ui| {
                 ui.add_sized(
                     ui.available_size(),
-                    egui::TextEdit::multiline(if self.show_summary {
-                        &mut self.summary.text
-                    } else {
-                        text
-                    }),
+                    egui::TextEdit::multiline(
+                        match self.tab {
+                            AppTab::Transcript => text,
+                            AppTab::StatisticalSummary => &mut self.statistical_summary.text,
+                            AppTab::AISummary => &mut self.ai_summary.text,
+                        },
+                    )
                 );
             });
         });
