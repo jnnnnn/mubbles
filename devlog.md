@@ -698,11 +698,11 @@ Let's keep it simple for the first prototype and sort out the rest later. Everyt
     .\whisper-faster.exe --compute_type int8 --word_timestamps True --model small --model_dir c:\users\j\.cache\whisper "G:\videos\Captures\Zoom Meeting 2023-03-07 14-35-55.mp4"
     RuntimeError: Library cublas64_11.dll is not found or cannot be loaded
 
-argh, I've got cuda 12 installed as the default, but this python shit can't find 11. 
+argh, I've got cuda 12 installed as the default, but this python shit can't find 11.
 
     CUDA_PATH_V11_1=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1
 
-has the dll this thing wants. Maybe I'll add the bin folder to the path. in a cmd shell: 
+has the dll this thing wants. Maybe I'll add the bin folder to the path. in a cmd shell:
 
 ```cmd
 set PATH=%PATH%;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\
@@ -750,3 +750,34 @@ Experimenting with candle whisper. It's fast as. cudnn helps too. plus tracer ma
 
 https://github.com/Lisoveliy/StarCoderEx + StarCoder: LLM specialized to code generation. from https://github.com/huggingface/candle = local copilot?
 
+## 2023-11-05
+
+Looking at duplicated words problems.
+
+https://github.com/m-bain/whisperX looks pretty fun. ctranslate2 backend. claims 90x realtime with large-v2 (!!!). Ah, that's with a Quadro 8000.
+130 TFlops for tensors, 48GB / 672 GB/s memory; 4608 cuda cores and 576 tensor cores. whereas my GTX1080 has 8GB / 320 GB/s,
+
+quadro specs: https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/quadro-rtx-8000-us-nvidia-946977-r1-web.pdf
+
+https://www.microway.com/knowledge-center-articles/comparison-of-nvidia-geforce-gpus-and-nvidia-tesla-gpus/ says that 1080TI gets 0.177 tensor TFlops whereas Quadro 8000 gets 32.6 tensor Tflops. That's 184x faster. The 1080 is so hobbled! Here's a table:
+
+| Category           | GTX1080  | Quadro   | Pixel 7 (Tensor G2 / EdgeTPU) |
+| ------------------ | -------- | -------- | ----------------------------- |
+| FP16 Tensor TFlops | 0.177    | 32.6     | 4.0                           |
+| Memory             | 8GB      | 48GB     | 3GB                           |
+| Memory Bandwidth   | 320 GB/s | 672 GB/s |
+| CUDA Cores         | 2560     | 4608     | -                             |
+| Tensor Cores       | 0        | 576      |
+
+Testing between the python faster-whisper and the candle-examples whisper shows that the python one is ~10x faster for the `medium` model. The candle one also misses a few words at the start or end of each segment. Candle takes 12s to transcribe each 30s segment, whereas faster-whisper is about 0.7s. Faster-whisper's transcription is also much more accurate.
+
+So, work to do on candle:
+
+-   implement Silero Voice Activity Detection as a model in Candle -- see https://github.com/openai/whisper/discussions/29#discussioncomment-3726710. this requires about a week's work. This will allow us to split the audio into segments and transcribe each segment separately, resulting in higher accuracy and more responsiveness.
+-   Tune the various settings. https://github.com/ggerganov/whisper.cpp/pull/291 . Each improvement is probably a few days work, and there are several: beam search, temperature adjustment, failure detection, repetition detection, context clearing (note that faster-whisper doesn't use previous context because of its improved VAD, and the maximum context is ~250 tokens (100 words / 5 lines) anyway, so it's not very useful).
+
+## 2023-11-08
+
+Experimented with faster-whisper this evening. It's great. Even the large model can transcribe short utterances in <1s on my GTX1080. Plus it's basically zero-config -- it downloads models and picks up Cuda automatically.
+
+Haven't figured out loopback yet, so I can only record the microphone for now.
