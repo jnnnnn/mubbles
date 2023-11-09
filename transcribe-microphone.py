@@ -9,14 +9,40 @@ try:
     import numpy as np
     import torch
     import pyaudio
+    import librosa
     from faster_whisper import WhisperModel
 except ImportError:
     print(
         """Import error. Please run the following command:
-            pip install faster-whisper numpy torch pyaudio --upgrade
+            pip install faster-whisper numpy torch pyaudiowpatch pydub --upgrade
         """
     )
     sys.exit(-1)
+
+print("Completed imports")
+
+
+pa = pyaudio.PyAudio()
+
+SAMPLE_RATE = 16000 # this is what Whisper requires
+CHUNK = int(SAMPLE_RATE)  # 1 second chunks, smaller means sentences keep getting split up
+
+
+available_data = []
+
+def callback(input_data, frame_count, time_info, flags):
+    print(f"callback: {frame_count} frames, {len(input_data)} samples, type {type(input_data[0])}, {flags}")
+    available_data.append(input_data)
+    return input_data, pyaudio.paContinue
+
+stream = pa.open(
+    format=pyaudio.paFloat32,
+    channels=1,
+    rate=16000,
+    input=True,
+    stream_callback=callback,
+    frames_per_buffer=CHUNK,
+)
 
 torch.set_num_threads(1)
 
@@ -26,15 +52,9 @@ print("Loading VAD model...")
     _,
 ) = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad")
 print("Loading whisper model 'large'...")
-transcribe_model = WhisperModel("large-v2", compute_type="int8")
+#transcribe_model = WhisperModel("large-v2", compute_type="int8")
+transcribe_model = WhisperModel("tiny", compute_type="int8")
 print("Loaded whisper model")
-
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SAMPLE_RATE = 16000
-CHUNK = int(SAMPLE_RATE / 2)  # 1/2 second chunks
-
-audio = pyaudio.PyAudio()
 
 
 def validate(model, inputs: torch.Tensor):
@@ -42,35 +62,8 @@ def validate(model, inputs: torch.Tensor):
         outs = model(inputs)
     return outs
 
-
-def int2float(sound):
-    abs_max = np.abs(sound).max()
-    sound = sound.astype("float32")
-    if abs_max > 0:
-        sound *= 1 / 32768
-    sound = sound.squeeze()
-    return sound
-
-
-available_data = []
 voice_data = np.zeros((0), dtype=np.float32)
 
-
-def callback(input_data, frame_count, time_info, flags):
-    available_data.append(input_data)
-    return input_data, pyaudio.paContinue
-
-
-pa = pyaudio.PyAudio()
-
-stream = pa.open(
-    format=FORMAT,
-    channels=CHANNELS,
-    rate=SAMPLE_RATE,
-    input=True,
-    stream_callback=callback,
-    frames_per_buffer=CHUNK,
-)
 # transcribe repeatedly, overwriting until silence is detected
 PARTIALS = False
 
@@ -86,8 +79,7 @@ while stream.is_active():
     available_data = []
     read_data = False
     for chunk in data:
-        audio_int16 = np.frombuffer(chunk, np.int16)
-        audio_float32 = int2float(audio_int16)
+        audio_float32 = np.frombuffer(chunk, np.float32)
         confidence = vad_model(torch.from_numpy(audio_float32), 16000).item()
         # when confidence starts to be above the threshold,
         # we want to keep the chunk before (incase there was part of a word in it),
