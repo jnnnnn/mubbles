@@ -11,6 +11,8 @@ use serde_json::json;
 pub struct SummaryState {
     offset: usize, // everything before this character has already been summarized
     pub text: String,
+    pub user_prompt: String,
+    pub system_prompt: String,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
@@ -29,6 +31,8 @@ impl Default for SummaryState {
         Self {
             offset: 0,
             text: String::new(),
+            user_prompt: String::new(),
+            system_prompt: String::new(),
             output_words: 5,
             input_lines: 7,
             tx,

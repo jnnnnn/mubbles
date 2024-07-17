@@ -17,6 +17,8 @@ enum AppTab {
     Transcript,
     StatisticalSummary,
     AISummary,
+    AIUserPrompt,
+    AISystemPrompt,
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -133,7 +135,7 @@ impl eframe::App for MubblesApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let Self {
             text,
             recording,
@@ -158,12 +160,6 @@ impl eframe::App for MubblesApp {
                     text.push_str(t.trim());
                     text.push_str("\n");
                     *changed = true;
-
-                    // if autotype enabled and this window is in the background, send the text
-                    let _focused = !frame.info().window_info.minimized;
-                    if *autotype {
-                        winput::send_str(&t);
-                    }
                 }
                 Ok(WhisperUpdate::Recording(r)) => *recording = r,
                 Ok(WhisperUpdate::Transcribing(t)) => *transcribing = t,
@@ -243,7 +239,7 @@ impl eframe::App for MubblesApp {
                     );
                     // remove this for now because it's annoying
                     if ui.checkbox(always_on_top, "Always on top").changed() {
-                        frame.set_always_on_top(*always_on_top);
+                        // not sure how to do this
                     }
                     if ui.button("Clear").clicked() {
                         text.clear();
@@ -297,6 +293,8 @@ impl eframe::App for MubblesApp {
                             AppTab::Transcript => text,
                             AppTab::StatisticalSummary => &mut self.statistical_summary.text,
                             AppTab::AISummary => &mut self.ai_summary.text,
+                            AppTab::AIUserPrompt => &mut self.ai_summary.user_prompt,
+                            AppTab::AISystemPrompt => &mut self.ai_summary.system_prompt,
                         },
                     )
                 );

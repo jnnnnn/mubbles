@@ -7,12 +7,17 @@
 fn main() -> eframe::Result<()> {
     let _trace_state = set_up_tracing();
 
-    let mut native_options = eframe::NativeOptions::default();
-    native_options.icon_data = Some(load_icon());
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([320.0, 240.0])
+            .with_drag_and_drop(true)
+            .with_icon(load_icon()),
+        ..Default::default()
+        };
     eframe::run_native(
         "mubbles",
         native_options,
-        Box::new(|cc| Box::new(mubbles::MubblesApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(mubbles::MubblesApp::new(cc)))),
     )
 }
 
@@ -38,7 +43,7 @@ fn main() {
     });
 }
 
-pub(crate) fn load_icon() -> eframe::IconData {
+pub(crate) fn load_icon() -> egui::IconData {
     let (icon_rgba, icon_width, icon_height) = {
         let icon = include_bytes!("../assets/icon-256.png");
         let image = image::load_from_memory(icon)
@@ -49,7 +54,7 @@ pub(crate) fn load_icon() -> eframe::IconData {
         (rgba, width, height)
     };
 
-    eframe::IconData {
+    egui::IconData {
         rgba: icon_rgba,
         width: icon_width,
         height: icon_height,

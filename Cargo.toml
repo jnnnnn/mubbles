@@ -5,10 +5,12 @@ authors = ["Jonathan Newnham"]
 edition = "2021"
 rust-version = "1.65"
 
-
+# update all dependencies to latest by running:
+# cargo update -p egui -p eframe -p whisper-rs -p cpal -p rubato -p dirs -p image -p winput -p wasapi -p rolling-file -p tracing -p tracing-appender -p chrono -p egui_plot -p open -p reqwest -p serde_json -p anyhow
+# -p means 
 [dependencies]
-egui = "0.23.0"
-eframe = { version = "0.23.0", default-features = false, features = [
+egui = "0.28.1"
+eframe = { version = "0.28.1", default-features = false, features = [
     "accesskit",     # Make egui comptaible with screen readers. NOTE: adds a lot of dependencies.
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
@@ -18,19 +20,19 @@ eframe = { version = "0.23.0", default-features = false, features = [
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
 cpal = "0.15.2"
-rubato = "0.14.1"
-whisper-rs = { version = "0.8.0", features = ["cuda"] }
+rubato = "0.15.0"
+whisper-rs = { version = "0.11.1", features = ["cuda"] }
 dirs = "5.0.1"
-image = { version = "0.24.6", default_features = false, features = ["png"] }
+image = { version = "0.25.1", default-features = false, features = ["png"] }
 winput = "0.2.5"
-wasapi = "0.13.0"
+wasapi = "0.15.0"
 rolling-file = "0.2.0"
 tracing = "0.1.37"
 tracing-appender = "0.2.2"
 chrono = "0.4.26"
-egui_plot = "0.23.0"
+egui_plot = "0.28.1"
 open = "5.0.0"
-reqwest = { version = "0.11.22", features = ["json", "blocking"] }
+reqwest = { version = "0.12.5", features = ["json", "blocking"] }
 serde_json = "1.0.107"
 anyhow = "1.0.75"
 

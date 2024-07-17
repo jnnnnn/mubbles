@@ -10,7 +10,7 @@ use cpal::{
 };
 use rubato::Resampler;
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState, WhisperContextParameters};
 
 pub enum WhisperUpdate {
     Recording(bool),
@@ -93,9 +93,10 @@ pub fn load_whisper_model() -> WhisperContext {
     // if you need to convert a pytorch model to ggml
     let model_file = "medium.en.bin";
     // check for a local model first
+    let params = WhisperContextParameters::new();
     let ctx = if Path::new(model_file).exists() {
         tracing::info!("Loading local model");
-        WhisperContext::new(model_file).expect("failed to load model from local folder")
+        WhisperContext::new_with_params(model_file, params).expect("failed to load model from local folder")
     } else {
         let model = dirs::home_dir()
             .expect("No home")
@@ -105,7 +106,7 @@ pub fn load_whisper_model() -> WhisperContext {
             .into_os_string()
             .into_string()
             .expect("No path conversion?");
-        WhisperContext::new(model.as_str())
+        WhisperContext::new_with_params(model.as_str(), params)
             .expect("failed to load model from local directory and ~/.cache/whisper/")
     };
     ctx
