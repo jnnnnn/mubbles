@@ -127,7 +127,6 @@ impl MubblesApp {
 
         Default::default()
     }
-
 }
 
 impl eframe::App for MubblesApp {
@@ -266,16 +265,25 @@ impl eframe::App for MubblesApp {
             // tabs for either raw transcript or summary:
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, AppTab::Transcript, "Transcript");
-                ui.selectable_value( &mut self.tab, AppTab::StatisticalSummary, "Statistical Summary");
+                ui.selectable_value(
+                    &mut self.tab,
+                    AppTab::StatisticalSummary,
+                    "Statistical Summary",
+                );
                 ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
+                ui.selectable_value(&mut self.tab, AppTab::AIUserPrompt, "AI User Prompt");
+                ui.selectable_value(&mut self.tab, AppTab::AISystemPrompt, "AI System Prompt");
             });
 
-            if self.tab == AppTab::StatisticalSummary {
-                summary::statistical_ui(&mut self.statistical_summary, ui, text);
-            }
-
-            if self.tab == AppTab::AISummary {
-                summary::ai_ui(&mut self.ai_summary, ui, text);
+            // add extra UI depending on which tab we're on
+            match self.tab {
+                AppTab::StatisticalSummary => {
+                    summary::statistical_ui(&mut self.statistical_summary, ui, text)
+                }
+                AppTab::AISummary => summary::ai_ui(&mut self.ai_summary, ui, text),
+                AppTab::AISystemPrompt => {},
+                AppTab::AIUserPrompt => {},
+                AppTab::Transcript => {}
             }
 
             let scroll_area = egui::ScrollArea::vertical();
@@ -288,15 +296,13 @@ impl eframe::App for MubblesApp {
             scroll_area.show(ui, |ui| {
                 ui.add_sized(
                     ui.available_size(),
-                    egui::TextEdit::multiline(
-                        match self.tab {
-                            AppTab::Transcript => text,
-                            AppTab::StatisticalSummary => &mut self.statistical_summary.text,
-                            AppTab::AISummary => &mut self.ai_summary.text,
-                            AppTab::AIUserPrompt => &mut self.ai_summary.user_prompt,
-                            AppTab::AISystemPrompt => &mut self.ai_summary.system_prompt,
-                        },
-                    )
+                    egui::TextEdit::multiline(match self.tab {
+                        AppTab::Transcript => text,
+                        AppTab::StatisticalSummary => &mut self.statistical_summary.text,
+                        AppTab::AISummary => &mut self.ai_summary.text,
+                        AppTab::AIUserPrompt => &mut self.ai_summary.user_prompt,
+                        AppTab::AISystemPrompt => &mut self.ai_summary.system_prompt,
+                    }),
                 );
             });
         });

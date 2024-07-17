@@ -25,14 +25,24 @@ pub enum SummaryUpdate {
     Additional(String),
 }
 
+const DEFAULT_USER_PROMPT: &str = r#"
+    Summary so far: 
+    %SOFAR%
+
+    Additional raw meeting transcript:
+    %ADDITIONAL%
+
+    "#;
+const DEFAULT_SYSTEM_PROMPT: &str = r#"Act as a meeting secretary and write minutes for the additional transcript, following on from the summary so far."#;
+
 impl Default for SummaryState {
     fn default() -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<SummaryUpdate>();
         Self {
             offset: 0,
             text: String::new(),
-            user_prompt: String::new(),
-            system_prompt: String::new(),
+            user_prompt: DEFAULT_USER_PROMPT.to_string(),
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             output_words: 5,
             input_lines: 7,
             tx,
@@ -117,37 +127,22 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
     );
     summary.offset += additional.len();
 
-    let user_prompt = format!(
-        "
-    Summary so far: 
-    {}
+    let sofar = summary
+        .text
+        .lines()
+        .rev()
+        .take(10)
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    Additional raw meeting transcript:
-    {}
-
-    ",
-        // take the last 10 lines of the summary so far, will be about 500 chars or ~100 tokens
-        summary
-            .text
-            .lines()
-            .rev()
-            .take(10)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        additional
-    );
-    let system_prompt = r#"Act as a meeting secretary and write minutes for the additional transcript, following on from the summary so far.
-    Each additional bullet point should start with one of 
-        question: (for finding out more), 
-        fact: (for recording specific details), or 
-        action: (for assigning a task).
-    Do not include anything except bullet points.
-    Be very concise, and do not include any unnecessary words like "they mention" or "discuss"
-    Record only the most important specific details.
-    Thank you!"#.to_string();
+    let user_prompt = summary
+        .user_prompt
+        .replace("%SOFAR%", sofar.as_str())
+        .replace("%ADDITIONAL%", additional.as_str());
 
     let sender = summary.tx.clone();
 
+    let system_prompt = summary.system_prompt.to_owned();
     thread::spawn(move || {
         openai_request(user_prompt, system_prompt, sender);
     });
@@ -232,13 +227,17 @@ fn statistical_summary(
     let mut word_counts = HashMap::new();
     let wordchar = |c: char| !c.is_alphabetic() && c != '\'' && c != '-';
     for (index, word) in additional.split(wordchar).enumerate() {
+        if word.trim().len() <= 3 || word.contains('\'') {
+            continue;
+        }
         // strip non-alpha as count_1w.txt doesn't have apostrophes or similar
         let word = word
             .chars()
             .filter(|c| c.is_alphabetic())
             .collect::<String>()
             .to_lowercase();
-        if word.trim().len() <= 3 || ignored.contains(word.as_str()) {
+        // if <3 or ignored or contains ' then skip
+        if ignored.contains(word.as_str()) {
             continue;
         }
         let count = word_counts.entry(word).or_insert(WordInSummary {
@@ -348,14 +347,14 @@ mod tests {
         what are some of the risks that are coming through
         so that we need to be aware of as a concern. asdifnkoasnidf";
         statistical_summary(&mut state, raw, 10, 5);
-        assert_eq!(state.text, "\n- gaia everybody spoke whenever catch");
+        assert_eq!(state.text, "\n- everybody catch whenever spoke gaia");
         assert_eq!(state.offset, 502);
         statistical_summary(&mut state, raw, 10, 5);
         // make sure the last line is right
         let last_line = state.text.lines().last().unwrap();
         assert_eq!(
             last_line,
-            "- asdifnkoasnidf progressing risks concern aware"
+            "- progressing risks aware concern asdifnkoasnidf"
         );
         // make sure we end up at the end of the text
         assert_eq!(state.offset, 668);
