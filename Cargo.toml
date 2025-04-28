@@ -1,27 +1,31 @@
 [package]
 name = "mubbles"
-version = "1.4.0"
+version = "2.0.0"
 authors = ["Jonathan Newnham"]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.81"
 
-# update all dependencies to latest by running:
-# cargo update -p egui -p eframe -p whisper-rs -p cpal -p rubato -p dirs -p image -p winput -p wasapi -p rolling-file -p tracing -p tracing-appender -p chrono -p egui_plot -p open -p reqwest -p serde_json -p anyhow
-# -p means 
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
 [dependencies]
-egui = "0.28.1"
-eframe = { version = "0.28.1", default-features = false, features = [
-    "accesskit",     # Make egui comptaible with screen readers. NOTE: adds a lot of dependencies.
+egui = "0.31.1"
+eframe = { version = "0.31.1", default-features = false, features = [
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
     "persistence",   # Enable restoring app state when restarting the app.
+    "wayland",       # To support Linux (and CI)
+    "x11",           # To support older Linux distributions (restores one of the default features)
 ] }
+log = "0.4.27"
 
 # You only need serde if you want app persistence:
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.107"
+
 cpal = "0.15.2"
 rubato = "0.15.0"
-whisper-rs = { version = "0.11.1", features = ["cuda"] }
 dirs = "5.0.1"
 image = { version = "0.25.1", default-features = false, features = ["png"] }
 winput = "0.2.5"
@@ -33,19 +37,16 @@ chrono = "0.4.26"
 egui_plot = "0.28.1"
 open = "5.0.0"
 reqwest = { version = "0.12.5", features = ["json", "blocking"] }
-serde_json = "1.0.107"
 anyhow = "1.0.75"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber = { version = "0.3", features = ["json"]}
+env_logger = "0.11.8"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1.6"
-tracing-wasm = "0.2"
-wasm-bindgen-futures = "0.4"
-
+wasm-bindgen-futures = "0.4.50"
+web-sys = "0.3.70"              # to access the DOM (to hide the loading text)
 
 [profile.release]
 opt-level = 2 # fast and small wasm
@@ -53,17 +54,3 @@ opt-level = 2 # fast and small wasm
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 2
-
-
-[patch.crates-io]
-
-# If you want to use the bleeding edge version of egui and eframe:
-# egui = { git = "https://github.com/emilk/egui", branch = "master" }
-# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-
-# If you fork https://github.com/emilk/egui you can test with:
-# egui = { path = "../egui/crates/egui" }
-# eframe = { path = "../egui/crates/eframe" }
-
-
-# whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", branch = "master" }
