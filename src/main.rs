@@ -2,16 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 
-// When compiling natively:
-#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     let _trace_state = set_up_tracing();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([320.0, 240.0])
+            .with_min_inner_size([300.0, 220.0])
             .with_drag_and_drop(true)
-            .with_icon(load_icon()),
+            .with_icon(
+                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
+                    .expect("Failed to load icon"),
+            ),
         ..Default::default()
         };
     eframe::run_native(
@@ -21,45 +23,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-// when compiling to web using trunk.
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    // Make sure panics are logged using `console.error`.
-    console_error_panic_hook::set_once();
-
-    // Redirect tracing to console.log and friends:
-    tracing_wasm::set_as_global_default();
-
-    let web_options = eframe::WebOptions::default();
-
-    wasm_bindgen_futures::spawn_local(async {
-        eframe::start_web(
-            "the_canvas_id", // hardcode it
-            web_options,
-            Box::new(|cc| Box::new(mubbles::MubblesApp::new(cc))),
-        )
-        .await
-        .expect("failed to start eframe");
-    });
-}
-
-pub(crate) fn load_icon() -> egui::IconData {
-    let (icon_rgba, icon_width, icon_height) = {
-        let icon = include_bytes!("../assets/icon-256.png");
-        let image = image::load_from_memory(icon)
-            .expect("Failed to open icon path")
-            .into_rgba8();
-        let (width, height) = image.dimensions();
-        let rgba = image.into_raw();
-        (rgba, width, height)
-    };
-
-    egui::IconData {
-        rgba: icon_rgba,
-        width: icon_width,
-        height: icon_height,
-    }
-}
 
 use tracing_subscriber::prelude::*;
 
