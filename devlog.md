@@ -781,3 +781,19 @@ So, work to do on candle:
 Experimented with faster-whisper this evening. It's great. Even the large model can transcribe short utterances in <1s on my GTX1080. Plus it's basically zero-config -- it downloads models and picks up Cuda automatically.
 
 Haven't figured out loopback yet, so I can only record the microphone for now.
+
+## 2025-04-28
+
+picking up candle again ? Maybe it's better now. From memory I was having compilation errors last time. 
+
+I've been using python faster-whisper for a year or two and it's been good. But I want a better UI.
+
+https://crates.io/crates/earshot (filters out silence) or silero-vad-rs (filters out non-speech, but requires gpu memory)
+
+model cached at 
+
+```
+C:\Users\J\.cache\huggingface\hub\models--distil-whisper--distil-large-v3.5\blobs\76ec9f754fc4b4810845dc36b71d1897c1342e702810c179e1569690084cfb0c.part
+```
+
+

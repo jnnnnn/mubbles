@@ -11,7 +11,6 @@ use cpal::{
 use rubato::Resampler;
 
 
-// use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState, WhisperContextParameters};
 
 
 #[cfg(feature = "accelerate")]
@@ -415,6 +414,8 @@ enum WhichModel {
     DistilMediumEn,
     #[value(name = "distil-large-v2")]
     DistilLargeV2,
+    #[value(name = "distil-large-v3")]
+    DistilLargeV3,
 }
 
 impl WhichModel {
@@ -428,7 +429,8 @@ impl WhichModel {
             | Self::LargeV2
             | Self::LargeV3
             | Self::LargeV3Turbo
-            | Self::DistilLargeV2 => true,
+            | Self::DistilLargeV2
+            | Self::DistilLargeV3 => true,
             Self::TinyEn | Self::BaseEn | Self::SmallEn | Self::MediumEn | Self::DistilMediumEn => {
                 false
             }
@@ -451,6 +453,7 @@ impl WhichModel {
             Self::LargeV3Turbo => ("openai/whisper-large-v3-turbo", "main"),
             Self::DistilMediumEn => ("distil-whisper/distil-medium.en", "main"),
             Self::DistilLargeV2 => ("distil-whisper/distil-large-v2", "main"),
+            Self::DistilLargeV3 => ("distil-whisper/distil-large-v3", "main"),
         }
     }
 }
@@ -703,10 +706,6 @@ pub fn main() -> Result<()> {
 }
 
 
-
-
-
-
 pub enum WhisperUpdate {
     Recording(bool),
     Transcribing(bool),
@@ -714,16 +713,23 @@ pub enum WhisperUpdate {
     Level(f32),
 }
 
+
 pub struct StreamState {
     // the app holds this handle to keep the stream open (and the whisper context / thread alive)
     #[allow(dead_code)]
     stream: cpal::Stream,
 }
 
+
 pub struct AppDevice {
     pub name: String,
     device: Device,
     config: cpal::SupportedStreamConfig,
+}
+
+
+pub struct WhisperParams {
+    pub accuracy: usize, // 1 for greedy, more for beam search
 }
 
 pub fn get_devices() -> Vec<AppDevice> {
@@ -777,11 +783,19 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
-pub struct WhisperParams {
-    pub accuracy: usize, // 1 for greedy, more for beam search
+
+
+struct WhisperContext {
+    decoder: Decoder,
 }
 
+
+
+// use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState, WhisperContextParameters};
+
 pub fn load_whisper_model() -> WhisperContext {
+    let device = Device::new_cuda(0)
+
     // load the model from either the local directory or from
     // ~/.cache/whisper/base.bin it must be in ggml format -- use
     // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
