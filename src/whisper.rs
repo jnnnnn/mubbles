@@ -10,9 +10,6 @@ use cpal::{
 };
 use rubato::Resampler;
 
-
-
-
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
@@ -32,11 +29,6 @@ mod multilingual;
 use candle_transformers::models::whisper::{self as m, audio, Config};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-
-
-
-
-
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -705,7 +697,6 @@ pub fn main() -> Result<()> {
     Ok(())
 }
 
-
 pub enum WhisperUpdate {
     Recording(bool),
     Transcribing(bool),
@@ -713,20 +704,17 @@ pub enum WhisperUpdate {
     Level(f32),
 }
 
-
 pub struct StreamState {
     // the app holds this handle to keep the stream open (and the whisper context / thread alive)
     #[allow(dead_code)]
     stream: cpal::Stream,
 }
 
-
 pub struct AppDevice {
     pub name: String,
     device: Device,
     config: cpal::SupportedStreamConfig,
 }
-
 
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
@@ -783,44 +771,80 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
-
-
 struct WhisperContext {
     decoder: Decoder,
+    mel_filters: Vec<f32>,
 }
 
+pub fn load_whisper_model(model: WhichModel) -> WhisperContext {
+    let device = Device::new_cuda(0);
+    let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
+    let (model_id, revision) = model.model_and_revision();
+    let (config_filename, tokenizer_filename, weights_filename) = {
+        let api = Api::new()?;
+        let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
+        let (config, tokenizer, model) = if args.quantized {
+            let ext = match args.model {
+                WhichModel::TinyEn => "tiny-en",
+                WhichModel::Tiny => "tiny",
+                _ => unimplemented!("no quantized support for {:?}", args.model),
+            };
+            (
+                repo.get(&format!("config-{ext}.json"))?,
+                repo.get(&format!("tokenizer-{ext}.json"))?,
+                repo.get(&format!("model-{ext}-q80.gguf"))?,
+            )
+        } else {
+            let config = repo.get("config.json")?;
+            let tokenizer = repo.get("tokenizer.json")?;
+            let model = repo.get("model.safetensors")?;
+            (config, tokenizer, model)
+        };
+        (config, tokenizer, model)
+    };
+    let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
+    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+    let model = if args.quantized {
+        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
+            &weights_filename,
+            &device,
+        )?;
+        Model::Quantized(m::quantized_model::Whisper::load(&vb, config.clone())?)
+    } else {
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
+        Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
+    };
+    let mut decoder = Decoder::new(
+        model,
+        tokenizer.clone(),
+        args.seed,
+        &device,
+        /* language_token */ None,
+        args.task,
+        args.timestamps,
+        args.verbose,
+    )?;
 
+    let mel_bytes = match config.num_mel_bins {
+        80 => include_bytes!("melfilters.bytes").as_slice(),
+        128 => include_bytes!("melfilters128.bytes").as_slice(),
+        nmel => panic("unexpected num_mel_bins {nmel}"),
+    };
+
+
+    WhisperContext { decoder }
+}
+
+// OLD CODE BELOW HERE
+////////////////////////
+///
+///
+///
+///
+///
 
 // use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState, WhisperContextParameters};
-
-pub fn load_whisper_model() -> WhisperContext {
-    let device = Device::new_cuda(0)
-
-    // load the model from either the local directory or from
-    // ~/.cache/whisper/base.bin it must be in ggml format -- use
-    // https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/models/convert-pt-to-ggml.py
-    // if you need to convert a pytorch model to ggml
-    let model_file = "medium.en.bin";
-    // check for a local model first
-    let params = WhisperContextParameters::new();
-    let ctx = if Path::new(model_file).exists() {
-        tracing::info!("Loading local model");
-        WhisperContext::new_with_params(model_file, params).expect("failed to load model from local folder")
-    } else {
-        let model = dirs::home_dir()
-            .expect("No home")
-            .join(".cache")
-            .join("whisper")
-            .join(model_file) // tiny is faster (we're running on CPU) and quality is still pretty good
-            .into_os_string()
-            .into_string()
-            .expect("No path conversion?");
-        WhisperContext::new_with_params(model.as_str(), params)
-            .expect("failed to load model from local directory and ~/.cache/whisper/")
-    };
-    ctx
-}
-
 
 // once the return value is dropped, listening stops
 // and the sender is closed
@@ -837,8 +861,18 @@ pub fn start_listening(
     let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
 
     let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
+    
+    let audio_config = &app_device.config;
+    let channel_count = audio_config.channels() as usize;
     let data_callback =
-        move |data: &[f32], _: &_| audio_tx.send(data.to_vec()).expect("Failed to send data");
+        move |data: &[f32], _: &_| {
+            let singlechannel = data
+                .iter()
+                .step_by(channel_count)
+                .copied()
+                .collect::<Vec<f32>>();
+            audio_tx.send(singlechannel).expect("Failed to send data");
+        } 
     let stream = app_device
         .device
         .build_input_stream(
@@ -871,8 +905,7 @@ fn whisper_loop(
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
 ) {
-    let ctx = load_whisper_model();
-    let mut state = ctx.create_state().expect("failed to create state");
+    let ctx: WhisperContext = load_whisper_model();
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
         let mut aggregated_data = match filtered_rx.recv() {
@@ -884,17 +917,42 @@ fn whisper_loop(
         };
         // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
         // worth aggregating several chunks of audio before sending it to whisper (if they are available)
+        // todo: 48000 is hardcoded here, see how candle whisper example handles it
         while aggregated_data.len() < 48000 * 30 {
             match filtered_rx.try_recv() {
                 Ok(data) => aggregated_data.extend(data),
                 Err(_) => break,
             }
         }
-        whisperize(&mut state, &aggregated_data, &app, &params);
+        whisperize(&mut ctx, &aggregated_data, &app, &params);
     }
 }
 
-// convert an audio stream into a stream of text chunks using Whisper
+// returns empty result on any failure
+fn resample(
+    device_config: SupportedStreamConfig,
+    input: &[f32],
+) -> Vec<f32>{
+    let sample_rate = device_config.sample_rate().0 as usize;
+    let resample_ratio = 16000. / sample_rate as f64;
+    let mut resampler = rubato::FastFixedIn::new(
+        resample_ratio,
+        10.,
+        rubato::PolynomialDegree::Septic,
+        1024,
+        1,
+    ).map_err(|_| {
+        tracing::error!("Failed to create resampler");
+        vec![]
+    })?;
+    return resampler.process(&[&input], None).map_err(|_| {
+        tracing::error!("Failed to process resampling");
+        vec![]
+    })?[0].to_vec();
+
+}
+
+// a thread that collects non-silent audio samples and sends them on
 fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<Vec<f32>>,
@@ -919,15 +977,6 @@ fn filter_audio_loop(
                 return;
             }
         };
-
-        // Convert audio to 16KHz mono f32 samples, as required by the model.
-        // These utilities are provided for convenience, but can be replaced with custom conversion logic.
-        // SIMD variants of these functions are also available on nightly Rust (see the docs).
-        if device_config.channels() == 2 {
-            data = whisper_rs::convert_stereo_to_mono_audio(&data).expect("monoize");
-        } else if device_config.channels() != 1 {
-            panic!(">2 channels unsupported");
-        }
 
         let mut max = 0.0;
         for sample in data.iter() {
@@ -1025,7 +1074,7 @@ fn whisperize(
         {
             continue;
         }
-        
+
         tracing::info!("scribe: {}", segment.trim());
         app.send(WhisperUpdate::Transcript(segment.clone()))
             .expect("Failed to send transcript update");
@@ -1041,7 +1090,6 @@ fn whisperize(
         input_duration,
         duration
     );
-
 }
 
 #[allow(dead_code)]
