@@ -717,6 +717,11 @@ fn whisperize(
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
 
+    // boost the levels to at least 50% of the max
+    let max = resampled.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+    let boost = 0.5f32 / max;
+    let resampled: Vec<f32> = resampled.iter().map(|x| x * boost).collect();
+
     let mel_start = std::time::Instant::now();
     let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
     let mel_duration = mel_start.elapsed().as_secs_f32();
@@ -734,7 +739,7 @@ fn whisperize(
         const NO_SPEECH_THRESHOLD: f64 = 0.05;
         const LOGPROB_THRESHOLD: f64 = -0.1;
         if segment.dr.no_speech_prob > NO_SPEECH_THRESHOLD
-            || segment.dr.avg_logprob < LOGPROB_THRESHOLD
+            && segment.dr.avg_logprob < LOGPROB_THRESHOLD
         {
             tracing::info!("No speech detected, skipping");
             continue;

@@ -188,3 +188,14 @@ Updating the mel efficiently is a different problem. Adding some more audio to t
 
 Before I implement that, I should time the mel generation to see if it's worth it. Let's do that first.
 
+### Mel caching
+
+Yes, it is extremely worth caching the mel. Generating it for 15 seconds of audio took 0.36s, and the actual transcription by TinyEn from the mel took 0.76 seconds. 
+
+With DistilLargeV3, mel for 30s of audio takes 0.3s, and transcription ~ 3s on my GTX1080.
+
+Interesting that the mel generation is pretty consistent no matter how long the input is.
+
+Maybe I need to optimize that function first. It's not very long. Asked chatgpt about it. It had a lot of suggestions.
+
+The big one was to use https://www.fftw.org/ or https://github.com/ejmahler/RustFFT . I like the sound of rustfft.

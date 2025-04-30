@@ -160,7 +160,6 @@ impl eframe::App for MubblesApp {
             autotype,
             partials,
             accuracy,
-            always_on_top,
             changed,
             ..
         } = self;
