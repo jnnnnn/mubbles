@@ -725,7 +725,10 @@ fn whisperize(
     let resampled: Vec<f32> = resampled.iter().map(|x| x * boost).collect();
 
     let mel_start = std::time::Instant::now();
-    let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
+    //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
+    
+    let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
+
     let mel_duration = mel_start.elapsed().as_secs_f32();
     tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);
 

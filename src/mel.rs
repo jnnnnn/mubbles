@@ -82,6 +82,12 @@ const PADDING: usize = N_SAMPLES; // Number of zero samples to pad to the right
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
+fn hann_window(size: usize) -> Vec<f32> {
+    (0..size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (size as f32 - 1.0)).cos()))
+        .collect()
+}
+
 pub fn log_mel_spectrogram(
     audio: &[f32],
     num_mel_bins: usize,
@@ -89,10 +95,12 @@ pub fn log_mel_spectrogram(
     let mut padded_audio = Vec::with_capacity(PADDING);
     padded_audio.extend_from_slice(audio);
     padded_audio.resize(PADDING, 0.0);
-    
+
+    let hann = hann_window(N_FFT);
+
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft(N_FFT, rustfft::FftDirection::Forward);
-    let mut buffer: Vec<Complex<f32>> = padded_audio.iter().map(|&x| Complex::new(x, 0.0)).collect();
+    let mut buffer: Vec<Complex<f32>> = padded_audio.iter().enumerate().map(|(i, &x)| Complex::new(x * hann[i % N_FFT], 0.0)).collect();
     buffer.resize(N_FFT, Complex::new(0.0, 0.0));
     fft.process(&mut buffer);
 
