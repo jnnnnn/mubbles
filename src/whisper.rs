@@ -725,10 +725,16 @@ fn whisperize(
     let segments = state.decoder.run(&mel, None)?;
 
     for segment in segments.iter() {
-        let start = segment.start;
-        let end = segment.start + segment.duration;
         let text = segment.dr.text.clone();
-        tracing::info!("Transcribed segment: {:.1}s - {:.1}s: {}", start, end, text);
+        tracing::info!("Transcribed segment: {:?}", segment);
+        const NO_SPEECH_THRESHOLD: f64 = 0.05;
+        const LOGPROB_THRESHOLD: f64 = -0.1;
+        if segment.dr.no_speech_prob > NO_SPEECH_THRESHOLD
+            && segment.dr.avg_logprob < LOGPROB_THRESHOLD
+        {
+            tracing::info!("No speech detected, skipping");
+            continue;
+        }
         app.send(WhisperUpdate::Transcript(text))?;
     }
 
