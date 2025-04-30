@@ -6,5 +6,6 @@ mod app;
 pub use app::MubblesApp;
 
 mod whisper;
+mod multilingual;
 
 mod summary;

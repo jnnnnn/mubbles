@@ -260,12 +260,11 @@ impl Decoder {
         unreachable!()
     }
 
-    fn run(&mut self, mel: &Tensor, times: Option<(f64, f64)>) -> Result<Vec<Segment>> {
+    fn run(&mut self, mel: &Tensor, _times: Option<(f64, f64)>) -> Result<Vec<Segment>> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
         let mut segments = vec![];
         while seek < content_frames {
-            let start = std::time::Instant::now();
             let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
             let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
             let mel_segment = mel.narrow(2, seek, segment_size)?;
@@ -281,62 +280,6 @@ impl Decoder {
                 duration: segment_duration,
                 dr,
             };
-            if self.timestamps {
-                println!(
-                    "{:.1}s -- {:.1}s",
-                    segment.start,
-                    segment.start + segment.duration,
-                );
-                let mut tokens_to_decode = vec![];
-                let mut prev_timestamp_s = 0f32;
-                for &token in segment.dr.tokens.iter() {
-                    if token == self.sot_token || token == self.eot_token {
-                        continue;
-                    }
-                    // The no_timestamp_token is the last before the timestamp ones.
-                    if token > self.no_timestamps_token {
-                        let timestamp_s = (token - self.no_timestamps_token + 1) as f32 / 50.;
-                        if !tokens_to_decode.is_empty() {
-                            let text = self
-                                .tokenizer
-                                .decode(&tokens_to_decode, true)
-                                .map_err(E::msg)?;
-                            println!("  {:.1}s-{:.1}s: {}", prev_timestamp_s, timestamp_s, text);
-                            tokens_to_decode.clear()
-                        }
-                        prev_timestamp_s = timestamp_s;
-                    } else {
-                        tokens_to_decode.push(token)
-                    }
-                }
-                if !tokens_to_decode.is_empty() {
-                    let text = self
-                        .tokenizer
-                        .decode(&tokens_to_decode, true)
-                        .map_err(E::msg)?;
-                    if !text.is_empty() {
-                        println!("  {:.1}s-...: {}", prev_timestamp_s, text);
-                    }
-                    tokens_to_decode.clear()
-                }
-            } else {
-                match times {
-                    Some((start, end)) => {
-                        println!("{:.1}s -- {:.1}s: {}", start, end, segment.dr.text)
-                    }
-                    None => {
-                        println!(
-                            "{:.1}s -- {:.1}s: {}",
-                            segment.start,
-                            segment.start + segment.duration,
-                            segment.dr.text,
-                        )
-                    }
-                }
-            }
-            if self.verbose {
-                println!("{seek}: {segment:?}, in {:?}", start.elapsed());
-            }
             segments.push(segment)
         }
         Ok(segments)
@@ -373,7 +316,7 @@ enum Task {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WhichModel {
+pub enum WhichModel {
     Tiny,
     TinyEn,
     Base,
@@ -429,6 +372,43 @@ impl WhichModel {
             Self::DistilLargeV3 => ("distil-whisper/distil-large-v3", "main"),
         }
     }
+
+    pub fn len() -> usize {
+        Self::iter().count()
+    }
+
+    pub fn from(index: usize) -> Self {
+        Self::iter().nth(index).expect("Invalid index")
+    }
+
+    pub fn index(&self) -> usize {
+        Self::iter().position(|x| x == *self).expect("Invalid model")
+    }
+
+    pub fn to_string(&self) -> String {
+        return format!("{:?}", self);
+    }
+
+    pub fn iter() -> impl Iterator<Item = Self> {
+        [
+            Self::Tiny,
+            Self::TinyEn,
+            Self::Base,
+            Self::BaseEn,
+            Self::Small,
+            Self::SmallEn,
+            Self::Medium,
+            Self::MediumEn,
+            Self::Large,
+            Self::LargeV2,
+            Self::LargeV3,
+            Self::LargeV3Turbo,
+            Self::DistilMediumEn,
+            Self::DistilLargeV2,
+            Self::DistilLargeV3,
+        ]
+        .into_iter()
+    }
 }
 
 pub enum WhisperUpdate {
@@ -452,6 +432,7 @@ pub struct AppDevice {
 
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
+    pub model: WhichModel,
 }
 
 pub fn get_devices() -> Vec<AppDevice> {
@@ -505,7 +486,7 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
-struct WhisperContext {
+pub struct WhisperContext {
     decoder: Decoder,
     device: candle_core::Device,
     config: Config,
@@ -513,6 +494,7 @@ struct WhisperContext {
 }
 
 pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
+    tracing::info!("Loading whisper model: {:?}", model);
     let device = candle_core::Device::new_cuda(0)?;
     let (model_id, revision) = model.model_and_revision();
     let (config_filename, tokenizer_filename, weights_filename) = {
@@ -529,13 +511,13 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-    let model = {
+    let active_model = {
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
         Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
     };
     let mut decoder = Decoder::new(
-        model,
+        active_model,
         tokenizer.clone(),
         0,
         &device,
@@ -545,16 +527,20 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         false,
     )?;
 
-    decoder.set_language_token(Some(0)); // english
+    decoder.set_language_token(if model.is_multilingual() {
+        Some(token_id(&tokenizer, "<|en|>")?)
+    } else {
+        None
+    });
 
     let mel_bytes = match config.num_mel_bins {
         80 => include_bytes!("melfilters.bytes").as_slice(),
         128 => include_bytes!("melfilters128.bytes").as_slice(),
-        nmel => panic!("unexpected num_mel_bins {nmel}"),
+        nmel => anyhow::bail!("unexpected num_mel_bins {nmel}"),
     };
     let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
-
+    tracing::info!("Model loaded");
     Ok(WhisperContext {
         decoder,
         device,
@@ -619,8 +605,13 @@ pub fn start_listening(
     });
 
     let app2 = app.clone();
-    thread::spawn(move || {
-        whisper_loop(app2, filtered_rx, params);
+    thread::spawn(move || match whisper_loop(app2, filtered_rx, params) {
+        Ok(_) => {
+            tracing::info!("Whisper loop finished");
+        }
+        Err(err) => {
+            tracing::error!("Whisper loop error: {}", err);
+        }
     });
 
     Some(StreamState { stream })
@@ -630,16 +621,15 @@ fn whisper_loop(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
-) {
-    let mut ctx: WhisperContext =
-        load_whisper_model(WhichModel::TinyEn).expect("Failed to load model");
+) -> Result<(), anyhow::Error> {
+    let mut ctx: WhisperContext = load_whisper_model(params.model)?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
         let mut aggregated_data = match filtered_rx.recv() {
             Ok(data) => data,
             Err(_) => {
                 tracing::info!("Filtered stream closed");
-                return;
+                return Ok(());
             }
         };
         // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
@@ -651,7 +641,7 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        whisperize(&mut ctx, &aggregated_data, &app, &params).expect("Whisperize failed");
+        whisperize(&mut ctx, &aggregated_data, &app, &params)?;
     }
 }
 
@@ -750,15 +740,13 @@ fn whisperize(
         let end = segment.start + segment.duration;
         let text = segment.dr.text.clone();
         tracing::info!("Transcribed segment: {:.1}s - {:.1}s: {}", start, end, text);
-        app.send(WhisperUpdate::Transcript(text))
-            .expect("Failed to send transcript update");
+        app.send(WhisperUpdate::Transcript(text))?;
     }
 
-    app.send(WhisperUpdate::Transcribing(false))
-        .expect("Failed to send transcribing update");
+    app.send(WhisperUpdate::Transcribing(false))?;
 
     // trace how long it took and how long the input was
-    let duration = start.elapsed().as_secs() as f64;
+    let duration = start.elapsed().as_secs_f32() as f64;
     let input_duration = resampled.len() as f64 / 16000.;
     tracing::info!(
         "Transcribed {} seconds of audio in {} seconds",

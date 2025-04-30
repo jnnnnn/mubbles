@@ -6,7 +6,9 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{get_devices, AppDevice, StreamState, WhisperParams, WhisperUpdate};
+use crate::whisper::{
+    get_devices, AppDevice, StreamState, WhichModel, WhisperParams, WhisperUpdate,
+};
 
 use crate::summary;
 
@@ -44,6 +46,9 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     selected_device: usize,
+
+    #[serde(skip)]
+    selected_model: usize,
 
     #[serde(skip)]
     whisper_tx: mpsc::Sender<WhisperUpdate>,
@@ -97,10 +102,14 @@ impl Default for MubblesApp {
             stream: crate::whisper::start_listening(
                 &tx,
                 &devices[selected_device],
-                WhisperParams { accuracy: 1 },
+                WhisperParams {
+                    accuracy: 1,
+                    model: WhichModel::from(0),
+                },
             ),
             devices: devices,
             selected_device: selected_device,
+            selected_model: 0,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
             autotype: false,
@@ -142,6 +151,7 @@ impl eframe::App for MubblesApp {
             from_whisper,
             devices,
             selected_device,
+            selected_model,
             stream,
             whisper_tx,
             level,
@@ -199,6 +209,22 @@ impl eframe::App for MubblesApp {
                             device,
                             WhisperParams {
                                 accuracy: *accuracy,
+                                model: WhichModel::from(*selected_model),
+                            },
+                        );
+                    }
+                    let model = egui::ComboBox::from_label("Model")
+                        .selected_text(WhichModel::from(*selected_model).to_string())
+                        .show_index(ui, selected_model, WhichModel::len(), |i| {
+                            WhichModel::from(i).to_string()
+                        });
+                    if model.changed() {
+                        *stream = crate::whisper::start_listening(
+                            whisper_tx,
+                            &devices[*selected_device],
+                            WhisperParams {
+                                accuracy: *accuracy,
+                                model: WhichModel::from(*selected_model),
                             },
                         );
                     }
@@ -223,6 +249,7 @@ impl eframe::App for MubblesApp {
                             &devices[*selected_device],
                             WhisperParams {
                                 accuracy: *accuracy,
+                                model: WhichModel::from(*selected_model),
                             },
                         );
                     }
