@@ -717,7 +717,11 @@ fn whisperize(
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
 
+    let mel_start = std::time::Instant::now();
     let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
+    let mel_duration = mel_start.elapsed().as_secs_f32();
+    tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);
+
     let mel_len = mel.len();
     let num_bins = state.config.num_mel_bins;
     let mel = Tensor::from_vec(mel, (1, num_bins, mel_len / num_bins), &state.device)?;
