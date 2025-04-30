@@ -1,7 +1,6 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-
 fn main() -> eframe::Result<()> {
     let _trace_state = set_up_tracing();
 
@@ -15,14 +14,13 @@ fn main() -> eframe::Result<()> {
                     .expect("Failed to load icon"),
             ),
         ..Default::default()
-        };
+    };
     eframe::run_native(
         "mubbles",
         native_options,
         Box::new(|cc| Ok(Box::new(mubbles::MubblesApp::new(cc)))),
     )
 }
-
 
 use tracing_subscriber::prelude::*;
 

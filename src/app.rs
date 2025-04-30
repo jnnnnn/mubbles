@@ -281,8 +281,8 @@ impl eframe::App for MubblesApp {
                     summary::statistical_ui(&mut self.statistical_summary, ui, text)
                 }
                 AppTab::AISummary => summary::ai_ui(&mut self.ai_summary, ui, text),
-                AppTab::AISystemPrompt => {},
-                AppTab::AIUserPrompt => {},
+                AppTab::AISystemPrompt => {}
+                AppTab::AIUserPrompt => {}
                 AppTab::Transcript => {}
             }
 
@@ -310,12 +310,12 @@ impl eframe::App for MubblesApp {
 }
 
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
-    let pairs: PlotPoints = level
+    let pairs: PlotPoints<'_> = level
         .iter()
         .enumerate()
         .map(|(i, v)| [i as f64, *v as f64])
         .collect();
-    let line = Line::new(pairs);
+    let line = Line::new("line_name", pairs);
     ui.add_enabled_ui(false, |ui| {
         Plot::new("my_plot")
             .width(100f32)
