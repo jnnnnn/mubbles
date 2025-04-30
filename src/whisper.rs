@@ -1,34 +1,24 @@
 use std::{
-    path::Path,
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, SupportedStreamConfig,
+    SupportedStreamConfig,
 };
 use rubato::Resampler;
 
-#[cfg(feature = "accelerate")]
-extern crate accelerate_src;
-
-#[cfg(feature = "mkl")]
-extern crate intel_mkl_src;
 
 use anyhow::{Error as E, Result};
-use candle::{Device, IndexOp, Tensor};
+use candle_core::{IndexOp, Tensor};
 use candle_nn::{ops::softmax, VarBuilder};
-use clap::{Parser, ValueEnum};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
-mod multilingual;
-
+use crate::multilingual;
 use candle_transformers::models::whisper::{self as m, audio, Config};
-
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -44,7 +34,7 @@ impl Model {
         }
     }
 
-    pub fn encoder_forward(&mut self, x: &Tensor, flush: bool) -> candle::Result<Tensor> {
+    pub fn encoder_forward(&mut self, x: &Tensor, flush: bool) -> candle_core::Result<Tensor> {
         match self {
             Self::Normal(m) => m.encoder.forward(x, flush),
             Self::Quantized(m) => m.encoder.forward(x, flush),
@@ -56,14 +46,14 @@ impl Model {
         x: &Tensor,
         xa: &Tensor,
         flush: bool,
-    ) -> candle::Result<Tensor> {
+    ) -> candle_core::Result<Tensor> {
         match self {
             Self::Normal(m) => m.decoder.forward(x, xa, flush),
             Self::Quantized(m) => m.decoder.forward(x, xa, flush),
         }
     }
 
-    pub fn decoder_final_linear(&self, x: &Tensor) -> candle::Result<Tensor> {
+    pub fn decoder_final_linear(&self, x: &Tensor) -> candle_core::Result<Tensor> {
         match self {
             Self::Normal(m) => m.decoder.final_linear(x),
             Self::Quantized(m) => m.decoder.final_linear(x),
@@ -113,7 +103,7 @@ impl Decoder {
         model: Model,
         tokenizer: Tokenizer,
         seed: u64,
-        device: &Device,
+        device: &candle_core::Device,
         language_token: Option<u32>,
         task: Option<Task>,
         timestamps: bool,
@@ -228,7 +218,7 @@ impl Decoder {
                     .unwrap()
             };
             tokens.push(next_token);
-            let prob = softmax(&logits, candle::D::Minus1)?
+            let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
@@ -371,42 +361,35 @@ impl Decoder {
     }
 }
 
-pub fn token_id(tokenizer: &Tokenizer, token: &str) -> candle::Result<u32> {
+pub fn token_id(tokenizer: &Tokenizer, token: &str) -> candle_core::Result<u32> {
     match tokenizer.token_to_id(token) {
-        None => candle::bail!("no token-id for {token}"),
+        None => candle_core::bail!("no token-id for {token}"),
         Some(id) => Ok(id),
     }
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug)]
 enum Task {
     Transcribe,
     Translate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WhichModel {
     Tiny,
-    #[value(name = "tiny.en")]
     TinyEn,
     Base,
-    #[value(name = "base.en")]
     BaseEn,
     Small,
-    #[value(name = "small.en")]
     SmallEn,
     Medium,
-    #[value(name = "medium.en")]
     MediumEn,
     Large,
     LargeV2,
     LargeV3,
     LargeV3Turbo,
-    #[value(name = "distil-medium.en")]
     DistilMediumEn,
-    #[value(name = "distil-large-v2")]
     DistilLargeV2,
-    #[value(name = "distil-large-v3")]
     DistilLargeV3,
 }
 
@@ -448,58 +431,6 @@ impl WhichModel {
             Self::DistilLargeV3 => ("distil-whisper/distil-large-v3", "main"),
         }
     }
-}
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Run on CPU rather than on GPU.
-    #[arg(long)]
-    cpu: bool,
-
-    #[arg(long)]
-    model_id: Option<String>,
-
-    /// The model to use, check out available models:
-    /// https://huggingface.co/models?search=whisper
-    #[arg(long)]
-    revision: Option<String>,
-
-    /// The model to be used, can be tiny, small, medium.
-    #[arg(long, default_value = "tiny.en")]
-    model: WhichModel,
-
-    /// The seed to use when generating random samples.
-    #[arg(long, default_value_t = 299792458)]
-    seed: u64,
-
-    /// Enable tracing (generates a trace-timestamp.json file).
-    #[arg(long)]
-    tracing: bool,
-
-    #[arg(long)]
-    quantized: bool,
-
-    /// Language.
-    #[arg(long)]
-    language: Option<String>,
-
-    /// Task, when no task is specified, the input tokens contain only the sot token which can
-    /// improve things when in no-timestamp mode.
-    #[arg(long)]
-    task: Option<Task>,
-
-    /// Timestamps mode, this is not fully implemented yet.
-    #[arg(long)]
-    timestamps: bool,
-
-    /// Print the full DecodingResult structure rather than just the text.
-    #[arg(long)]
-    verbose: bool,
-
-    /// The input device to use.
-    #[arg(long)]
-    device: Option<String>,
 }
 
 pub fn main() -> Result<()> {
@@ -712,7 +643,7 @@ pub struct StreamState {
 
 pub struct AppDevice {
     pub name: String,
-    device: Device,
+    device: cpal::Device,
     config: cpal::SupportedStreamConfig,
 }
 
@@ -777,7 +708,7 @@ struct WhisperContext {
 }
 
 pub fn load_whisper_model(model: WhichModel) -> WhisperContext {
-    let device = Device::new_cuda(0);
+    let device = candle_core::Device::new_cuda(0);
     let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
     let (model_id, revision) = model.model_and_revision();
     let (config_filename, tokenizer_filename, weights_filename) = {
@@ -872,7 +803,7 @@ pub fn start_listening(
                 .copied()
                 .collect::<Vec<f32>>();
             audio_tx.send(singlechannel).expect("Failed to send data");
-        } 
+        }; 
     let stream = app_device
         .device
         .build_input_stream(

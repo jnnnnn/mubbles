@@ -8,3 +8,5 @@ pub use app::MubblesApp;
 mod whisper;
 
 mod summary;
+
+mod multilingual;
