@@ -23,7 +23,6 @@ pub enum Model {
     Quantized(m::quantized_model::Whisper),
 }
 
-// Maybe we should use some traits rather than doing the dispatch for all these.
 impl Model {
     pub fn config(&self) -> &Config {
         match self {
@@ -548,16 +547,6 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         mel_filters,
     })
 }
-
-// OLD CODE BELOW HERE
-////////////////////////
-///
-///
-///
-///
-///
-
-// use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState, WhisperContextParameters};
 
 // once the return value is dropped, listening stops
 // and the sender is closed
