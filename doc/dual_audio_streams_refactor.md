@@ -128,3 +128,63 @@ To further enhance performance, the mel spectrogram generation process can be op
   - Benchmark the mel generation process before and after implementing buffer reuse to quantify the performance gains.
 
 This optimization is particularly useful if mel spectrogram generation is a frequent operation and contributes significantly to processing time. It aligns with the goal of maintaining a responsive and efficient transcription system.
+
+## Threading Options
+
+When implementing dual audio streams for transcription, threading plays a crucial role in ensuring performance, responsiveness, and synchronization. Below are several threading options to consider, including the work for retrieving audio:
+
+### 1. **Separate Threads for Audio Retrieval, Real-Time, and Final Transcription**
+In this approach, three separate threads are used: one for audio retrieval, one for real-time transcription, and another for final transcription.
+
+#### Pros:
+- Clear separation of responsibilities.
+- Each thread can be optimized independently for its specific task.
+- Easier to prioritize tasks (e.g., real-time thread can be given higher priority).
+
+#### Cons:
+- Requires synchronization of audio data between threads.
+- Potential for race conditions if not managed carefully.
+- Higher memory and CPU overhead due to multiple threads.
+
+### 2. **Single Thread for Audio Retrieval and Both Transcriptions**
+Here, a single thread handles audio retrieval as well as both real-time and final transcription tasks, prioritizing final transcription when necessary.
+
+#### Pros:
+- Simplifies synchronization as all tasks are handled in the same thread.
+- Lower memory and CPU overhead compared to multiple threads.
+- Easier to implement and debug.
+
+#### Cons:
+- Real-time feedback might be delayed if the thread is busy with final transcription.
+- Harder to optimize for both speed and accuracy simultaneously.
+
+### 3. **Thread Pool with Task Queue for Audio and Transcription**
+A thread pool is used, with tasks for audio retrieval, real-time transcription, and final transcription added to a shared queue. Tasks are executed by available threads in the pool.
+
+#### Pros:
+- Flexible and scalable, as the number of threads can be adjusted based on system resources.
+- Tasks can be prioritized in the queue (e.g., real-time tasks processed first).
+- Efficient use of system resources.
+
+#### Cons:
+- More complex to implement compared to single-threaded or separate-thread approaches.
+- Requires careful design of the task queue to avoid bottlenecks.
+- Potential for contention if too many tasks are added to the queue.
+
+### Recommendation
+The best approach depends on the specific requirements of the application:
+
+- **For simplicity and low overhead**: Use the single-threaded approach (Option 2).
+- **For clear separation and independent optimization**: Use separate threads (Option 1).
+- **For scalability and flexibility**: Use a thread pool with a task queue (Option 3).
+
+Given the need for both real-time feedback and accurate transcription, **Option 3 (Thread Pool with Task Queue)** is recommended. It provides the flexibility to prioritize tasks and efficiently utilize system resources, making it well-suited for handling dual audio streams and transcription.
+
+### Decision
+
+I will use option 1. I was concerned that sending the partial requests might repeatedly copy the whole buffer. But that is not necessary. The audio thread can retrieve audio and run the voice detector. Then any valid chunks can be passed to transcription threads. When the voice detector detects the end of a chunk, a special packet can be sent to say "end of segment". For partials, this will reset the partial buffer. For final, this will trigger transcription and reset. So each thread can accumulate its own buffer of audio. 
+
+Updating the mel efficiently is a different problem. Adding some more audio to the end may affect the whole thing. Except it won't, it won't affect more than the previous second. So I can just overlap an extra generation of the previous second. Cool.
+
+Before I implement that, I should time the mel generation to see if it's worth it. Let's do that first.
+
