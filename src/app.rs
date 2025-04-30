@@ -57,6 +57,7 @@ pub struct MubblesApp {
     level: VecDeque<f32>,
 
     autotype: bool,
+    partials: bool,
 
     #[serde(skip)]
     always_on_top: bool,
@@ -113,6 +114,7 @@ impl Default for MubblesApp {
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
             autotype: false,
+            partials: false,
             always_on_top: false,
             changed: false,
             tab: AppTab::Transcript,
@@ -156,6 +158,7 @@ impl eframe::App for MubblesApp {
             whisper_tx,
             level,
             autotype,
+            partials,
             accuracy,
             always_on_top,
             changed,
@@ -263,10 +266,9 @@ impl eframe::App for MubblesApp {
                     ui.checkbox(autotype, "Autotype").on_hover_text(
                         "Type whatever is said into other applications on this computer",
                     );
-                    // remove this for now because it's annoying
-                    if ui.checkbox(always_on_top, "Always on top").changed() {
-                        // not sure how to do this
-                    }
+                    ui.checkbox(partials, "Partials").on_hover_text(
+                        "Show partials as a block is dictated, erasing with the full model once it is done",
+                    );
                     if ui.button("Clear").clicked() {
                         text.clear();
                         // log the time as well as a message

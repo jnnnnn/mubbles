@@ -246,7 +246,7 @@ impl Decoder {
             match dr {
                 Ok(dr) => {
                     let needs_fallback = dr.compression_ratio > m::COMPRESSION_RATIO_THRESHOLD
-                        || dr.avg_logprob < m::LOGPROB_THRESHOLD;
+                        && dr.avg_logprob < m::LOGPROB_THRESHOLD;
                     if !needs_fallback || dr.no_speech_prob > m::NO_SPEECH_THRESHOLD {
                         return Ok(dr);
                     }
