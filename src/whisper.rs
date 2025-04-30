@@ -17,7 +17,7 @@ use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, audio, Config};
-use crate::mel::log_mel_spectrogram; // Import the new log_mel_spectrogram function
+//use crate::mel::log_mel_spectrogram;
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -741,8 +741,8 @@ fn whisperize(
     for segment in segments.iter() {
         let text = segment.dr.text.clone();
         tracing::info!("Transcribed segment: {:?}", segment);
-        const NO_SPEECH_THRESHOLD: f64 = 0.05;
-        const LOGPROB_THRESHOLD: f64 = -0.1;
+        const NO_SPEECH_THRESHOLD: f64 = 0.07;
+        const LOGPROB_THRESHOLD: f64 = -0.13;
         if segment.dr.no_speech_prob > NO_SPEECH_THRESHOLD
             && segment.dr.avg_logprob < LOGPROB_THRESHOLD
         {

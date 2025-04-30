@@ -131,3 +131,47 @@ fn load_mel_filters (num_mel_bins: usize) -> Vec<f32> {
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
     mel_filters
 }
+
+#[test]
+fn test_log_mel_spectrogram_comparison() {
+    use crate::mel::log_mel_spectrogram as mel_log_mel_spectrogram;
+    use candle_transformers::models::whisper::audio::pcm_to_mel as audio_log_mel_spectrogram;
+
+    // Example audio data (sine wave for simplicity)
+    let sample_rate = SAMPLE_RATE as f32;
+    let duration = 1.0; // 1 second
+    let frequency = 440.0; // A4 note
+    let num_samples = (sample_rate * duration) as usize;
+    let audio: Vec<f32> = (0..num_samples)
+        .map(|i| (2.0 * std::f32::consts::PI * frequency * i as f32 / sample_rate).sin())
+        .collect();
+
+    // Number of Mel bins
+    let num_mel_bins = 80;
+
+    // Generate Mel filters (mocked for simplicity)
+    let filters = vec![1.0; num_mel_bins * (N_FFT / 2 + 1)];
+
+    // Compute the log Mel spectrogram using both implementations
+    let mel_result = mel_log_mel_spectrogram(&audio, num_mel_bins);
+    let cfg = candle_transformers::models::whisper::Config {
+        num_mel_bins,
+        max_source_positions: 0,
+        d_model: 0,
+        encoder_attention_heads: 0,
+        encoder_layers: 0,
+        vocab_size: 0,
+        max_target_positions: 0,
+        decoder_attention_heads: 0,
+        decoder_layers: 0,
+        suppress_tokens: vec![],
+    };
+    let audio_result = audio_log_mel_spectrogram(&cfg, &audio, &filters);
+
+    // Compare the results
+    assert_eq!(mel_result.len(), audio_result.len());
+    for (mel_value, audio_value) in mel_result.iter().zip(audio_result.iter()) {
+        assert!((mel_value - audio_value).abs() < 1e-5, "Values differ: {} vs {}", mel_value, audio_value);
+    }
+}
+
