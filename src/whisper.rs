@@ -17,7 +17,7 @@ use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, audio, Config};
-//use crate::mel::log_mel_spectrogram;
+use crate::mel::log_mel_spectrogram;
 
 pub enum Model {
     Normal(m::model::Whisper),
