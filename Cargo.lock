@@ -2506,6 +2506,7 @@ dependencies = [
  "reqwest",
  "rolling-file",
  "rubato",
+ "rustfft",
  "serde",
  "serde_json",
  "tokenizers",

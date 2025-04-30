@@ -17,6 +17,7 @@ use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, audio, Config};
+use crate::mel::log_mel_spectrogram; // Import the new log_mel_spectrogram function
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -539,6 +540,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
     };
     let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
+    
     tracing::info!("Model loaded");
     Ok(WhisperContext {
         decoder,
@@ -723,7 +725,7 @@ fn whisperize(
     let resampled: Vec<f32> = resampled.iter().map(|x| x * boost).collect();
 
     let mel_start = std::time::Instant::now();
-    let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
+    let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
     let mel_duration = mel_start.elapsed().as_secs_f32();
     tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);
 
