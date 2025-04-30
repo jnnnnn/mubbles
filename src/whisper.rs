@@ -730,7 +730,7 @@ fn whisperize(
         const NO_SPEECH_THRESHOLD: f64 = 0.05;
         const LOGPROB_THRESHOLD: f64 = -0.1;
         if segment.dr.no_speech_prob > NO_SPEECH_THRESHOLD
-            && segment.dr.avg_logprob < LOGPROB_THRESHOLD
+            || segment.dr.avg_logprob < LOGPROB_THRESHOLD
         {
             tracing::info!("No speech detected, skipping");
             continue;
