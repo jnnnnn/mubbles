@@ -510,6 +510,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         (config, tokenizer, model)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
+    tracing::info!("Config: {:?}", config);
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
     let active_model = {
         let vb =
@@ -726,7 +727,7 @@ fn whisperize(
 
     let mel_start = std::time::Instant::now();
     //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
-    
+
     let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
 
     let mel_duration = mel_start.elapsed().as_secs_f32();

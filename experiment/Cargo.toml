@@ -1,0 +1,15 @@
+[package]
+name = "mel2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hound = "3.5.1"
+rubato = "0.16.2"
+rustfft = "6.3.0"
+ndarray = "0.16.1"
+image = "0.25.6"
+apodize = "1.0.0"
+candle-core = "0.9.0"
+candle-transformers = "0.9.0"
+byteorder = "1.5.0"
