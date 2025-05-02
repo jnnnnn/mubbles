@@ -797,3 +797,30 @@ C:\Users\J\.cache\huggingface\hub\models--distil-whisper--distil-large-v3.5\blob
 ```
 
 
+## 2025-05-02
+
+mel spectrogram generation using the rust library rufft is probably about 5x the speed of Whisper's implementation `pcm_to_mel` on my cpu:
+
+Custom mel spectrogram took: 45.7557ms
+Candle mel spectrogram took: 242.6701ms
+
+But I've gotta get it outputting the same thing (or close enough). The AIs haven't been able to get it right yet despite inputting the actual whisper code.
+
+Maybe I can just copy the candle code and ask the AI to replace the FFT with the fast one.
+
+Timings
+
+```log
+Finished `release` profile [optimized] target(s) in 21.83s
+Running `target\release\mel2.exe`
+stft shape: [257, 2998]
+filters shape: [80, 257]
+result shape: [80, 2998]
+Custom mel spectrogram took: 47.0296ms
+Candle mel spectrogram took: 212.6067ms
+Candle rufft mel spectrogram took: 456.6036ms
+```
+
+So custom is way faster but doesn't look quite right. 
+
+The unrolled ggml one candle rufft (not using rufft yet) is hardcoded to 2 threads which is why it is slower than the normal Candle one.

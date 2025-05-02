@@ -895,6 +895,7 @@ dependencies = [
  "hound",
  "image",
  "ndarray",
+ "num-traits",
  "rubato",
  "rustfft",
 ]
