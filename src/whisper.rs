@@ -1,5 +1,5 @@
 use std::{
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{mpsc::{self, Receiver, Sender}, Arc},
     thread,
 };
 
@@ -415,6 +415,15 @@ pub enum WhisperUpdate {
     Transcribing(bool),
     Transcript(String),
     Level(f32),
+    Mel(DisplayMel),
+}
+
+
+#[derive(Default)]
+pub struct DisplayMel {
+    pub mel: Arc<Vec<f32>>,
+    pub num_bins: usize,
+    pub num_frames: usize,
 }
 
 pub struct StreamState {
@@ -727,14 +736,20 @@ fn whisperize(
     let mel_start = std::time::Instant::now();
     //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
 
-    let mel = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
-
+    let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
+    let arcmel = Arc::new(mel_raw);
     let mel_duration = mel_start.elapsed().as_secs_f32();
     tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);
 
-    let mel_len = mel.len();
+    let mel_len = arcmel.len();
     let num_bins = state.config.num_mel_bins;
-    let mel = Tensor::from_vec(mel, (1, num_bins, mel_len / num_bins), &state.device)?;
+    let mel = Tensor::from_slice(arcmel.as_slice(), (1, num_bins, mel_len / num_bins), &state.device)?;
+    app.send(WhisperUpdate::Mel(DisplayMel {
+        mel: arcmel,
+        num_bins: num_bins, 
+        num_frames: mel_len / num_bins,
+    }))
+        .expect("Failed to send mel update");
 
     let segments = state.decoder.run(&mel, None)?;
 

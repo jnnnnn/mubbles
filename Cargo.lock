@@ -2499,7 +2499,6 @@ dependencies = [
  "egui_plot",
  "env_logger",
  "hf-hub",
- "image",
  "log",
  "open",
  "rand 0.9.1",

@@ -7,7 +7,7 @@ use std::{
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::whisper::{
-    get_devices, AppDevice, StreamState, WhichModel, WhisperParams, WhisperUpdate,
+    get_devices, AppDevice, DisplayMel, StreamState, WhichModel, WhisperParams, WhisperUpdate
 };
 
 use crate::summary;
@@ -55,6 +55,9 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     level: VecDeque<f32>,
+
+    #[serde(skip)]
+    last_mel: DisplayMel,
 
     autotype: bool,
     partials: bool,
@@ -113,6 +116,7 @@ impl Default for MubblesApp {
             selected_model: 1,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
+            last_mel: DisplayMel::default(),
             autotype: false,
             partials: false,
             always_on_top: false,
@@ -161,6 +165,7 @@ impl eframe::App for MubblesApp {
             partials,
             accuracy,
             changed,
+            last_mel: lastMel,
             ..
         } = self;
         // drain from_whisper channel
@@ -179,6 +184,9 @@ impl eframe::App for MubblesApp {
                         level.pop_front();
                     }
                     level.push_back(l);
+                }
+                Ok(WhisperUpdate::Mel(m)) => {
+                    *lastMel = m;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => panic!("Whisper channel disconnected"),
@@ -288,6 +296,15 @@ impl eframe::App for MubblesApp {
                     }
                 },
             );
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP),
+                |ui| {
+                    // render the mel spectrogram
+                    plot_mel(lastMel, ui);
+                },
+            );
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             // tabs for either raw transcript or summary:
@@ -354,3 +371,60 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
             .show(ui, |plot_ui| plot_ui.line(line));
     });
 }
+
+fn plot_mel(mel: &DisplayMel, ui: &mut egui::Ui) {
+    // todo: display mel texture
+}
+
+/*
+
+EXAMPLE IMAGE DISPLAY CODE
+
+struct MyApp {
+    screen_texture: TextureHandle,
+}
+
+impl MyApp {
+    fn new(cc: &CreationContext) -> Self {
+        let screen_texture = cc.egui_ctx.load_texture(
+            "screen",
+            ImageData::Color(Arc::new(ColorImage::new([320, 80], Color32::TRANSPARENT))),
+            TextureOptions::default(),
+        );
+        Self { screen_texture }
+    }
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::both().show(ui, |ui| {
+                // This should obviously not be here, but it's just a test
+                let mut img = RgbImage::new(32, 32);
+                for x in 15..=17 {
+                    for y in 8..24 {
+                        img.put_pixel(x, y, Rgb([255, 0, 0]));
+                        img.put_pixel(y, x, Rgb([255, 0, 0]));
+                    }
+                }
+                self.screen_texture.set(
+                    ColorImage::from_rgb([32, 32], &img.into_raw()),
+                    TextureOptions::default(),
+                );
+                ui.add(
+                    egui::Image::new(&self.screen_texture) // ERROR GONE
+                        .max_height(400.0)
+                        .max_width(500.0)
+                        .rounding(10.0),
+                );
+                ui.add(
+                    egui::Image::new("https://picsum.photos/seed/1.759706314/1024").rounding(10.0),
+                );
+            });
+        });
+    }
+}
+
+
+
+*/
