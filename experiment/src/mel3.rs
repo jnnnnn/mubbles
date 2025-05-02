@@ -1,5 +1,4 @@
-use std::sync::Arc;
-
+use rustfft::{FftPlanner, num_complex::Complex};
 
 #[allow(clippy::too_many_arguments)]
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2414
@@ -137,58 +136,26 @@ pub fn log_mel_spectrogram_<T: Float>(
     mel
 }
 
-pub trait Float:
-    num_traits::Float + num_traits::FloatConst + num_traits::NumAssign + Send + Sync
-{
-}
+pub trait Float: num_traits::Float + num_traits::FloatConst + num_traits::NumAssign + num_traits::FromPrimitive + num_traits::Signed + std::fmt::Debug + Send + Sync + 'static {}
 
 impl Float for f32 {}
-impl Float for f64 {}
 
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2357
 fn fft<T: Float>(inp: &[T]) -> Vec<T> {
-    let n = inp.len();
-    let zero = T::zero();
-    if n == 1 {
-        return vec![inp[0], zero];
-    }
-    if n % 2 == 1 {
-        return dft(inp);
-    }
-    let mut out = vec![zero; n * 2];
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(inp.len());
 
-    let mut even = Vec::with_capacity(n / 2);
-    let mut odd = Vec::with_capacity(n / 2);
+    // Convert input to Complex numbers
+    let mut buffer: Vec<Complex<T>> = inp.iter().map(|&x| Complex::new(x, T::zero())).collect();
 
-    for (i, &inp) in inp.iter().enumerate() {
-        if i % 2 == 0 {
-            even.push(inp)
-        } else {
-            odd.push(inp);
-        }
-    }
+    // Perform FFT
+    fft.process(&mut buffer);
 
-    let even_fft = fft(&even);
-    let odd_fft = fft(&odd);
-
-    let two_pi = T::PI() + T::PI();
-    let n_t = T::from(n).unwrap();
-    for k in 0..n / 2 {
-        let k_t = T::from(k).unwrap();
-        let theta = two_pi * k_t / n_t;
-        let re = theta.cos();
-        let im = -theta.sin();
-
-        let re_odd = odd_fft[2 * k];
-        let im_odd = odd_fft[2 * k + 1];
-
-        out[2 * k] = even_fft[2 * k] + re * re_odd - im * im_odd;
-        out[2 * k + 1] = even_fft[2 * k + 1] + re * im_odd + im * re_odd;
-
-        out[2 * (k + n / 2)] = even_fft[2 * k] - re * re_odd + im * im_odd;
-        out[2 * (k + n / 2) + 1] = even_fft[2 * k + 1] - re * im_odd - im * re_odd;
-    }
-    out
+    // Convert output back to interleaved real and imaginary parts
+    buffer
+        .iter()
+        .flat_map(|c| vec![c.re, c.im])
+        .collect()
 }
 
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2337

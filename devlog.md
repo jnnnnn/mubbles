@@ -826,3 +826,15 @@ So custom is way faster but doesn't look quite right.
 The unrolled ggml one candle rufft (not using rufft yet) is hardcoded to 2 threads which is why it is slower than the normal Candle one.
 
 factor implementation out to separate file so copilot can work on it faster
+
+ok, with this implementation, we're 30% faster already.
+
+warning: `mel2` (bin "mel2") generated 5 warnings (run `cargo fix --bin "mel2"` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 13.16s
+     Running `target\release\mel2.exe`
+stft shape: [257, 2998]
+filters shape: [80, 257]
+result shape: [80, 2998]
+Custom mel spectrogram took: 25.7204ms
+Candle mel spectrogram took: 201.4842ms
+Candle rufft mel spectrogram took: 171.4573ms
