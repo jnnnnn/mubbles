@@ -873,3 +873,10 @@ Interesting. Biggest time sinks:
 
 So the fft is only taking up a third of the function time. The rest is spent on ??
 
+Alright, whatever. Allocations, hanning windows, whatever. Clean up later.
+
+Focus on how to compute incrementally as audio becomes available, because that's really what I'm trying to optimize. 
+
+I need to keep my own buffers, of input and mel (and any necessary intermediate, like scratch for rustfft). 
+
+Then I wonder how to implement fft just for a small part of the audio buffer that has just been populated, continuing on from the previous.

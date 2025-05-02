@@ -119,9 +119,6 @@ pub fn log_mel_spectrogram_(
         samples_padded
     };
 
-
-    // use scope to allow for non static references to be passed to the threads
-    // and directly collect the results into a single vector
     let mut mel = log_mel_spectrogram_w(
         &hann, &samples, &filters, fft_size, fft_step, speed_up, n_len, n_mel,
     );
