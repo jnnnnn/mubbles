@@ -130,7 +130,7 @@ fn compute_stft(audio: &[f32]) -> Array2<f32> {
     let fft = FftPlanner::new().plan_fft_forward(N_FFT);
     let window: Vec<f32> = apodize::hanning_iter(WIN_LENGTH)
         .map(|x| x as f32)
-        .collect(); // Cast `f64` to `f32`
+        .collect();
 
     let n_frames = 1 + (audio.len() - WIN_LENGTH) / HOP_LENGTH;
     let mut stft = Array2::zeros((N_FFT / 2 + 1, n_frames));
@@ -145,7 +145,7 @@ fn compute_stft(audio: &[f32]) -> Array2<f32> {
         // Zero-pad if needed
         buffer.resize(N_FFT, Complex::new(0.0, 0.0));
 
-        // Compute FFT
+        // Compute FFT using rustfft
         fft.process(&mut buffer);
 
         // Compute magnitude squared
@@ -380,54 +380,17 @@ pub fn log_mel_spectrogram_<T: Float>(
         samples_padded
     };
 
-    // ensure that the number of threads is even and less than 12
-    let n_threads = 2;
-
     let hann = Arc::new(hann);
     let samples = Arc::new(samples);
     let filters = Arc::new(filters);
 
     // use scope to allow for non static references to be passed to the threads
     // and directly collect the results into a single vector
-    let all_outputs = thread::scope(|s| {
-        (0..n_threads)
-            // create threads and return their handles
-            .map(|thread_id| {
-                let hann = Arc::clone(&hann);
-                let samples = Arc::clone(&samples);
-                let filters = Arc::clone(&filters);
-                // spawn new thread and start work
-                s.spawn(move || {
+    let mut mel = 
                     log_mel_spectrogram_w(
-                        thread_id, &hann, &samples, &filters, fft_size, fft_step, speed_up, n_len,
-                        n_mel, n_threads,
-                    )
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            // wait for each thread to finish and collect their results
-            .map(|handle| handle.join().expect("Thread failed"))
-            .collect::<Vec<_>>()
-    });
-
-    let l = all_outputs[0].len();
-    let mut mel = vec![zero; l];
-
-    // iterate over mel spectrogram segments, dividing work by threads.
-    for segment_start in (0..l).step_by(n_threads) {
-        // go through each thread's output.
-        for thread_output in all_outputs.iter() {
-            // add each thread's piece to our mel spectrogram.
-            for offset in 0..n_threads {
-                let mel_index = segment_start + offset; // find location in mel.
-                if mel_index < mel.len() {
-                    // Make sure we don't go out of bounds.
-                    mel[mel_index] += thread_output[mel_index];
-                }
-            }
-        }
-    }
+                        0, &hann, &samples, &filters, fft_size, fft_step, speed_up, n_len,
+                        n_mel, 1,
+                    );
 
     let mmax = mel
         .iter()
