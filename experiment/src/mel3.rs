@@ -2,24 +2,24 @@ use rustfft::{FftPlanner, num_complex::Complex};
 
 #[allow(clippy::too_many_arguments)]
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2414
-fn log_mel_spectrogram_w<T: Float>(
-    hann: &[T],
-    samples: &[T],
-    filters: &[T],
+fn log_mel_spectrogram_w(
+    hann: &[f32],
+    samples: &[f32],
+    filters: &[f32],
     fft_size: usize,
     fft_step: usize,
     speed_up: bool,
     n_len: usize,
     n_mel: usize,
-) -> Vec<T> {
+) -> Vec<f32> {
     let n_fft = if speed_up {
         1 + fft_size / 4
     } else {
         1 + fft_size / 2
     };
 
-    let zero = T::zero();
-    let half = T::from(0.5).unwrap();
+    let zero = 0.0f32;
+    let half = 0.5f32;
     let mut fft_in = vec![zero; fft_size];
     let mut mel = vec![zero; n_len * n_mel];
     let n_samples = samples.len();
@@ -39,21 +39,24 @@ fn log_mel_spectrogram_w<T: Float>(
         }
 
         // FFT
-        let mut fft_out: Vec<T> = fft(&fft_in);
+        let mut fft_out: Vec<Complex<f32>> = fft(&fft_in);
 
         // Calculate modulus^2 of complex numbers
         for j in 0..fft_size {
-            fft_out[j] = fft_out[2 * j] * fft_out[2 * j] + fft_out[2 * j + 1] * fft_out[2 * j + 1];
+            fft_out[j] = Complex::new(
+                fft_out[j].re * fft_out[j].re + fft_out[j].im * fft_out[j].im,
+                0.0f32,
+            );
         }
         for j in 1..fft_size / 2 {
-            let v = fft_out[fft_size - j];
-            fft_out[j] += v;
+            let v = fft_out[fft_size - j].re;
+            fft_out[j].re += v;
         }
 
         if speed_up {
             // scale down in the frequency domain results in a speed up in the time domain
             for j in 0..n_fft {
-                fft_out[j] = half * (fft_out[2 * j] + fft_out[2 * j + 1]);
+                fft_out[j].re = half * (fft_out[2 * j].re + fft_out[2 * j + 1].re);
             }
         }
 
@@ -63,41 +66,41 @@ fn log_mel_spectrogram_w<T: Float>(
             let mut k = 0;
             // Unroll loop
             while k < n_fft.saturating_sub(3) {
-                sum += fft_out[k] * filters[j * n_fft + k]
-                    + fft_out[k + 1] * filters[j * n_fft + k + 1]
-                    + fft_out[k + 2] * filters[j * n_fft + k + 2]
-                    + fft_out[k + 3] * filters[j * n_fft + k + 3];
+                sum += fft_out[k].re * filters[j * n_fft + k]
+                    + fft_out[k + 1].re * filters[j * n_fft + k + 1]
+                    + fft_out[k + 2].re * filters[j * n_fft + k + 2]
+                    + fft_out[k + 3].re * filters[j * n_fft + k + 3];
                 k += 4;
             }
             // Handle remainder
             while k < n_fft {
-                sum += fft_out[k] * filters[j * n_fft + k];
+                sum += fft_out[k].re * filters[j * n_fft + k];
                 k += 1;
             }
-            mel[j * n_len + i] = T::max(sum, T::from(1e-10).unwrap()).log10();
+            mel[j * n_len + i] = f32::max(sum, 1e-10f32).log10();
         }
     }
     mel
 }
 
-pub fn log_mel_spectrogram_<T: Float>(
-    samples: &[T],
-    filters: &[T],
+pub fn log_mel_spectrogram_(
+    samples: &[f32],
+    filters: &[f32],
     fft_size: usize,
     fft_step: usize,
     n_mel: usize,
     speed_up: bool,
-) -> Vec<T> {
+) -> Vec<f32> {
     const CHUNK_LENGTH: usize = 30;
-    let zero = T::zero();
-    let two_pi = T::PI() + T::PI();
-    let half = T::from(0.5).unwrap();
-    let one = T::from(1.0).unwrap();
-    let four = T::from(4.0).unwrap();
-    let fft_size_t = T::from(fft_size).unwrap();
+    let zero = 0.0f32;
+    let two_pi = std::f32::consts::PI + std::f32::consts::PI;
+    let half = 0.5f32;
+    let one = 1.0f32;
+    let four = 4.0f32;
+    let fft_size_t = fft_size as f32;
 
-    let hann: Vec<T> = (0..fft_size)
-        .map(|i| half * (one - ((two_pi * T::from(i).unwrap()) / fft_size_t).cos()))
+    let hann: Vec<f32> = (0..fft_size)
+        .map(|i| half * (one - ((two_pi * i as f32) / fft_size_t).cos()))
         .collect();
     let n_len = samples.len() / fft_step;
 
@@ -128,9 +131,9 @@ pub fn log_mel_spectrogram_<T: Float>(
         .max_by(|&u, &v| u.partial_cmp(v).unwrap_or(std::cmp::Ordering::Greater))
         .copied()
         .unwrap_or(zero)
-        - T::from(8).unwrap();
+        - 8.0f32;
     for m in mel.iter_mut() {
-        let v = T::max(*m, mmax);
+        let v = f32::max(*m, mmax);
         *m = v / four + one
     }
     mel
@@ -141,45 +144,15 @@ pub trait Float: num_traits::Float + num_traits::FloatConst + num_traits::NumAss
 impl Float for f32 {}
 
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2357
-fn fft<T: Float>(inp: &[T]) -> Vec<T> {
+fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(inp.len());
 
     // Convert input to Complex numbers
-    let mut buffer: Vec<Complex<T>> = inp.iter().map(|&x| Complex::new(x, T::zero())).collect();
+    let mut buffer: Vec<Complex<f32>> = inp.iter().map(|&x| Complex::new(x, 0.0)).collect();
 
     // Perform FFT
     fft.process(&mut buffer);
 
-    // Convert output back to interleaved real and imaginary parts
     buffer
-        .iter()
-        .flat_map(|c| vec![c.re, c.im])
-        .collect()
-}
-
-// https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2337
-fn dft<T: Float>(inp: &[T]) -> Vec<T> {
-    let zero = T::zero();
-    let n = inp.len();
-    let two_pi = T::PI() + T::PI();
-
-    let mut out = Vec::with_capacity(2 * n);
-    let n_t = T::from(n).unwrap();
-    for k in 0..n {
-        let k_t = T::from(k).unwrap();
-        let mut re = zero;
-        let mut im = zero;
-
-        for (j, &inp) in inp.iter().enumerate() {
-            let j_t = T::from(j).unwrap();
-            let angle = two_pi * k_t * j_t / n_t;
-            re += inp * angle.cos();
-            im -= inp * angle.sin();
-        }
-
-        out.push(re);
-        out.push(im);
-    }
-    out
 }

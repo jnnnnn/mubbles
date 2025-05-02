@@ -838,3 +838,14 @@ result shape: [80, 2998]
 Custom mel spectrogram took: 25.7204ms
 Candle mel spectrogram took: 201.4842ms
 Candle rufft mel spectrogram took: 171.4573ms
+
+
+Removed T:Float and now just f32. Much faster again:
+
+     Running `target\release\mel2.exe`
+stft shape: [257, 2998]
+filters shape: [80, 257]
+result shape: [80, 2998]
+Custom mel spectrogram took: 48.9897ms
+Candle mel spectrogram took: 224.9054ms
+Candle rufft mel spectrogram took: 90.3094ms
