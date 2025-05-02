@@ -12,7 +12,6 @@ const HOP_LENGTH: usize = 160;
 const WIN_LENGTH: usize = 400;
 const N_MELS: usize = 80;
 
-// type alias for ArrayBase<OwnedRepr<f32>, Dim<[usize; 2]>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start1 = std::time::Instant::now();
@@ -253,7 +252,7 @@ fn candle_rufft_audio() -> Result<(), Box<dyn std::error::Error>> {
 
     let mel_filters = get_mel_filters();
 
-    let mel = log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, N_MELS, false);
+    let mel = log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, N_MELS);
 
     let mel_array = Array2::from_shape_vec((N_MELS, mel.len() / N_MELS), mel)
         .map_err(|_| "Failed to reshape mel vector into Array2")?;

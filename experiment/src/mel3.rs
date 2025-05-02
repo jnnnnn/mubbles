@@ -1,4 +1,5 @@
-use rustfft::{FftPlanner, num_complex::Complex};
+use rustfft::{num_complex::Complex, FftPlanner};
+
 
 #[allow(clippy::too_many_arguments)]
 // https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2414
@@ -8,15 +9,10 @@ fn log_mel_spectrogram_w(
     filters: &[f32],
     fft_size: usize,
     fft_step: usize,
-    speed_up: bool,
     n_len: usize,
     n_mel: usize,
 ) -> Vec<f32> {
-    let n_fft = if speed_up {
-        1 + fft_size / 4
-    } else {
-        1 + fft_size / 2
-    };
+    let n_fft = 1 + fft_size / 2;
 
     let zero = 0.0f32;
     let half = 0.5f32;
@@ -25,8 +21,8 @@ fn log_mel_spectrogram_w(
     let n_samples = samples.len();
     let end = std::cmp::min(n_samples / fft_step + 1, n_len);
 
-    for i in 0..end {
-        let offset = i * fft_step;
+    for frame_index in 0..end {
+        let offset = frame_index * fft_step;
 
         // apply Hanning window
         for j in 0..std::cmp::min(fft_size, n_samples - offset) {
@@ -53,13 +49,6 @@ fn log_mel_spectrogram_w(
             fft_out[j].re += v;
         }
 
-        if speed_up {
-            // scale down in the frequency domain results in a speed up in the time domain
-            for j in 0..n_fft {
-                fft_out[j].re = half * (fft_out[2 * j].re + fft_out[2 * j + 1].re);
-            }
-        }
-
         // mel spectrogram
         for j in 0..n_mel {
             let mut sum = zero;
@@ -77,7 +66,7 @@ fn log_mel_spectrogram_w(
                 sum += fft_out[k].re * filters[j * n_fft + k];
                 k += 1;
             }
-            mel[j * n_len + i] = f32::max(sum, 1e-10f32).log10();
+            mel[j * n_len + frame_index] = f32::max(sum, 1e-10f32).log10();
         }
     }
     mel
@@ -89,7 +78,6 @@ pub fn log_mel_spectrogram_(
     fft_size: usize,
     fft_step: usize,
     n_mel: usize,
-    speed_up: bool,
 ) -> Vec<f32> {
     const CHUNK_LENGTH: usize = 30;
     let zero = 0.0f32;
@@ -119,9 +107,8 @@ pub fn log_mel_spectrogram_(
         samples_padded
     };
 
-    let mut mel = log_mel_spectrogram_w(
-        &hann, &samples, &filters, fft_size, fft_step, speed_up, n_len, n_mel,
-    );
+    let mut mel =
+        log_mel_spectrogram_w(&hann, &samples, &filters, fft_size, fft_step, n_len, n_mel);
 
     let mmax = mel
         .iter()
@@ -139,12 +126,7 @@ pub fn log_mel_spectrogram_(
 fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(inp.len());
-
-    // Convert input to Complex numbers
     let mut buffer: Vec<Complex<f32>> = inp.iter().map(|&x| Complex::new(x, 0.0)).collect();
-
-    // Perform FFT
     fft.process(&mut buffer);
-
     buffer
 }

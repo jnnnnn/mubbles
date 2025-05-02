@@ -16,8 +16,7 @@ use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
-use candle_transformers::models::whisper::{self as m, audio, Config};
-use crate::mel::log_mel_spectrogram;
+use candle_transformers::models::whisper::{self as m, Config};
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -728,7 +727,7 @@ fn whisperize(
     let mel_start = std::time::Instant::now();
     //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
 
-    let mel = audio::pcm_to_mel(&state.config, &resampled, &state.mel_filters);
+    let mel = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
 
     let mel_duration = mel_start.elapsed().as_secs_f32();
     tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);

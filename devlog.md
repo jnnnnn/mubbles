@@ -880,3 +880,10 @@ Focus on how to compute incrementally as audio becomes available, because that's
 I need to keep my own buffers, of input and mel (and any necessary intermediate, like scratch for rustfft). 
 
 Then I wonder how to implement fft just for a small part of the audio buffer that has just been populated, continuing on from the previous.
+
+Reading the simplified code, I get it. Each frame (column in the mel) is independent -- it is the fft of step_size samples.
+
+Mel parameters are:
+
+Started writing an incremental Mel class but I think the best thing is probably to get the full thing displaying first.
+
