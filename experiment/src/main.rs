@@ -16,12 +16,12 @@ const N_MELS: usize = 80;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start1 = std::time::Instant::now();
-    let mel1 = custom()?;
+    //let mel1 = custom()?;
     let elapsed1 = start1.elapsed();
     println!("Custom mel spectrogram took: {:?}", elapsed1);
 
     let start2 = std::time::Instant::now();
-    let mel2 = candle_audio()?;
+    //let mel2 = candle_audio()?;
     let elapsed2 = start2.elapsed();
     println!("Candle mel spectrogram took: {:?}", elapsed2);
 

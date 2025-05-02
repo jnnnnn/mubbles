@@ -859,3 +859,17 @@ Even the simple cpu one is WAY faster than the ggml version. I will get it to tr
 
 Uh, chatgpt is wrong. rufft is just immature, it's not GPU. Stick with RustFFT. 
 
+Continue optimizing.
+
+Run `cargo flamegraph`. Requires admin on windows. Whatever, do that.
+
+Interesting. Biggest time sinks:
+
+- log_mel_spectrogram_() -- 86% of samples
+    - log_mel_spectrogram_w() -- 82% of samples
+        - fft() -- 37% of samples
+        - alloc Complex 9%
+        - ??? -- 82 - 47 = 35% 
+
+So the fft is only taking up a third of the function time. The rest is spent on ??
+
