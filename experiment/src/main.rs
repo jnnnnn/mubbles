@@ -1,5 +1,3 @@
-use std::{sync::Arc, thread};
-
 use hound::WavReader;
 use image::GrayImage;
 use ndarray::{Array2, Axis};

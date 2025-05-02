@@ -849,3 +849,13 @@ result shape: [80, 2998]
 Custom mel spectrogram took: 48.9897ms
 Candle mel spectrogram took: 224.9054ms
 Candle rufft mel spectrogram took: 90.3094ms
+
+Oh there's actually two rust fft libraries. ChatGPT says:
+
+- Use rufft if you want FFT acceleration on a GPU.
+- Use rustfft if you want simple, portable, CPU-side FFTs in pure Rust.
+
+Even the simple cpu one is WAY faster than the ggml version. I will get it to try rufft.
+
+Uh, chatgpt is wrong. rufft is just immature, it's not GPU. Stick with RustFFT. 
+

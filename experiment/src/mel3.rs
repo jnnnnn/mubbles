@@ -139,11 +139,6 @@ pub fn log_mel_spectrogram_(
     mel
 }
 
-pub trait Float: num_traits::Float + num_traits::FloatConst + num_traits::NumAssign + num_traits::FromPrimitive + num_traits::Signed + std::fmt::Debug + Send + Sync + 'static {}
-
-impl Float for f32 {}
-
-// https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2357
 fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(inp.len());
