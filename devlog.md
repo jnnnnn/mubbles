@@ -887,3 +887,17 @@ Mel parameters are:
 
 Started writing an incremental Mel class but I think the best thing is probably to get the full thing displaying first.
 
+## 2025-05-05
+
+looks like the range isn't quite right. Mapping the mel from -1..1 to 0..255 grayscale makes the black parts of the image gray. Maybe candle's implementation has a bug? Or maybe that's what openai spectra look like as well and they just didn't get the normalization right. todo: check openai spectra.
+
+Next steps: 
+0. just for fun, overlay previous transcript on mel
+1. separate out audio capture from whisper model.
+2. add speech detector so that segments are neater. copy from python.
+3. add second transcription stream for partials
+4. incrementally generate mel and stream it to screen in real time
+5. add partial transcription overlay on top of mel
+
+
+

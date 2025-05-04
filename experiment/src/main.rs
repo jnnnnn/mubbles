@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Custom mel spectrogram took: {:?}", elapsed1);
 
     let start2 = std::time::Instant::now();
-    //let mel2 = candle_audio()?;
+    let mel2 = candle_audio()?;
     let elapsed2 = start2.elapsed();
     println!("Candle mel spectrogram took: {:?}", elapsed2);
 
@@ -226,8 +226,8 @@ fn save_mel_as_image(
     mel_spec: &Array2<f32>,
     filename: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let min_val = mel_spec.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max_val = mel_spec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min_val = -1.0f32;
+    let max_val = 1f32;
 
     let normalized: Vec<u8> = mel_spec
         .iter()

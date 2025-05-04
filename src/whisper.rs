@@ -659,7 +659,7 @@ fn filter_audio_loop(
     let mut recording_buffer: Vec<f32> = Vec::new();
 
     // a dynamic threshold (or something like silero-vad) would be better
-    let threshold = 0.02f32;
+    let threshold = 0.05f32;
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
@@ -694,7 +694,7 @@ fn filter_audio_loop(
         } else {
             // the incoming audio is below the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
-            if under_threshold_count < 100 {
+            if under_threshold_count < 50 {
                 // not long enough, keep listening
                 recording_buffer.extend_from_slice(&data);
             } else {

@@ -116,6 +116,7 @@ pub fn log_mel_spectrogram_(
         .copied()
         .unwrap_or(zero)
         - 8.0f32;
+    println!("mmax: {}", mmax);
     for m in mel.iter_mut() {
         let v = f32::max(*m, mmax);
         *m = v / four + one
