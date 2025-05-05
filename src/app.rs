@@ -212,7 +212,6 @@ impl eframe::App for MubblesApp {
                 |ui| {
                     plot_level(level, ui);
                     
-                    plot_mel(mel_texture, ui);
 
                     let source = egui::ComboBox::from_label("Sound device").show_index(
                         ui,
@@ -247,6 +246,14 @@ impl eframe::App for MubblesApp {
                         );
                     }
                 },
+            );
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP), | ui| {
+
+                        plot_mel(mel_texture, ui);
+                    }
             );
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
