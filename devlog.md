@@ -899,5 +899,13 @@ Next steps:
 4. incrementally generate mel and stream it to screen in real time
 5. add partial transcription overlay on top of mel
 
+tried to overlay. candle-whisper's per-word timestamping is not implemented.
+looked at how openai does it and it's a couple of pages of python. I guess I'll
+see if copilot can translate it, I can't face doing it myself.
+
+I think I do need to pull the audio stuff out first. let's do that.
+
+
+
 
 

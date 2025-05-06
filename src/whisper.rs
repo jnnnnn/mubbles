@@ -1,13 +1,7 @@
-use std::{
-    sync::{mpsc::{self, Receiver, Sender}, Arc},
-    thread,
+use std::sync::{
+    mpsc::{Receiver, Sender},
+    Arc,
 };
-
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    SupportedStreamConfig,
-};
-use rubato::Resampler;
 
 use anyhow::{Error as E, Result};
 use candle_core::{IndexOp, Tensor};
@@ -17,6 +11,8 @@ use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, Config};
+
+use crate::app::WhisperUpdate;
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -381,7 +377,9 @@ impl WhichModel {
     }
 
     pub fn index(&self) -> usize {
-        Self::iter().position(|x| x == *self).expect("Invalid model")
+        Self::iter()
+            .position(|x| x == *self)
+            .expect("Invalid model")
     }
 
     pub fn to_string(&self) -> String {
@@ -410,14 +408,6 @@ impl WhichModel {
     }
 }
 
-pub enum WhisperUpdate {
-    Recording(bool),
-    Transcribing(bool),
-    Transcript(String),
-    Level(f32),
-    Mel(DisplayMel),
-}
-
 
 #[derive(Default)]
 pub struct DisplayMel {
@@ -426,72 +416,9 @@ pub struct DisplayMel {
     pub num_frames: usize,
 }
 
-pub struct StreamState {
-    // the app holds this handle to keep the stream open (and the whisper context / thread alive)
-    #[allow(dead_code)]
-    stream: cpal::Stream,
-}
-
-pub struct AppDevice {
-    pub name: String,
-    device: cpal::Device,
-    config: cpal::SupportedStreamConfig,
-}
-
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
     pub model: WhichModel,
-}
-
-pub fn get_devices() -> Vec<AppDevice> {
-    let host = cpal::default_host();
-    let mut all = Vec::new();
-    let input_devices = match host.input_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get input devices: {}", whatever);
-            Vec::new()
-        }
-    };
-    for device in input_devices {
-        let config = match device.default_input_config() {
-            Ok(config) => config,
-            Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
-            }
-        };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
-    }
-    let output_devices = match host.output_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get output devices: {}", whatever);
-            Vec::new()
-        }
-    };
-    for device in output_devices {
-        let config = match device.default_output_config() {
-            Ok(config) => config,
-            Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
-            }
-        };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
-    }
-
-    all
 }
 
 pub struct WhisperContext {
@@ -549,7 +476,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
     };
     let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
-    
+
     tracing::info!("Model loaded");
     Ok(WhisperContext {
         decoder,
@@ -559,62 +486,24 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
     })
 }
 
-// once the return value is dropped, listening stops
-// and the sender is closed
-pub fn start_listening(
-    app: &Sender<WhisperUpdate>,
-    app_device: &AppDevice,
+// thread closes when the receiver is closed
+pub fn start_whisper_thread(
+    app: Sender<WhisperUpdate>,
+    filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
-) -> Option<StreamState> {
-    tracing::info!(
-        "Listening on device: {}",
-        app_device.device.name().expect("device name")
-    );
-
-    let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
-
-    let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
-
-    let audio_config = &app_device.config;
-    let channel_count = audio_config.channels() as usize;
-    let data_callback = move |data: &[f32], _: &_| {
-        let singlechannel = data
-            .iter()
-            .step_by(channel_count)
-            .copied()
-            .collect::<Vec<f32>>();
-        audio_tx.send(singlechannel).expect("Failed to send data");
-    };
-    let stream = app_device
-        .device
-        .build_input_stream(
-            &app_device.config.clone().into(),
-            data_callback,
-            err_fn,
-            None,
-        )
-        .expect("Failed to build input stream");
-
-    stream.play().expect("Failed to play stream");
-
-    let app2 = app.clone();
-    let (filtered_tx, filtered_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
-    let config2 = app_device.config.clone();
-    thread::spawn(move || {
-        filter_audio_loop(app2, audio_rx, filtered_tx, config2);
-    });
-
-    let app2 = app.clone();
-    thread::spawn(move || match whisper_loop(app2, filtered_rx, params) {
-        Ok(_) => {
-            tracing::info!("Whisper loop finished");
-        }
-        Err(err) => {
-            tracing::error!("Whisper loop error: {}", err);
-        }
-    });
-
-    Some(StreamState { stream })
+)  {
+    let result = std::thread::Builder::new()
+        .name("whisper".to_string())
+        .spawn(move || {
+            match whisper_loop(app, filtered_rx, params) {
+                Ok(_) => tracing::info!("Whisper thread finished successfully"),
+                Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
+            }
+        });
+    match result {
+        Ok(_) => tracing::info!("Whisper thread started"),
+        Err(e) => tracing::error!("Failed to start whisper thread: {:?}", e),
+    }
 }
 
 fn whisper_loop(
@@ -645,78 +534,6 @@ fn whisper_loop(
     }
 }
 
-// a thread that collects non-silent audio samples and sends them on
-fn filter_audio_loop(
-    app: Sender<WhisperUpdate>,
-    audio_rx: Receiver<Vec<f32>>,
-    filtered_tx: Sender<Vec<f32>>,
-    device_config: SupportedStreamConfig,
-) {
-    // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
-    // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
-    // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
-    let mut under_threshold_count = 101;
-    let mut recording_buffer: Vec<f32> = Vec::new();
-
-    // a dynamic threshold (or something like silero-vad) would be better
-    let threshold = 0.05f32;
-
-    // accumulate data until we've been under the threshold for 100 samples
-    loop {
-        let data = match audio_rx.recv() {
-            Ok(data) => data,
-            Err(_) => {
-                tracing::info!("Audio stream closed");
-                return;
-            }
-        };
-
-        let mut max = 0.0;
-        for sample in data.iter() {
-            if *sample > max {
-                max = *sample;
-            }
-        }
-        app.send(WhisperUpdate::Level(max))
-            .expect("Failed to send level update");
-
-        let sample_rate = device_config.sample_rate().0 as usize;
-        let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
-
-        if max > threshold {
-            if under_threshold_count > 100 {
-                // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
-                app.send(WhisperUpdate::Recording(true))
-                    .expect("Failed to send recording update");
-            }
-            recording_buffer.extend_from_slice(&data);
-            under_threshold_count = 0;
-        } else {
-            // the incoming audio is below the threshold. Check how long it's been silent for.
-            under_threshold_count += 1;
-            if under_threshold_count < 50 {
-                // not long enough, keep listening
-                recording_buffer.extend_from_slice(&data);
-            } else {
-                if recording_buffer.len() > 0 {
-                    app.send(WhisperUpdate::Recording(false))
-                        .expect("Failed to send recording update");
-                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                    filtered_tx.send(resampled).expect("Send filtered");
-                    recording_buffer.clear();
-                }
-            }
-        }
-
-        // Whisper is trained to process 30 seconds at a time. So if we've got that much, send it now.
-        if recording_buffer.len() >= full_whisper_buffer {
-            let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-            filtered_tx.send(resampled).expect("Send filtered");
-            recording_buffer.clear();
-        }
-    }
-}
-
 fn whisperize(
     state: &mut WhisperContext,
     resampled: &[f32],
@@ -739,17 +556,24 @@ fn whisperize(
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
     let arcmel = Arc::new(mel_raw);
     let mel_duration = mel_start.elapsed().as_secs_f32();
-    tracing::info!("Mel spectrogram generation took {:.2} seconds", mel_duration);
+    tracing::info!(
+        "Mel spectrogram generation took {:.2} seconds",
+        mel_duration
+    );
 
     let mel_len = arcmel.len();
     let num_bins = state.config.num_mel_bins;
-    let mel = Tensor::from_slice(arcmel.as_slice(), (1, num_bins, mel_len / num_bins), &state.device)?;
+    let mel = Tensor::from_slice(
+        arcmel.as_slice(),
+        (1, num_bins, mel_len / num_bins),
+        &state.device,
+    )?;
     app.send(WhisperUpdate::Mel(DisplayMel {
         mel: arcmel,
-        num_bins: num_bins, 
+        num_bins: num_bins,
         num_frames: mel_len / num_bins,
     }))
-        .expect("Failed to send mel update");
+    .expect("Failed to send mel update");
 
     let segments = state.decoder.run(&mel, None)?;
 
@@ -778,25 +602,4 @@ fn whisperize(
         duration
     );
     Ok(())
-}
-
-fn convert_sample_rate(
-    audio: &[f32],
-    original_sample_rate: usize,
-) -> Result<Vec<f32>, &'static str> {
-    let params = rubato::SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: rubato::SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: rubato::WindowFunction::BlackmanHarris2,
-    };
-    const TARGET_SAMPLE_RATE: f64 = 16000.;
-    let ratio = TARGET_SAMPLE_RATE / original_sample_rate as f64;
-    let mut resampler =
-        rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
-
-    let waves_in = vec![audio; 1];
-    let waves_out = resampler.process(&waves_in, None).unwrap();
-    Ok(waves_out[0].to_vec())
 }

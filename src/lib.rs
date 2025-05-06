@@ -10,3 +10,4 @@ mod multilingual;
 mod mel;
 
 mod summary;
+mod audio;

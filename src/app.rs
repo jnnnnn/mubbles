@@ -1,14 +1,14 @@
 use std::{
     collections::VecDeque,
-    sync::mpsc::{self, TryRecvError},
+    sync::mpsc::{self, Sender, TryRecvError},
     time::Duration,
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::whisper::{
-    get_devices, AppDevice, DisplayMel, StreamState, WhichModel, WhisperParams, WhisperUpdate,
-};
+use crate::{audio::{get_devices, AppDevice, StreamState}, whisper::{
+    DisplayMel, WhichModel, WhisperParams,
+}};
 
 use crate::summary;
 
@@ -39,7 +39,7 @@ pub struct MubblesApp {
     from_whisper: mpsc::Receiver<WhisperUpdate>,
 
     #[serde(skip)]
-    stream: Option<StreamState>,
+    worker: Option<Worker>,
 
     #[serde(skip)]
     devices: Vec<AppDevice>,
@@ -103,14 +103,7 @@ impl Default for MubblesApp {
             recording: false,
             transcribing: false,
             from_whisper: rx,
-            stream: crate::whisper::start_listening(
-                &tx,
-                &devices[selected_device],
-                WhisperParams {
-                    accuracy: 1,
-                    model: WhichModel::from(1),
-                },
-            ),
+            worker: None,
             devices: devices,
             selected_device: selected_device,
             selected_model: 1,
@@ -144,6 +137,17 @@ impl MubblesApp {
     }
 }
 
+
+
+pub enum WhisperUpdate {
+    Recording(bool),
+    Transcribing(bool),
+    Transcript(String),
+    Level(f32),
+    Mel(DisplayMel),
+}
+
+
 impl eframe::App for MubblesApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -158,7 +162,7 @@ impl eframe::App for MubblesApp {
             devices,
             selected_device,
             selected_model,
-            stream,
+            worker: stream,
             whisper_tx,
             level,
             autotype,
@@ -221,7 +225,7 @@ impl eframe::App for MubblesApp {
                     );
                     if source.changed() {
                         let device = &devices[*selected_device];
-                        *stream = crate::whisper::start_listening(
+                        *stream = start_listening(
                             whisper_tx,
                             device,
                             WhisperParams {
@@ -236,7 +240,7 @@ impl eframe::App for MubblesApp {
                             WhichModel::from(i).to_string()
                         });
                     if model.changed() {
-                        *stream = crate::whisper::start_listening(
+                        *stream = start_listening(
                             whisper_tx,
                             &devices[*selected_device],
                             WhisperParams {
@@ -269,7 +273,7 @@ impl eframe::App for MubblesApp {
                         .add(egui::Slider::new(accuracy, 1..=8).text("Accuracy"))
                         .changed()
                     {
-                        *stream = crate::whisper::start_listening(
+                        *stream = start_listening(
                             whisper_tx,
                             &devices[*selected_device],
                             WhisperParams {
@@ -411,4 +415,31 @@ fn plot_mel(mel_texture: &Option<egui::TextureHandle>, ui: &mut egui::Ui) {
                 .corner_radius(10.0),
         );
     }
+}
+
+// Needed to hold thread handles so the threads stay open
+struct Worker {
+    audio: StreamState,
+}
+
+fn start_listening(
+    app: &Sender<WhisperUpdate>,
+    app_device: &AppDevice,
+    params: WhisperParams,
+) -> Option<Worker> {
+    // start the audio thread
+    let result = crate::audio::start_audio_thread(app.clone(), app_device);
+    
+    if result.is_err() {
+        tracing::error!("Failed to start audio thread");
+        return None;
+    }
+    let (stream, rx) = result.unwrap();
+
+    crate::whisper::start_whisper_thread(
+        app.clone(),
+        rx,
+        params,
+    );
+    Some(Worker{audio: stream})
 }
