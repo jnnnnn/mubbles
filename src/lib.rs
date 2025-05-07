@@ -8,6 +8,7 @@ pub use app::MubblesApp;
 mod whisper;
 mod multilingual;
 mod mel;
+mod whisper_word_align;
 
 mod summary;
 mod audio;

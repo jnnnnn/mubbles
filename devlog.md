@@ -784,18 +784,17 @@ Haven't figured out loopback yet, so I can only record the microphone for now.
 
 ## 2025-04-28
 
-picking up candle again ? Maybe it's better now. From memory I was having compilation errors last time. 
+picking up candle again ? Maybe it's better now. From memory I was having compilation errors last time.
 
 I've been using python faster-whisper for a year or two and it's been good. But I want a better UI.
 
 https://crates.io/crates/earshot (filters out silence) or silero-vad-rs (filters out non-speech, but requires gpu memory)
 
-model cached at 
+model cached at
 
 ```
 C:\Users\J\.cache\huggingface\hub\models--distil-whisper--distil-large-v3.5\blobs\76ec9f754fc4b4810845dc36b71d1897c1342e702810c179e1569690084cfb0c.part
 ```
-
 
 ## 2025-05-02
 
@@ -821,7 +820,7 @@ Candle mel spectrogram took: 212.6067ms
 Candle rufft mel spectrogram took: 456.6036ms
 ```
 
-So custom is way faster but doesn't look quite right. 
+So custom is way faster but doesn't look quite right.
 
 The unrolled ggml one candle rufft (not using rufft yet) is hardcoded to 2 threads which is why it is slower than the normal Candle one.
 
@@ -830,8 +829,8 @@ factor implementation out to separate file so copilot can work on it faster
 ok, with this implementation, we're 30% faster already.
 
 warning: `mel2` (bin "mel2") generated 5 warnings (run `cargo fix --bin "mel2"` to apply 1 suggestion)
-    Finished `release` profile [optimized] target(s) in 13.16s
-     Running `target\release\mel2.exe`
+Finished `release` profile [optimized] target(s) in 13.16s
+Running `target\release\mel2.exe`
 stft shape: [257, 2998]
 filters shape: [80, 257]
 result shape: [80, 2998]
@@ -839,10 +838,10 @@ Custom mel spectrogram took: 25.7204ms
 Candle mel spectrogram took: 201.4842ms
 Candle rufft mel spectrogram took: 171.4573ms
 
-
 Removed T:Float and now just f32. Much faster again:
 
      Running `target\release\mel2.exe`
+
 stft shape: [257, 2998]
 filters shape: [80, 257]
 result shape: [80, 2998]
@@ -852,12 +851,12 @@ Candle rufft mel spectrogram took: 90.3094ms
 
 Oh there's actually two rust fft libraries. ChatGPT says:
 
-- Use rufft if you want FFT acceleration on a GPU.
-- Use rustfft if you want simple, portable, CPU-side FFTs in pure Rust.
+-   Use rufft if you want FFT acceleration on a GPU.
+-   Use rustfft if you want simple, portable, CPU-side FFTs in pure Rust.
 
 Even the simple cpu one is WAY faster than the ggml version. I will get it to try rufft.
 
-Uh, chatgpt is wrong. rufft is just immature, it's not GPU. Stick with RustFFT. 
+Uh, chatgpt is wrong. rufft is just immature, it's not GPU. Stick with RustFFT.
 
 Continue optimizing.
 
@@ -865,19 +864,19 @@ Run `cargo flamegraph`. Requires admin on windows. Whatever, do that.
 
 Interesting. Biggest time sinks:
 
-- log_mel_spectrogram_() -- 86% of samples
-    - log_mel_spectrogram_w() -- 82% of samples
-        - fft() -- 37% of samples
-        - alloc Complex 9%
-        - ??? -- 82 - 47 = 35% 
+-   log*mel_spectrogram*() -- 86% of samples
+    -   log_mel_spectrogram_w() -- 82% of samples
+        -   fft() -- 37% of samples
+        -   alloc Complex 9%
+        -   ??? -- 82 - 47 = 35%
 
 So the fft is only taking up a third of the function time. The rest is spent on ??
 
 Alright, whatever. Allocations, hanning windows, whatever. Clean up later.
 
-Focus on how to compute incrementally as audio becomes available, because that's really what I'm trying to optimize. 
+Focus on how to compute incrementally as audio becomes available, because that's really what I'm trying to optimize.
 
-I need to keep my own buffers, of input and mel (and any necessary intermediate, like scratch for rustfft). 
+I need to keep my own buffers, of input and mel (and any necessary intermediate, like scratch for rustfft).
 
 Then I wonder how to implement fft just for a small part of the audio buffer that has just been populated, continuing on from the previous.
 
@@ -891,8 +890,8 @@ Started writing an incremental Mel class but I think the best thing is probably 
 
 looks like the range isn't quite right. Mapping the mel from -1..1 to 0..255 grayscale makes the black parts of the image gray. Maybe candle's implementation has a bug? Or maybe that's what openai spectra look like as well and they just didn't get the normalization right. todo: check openai spectra.
 
-Next steps: 
-0. just for fun, overlay previous transcript on mel
+Next steps: 0. just for fun, overlay previous transcript on mel
+
 1. separate out audio capture from whisper model.
 2. add speech detector so that segments are neater. copy from python.
 3. add second transcription stream for partials
@@ -905,7 +904,37 @@ see if copilot can translate it, I can't face doing it myself.
 
 I think I do need to pull the audio stuff out first. let's do that.
 
+## 2025-05-06
 
+Done!
 
+Next thing: per-word timestamps.
 
+Oh, candle already has support for Silero voice activity detection. It's not much code either. Nice.
+
+Ooh and it has qwen as well so I could do the summarization bit in the same app...
+
+https://github.com/linto-ai/whisper-timestamped is some further work on word alignment with whisper.
+
+wow ok that's 2400LOC. I am not that dedicated. It talks a lot about the naive approach -- run a full pass once to get the text, then a second pass to get the timestamps. Not sure how this works exactly.
+
+But I can use the large model to get the text, and then a tiny model to do alignment. Since I'm going to need the tiny model loaded anyway to compute partials.
+
+I wonder what happens if I just don't feed in the whole fully-padded mel to the model. Does it still work? Is it faster?
+
+### word level timestamps
+
+Copy implementation from original whisper python, get copilot to translate as much as possible automatically.
+
+Ooh https://github.com/nyrahealth/CrisperWhisper/blob/develop/README.md is interesting, it's aiming to be a more exact transcription including pauses, false starts, and so on. It's more accurate?
+
+huh, https://github.com/nyrahealth/CrisperWhisper/blob/develop/run_experiments/visualize_timestamped_transcripts.py is almost exactly what I'm aiming for.
+
+https://huggingface.co/spaces/Amrrs/openai-whisper-live-transcribe doesn't work ?
+
+https://github.com/ufal/whisper_streaming
+
+> we consecutively process new audio chunks, emit the transcripts that are confirmed by 2 iterations, and scroll the audio processing buffer on a timestamp of a confirmed complete sentence. The processing audio buffer is not too long and the processing is fast.
+>
+> In more detail: we use the init prompt, we handle the inaccurate timestamps, we re-process confirmed sentence prefixes and skip them, making sure they don't overlap, and we limit the processing buffer window.
 
