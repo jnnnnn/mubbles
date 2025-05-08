@@ -1,3 +1,6 @@
 [submodule "whisper"]
 	path = whisper
 	url = https://github.com/openai/whisper.git
+[submodule "candle"]
+	path = candle
+	url = https://github.com/huggingface/candle.git
