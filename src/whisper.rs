@@ -511,7 +511,9 @@ fn whisper_loop(
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
 ) -> Result<(), anyhow::Error> {
+    app.send(WhisperUpdate::Status("Loading whisper model...".to_string()))?;
     let mut ctx: WhisperContext = load_whisper_model(params.model)?;
+    app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
         let mut aggregated_data = match filtered_rx.recv() {
@@ -545,6 +547,7 @@ fn whisperize(
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
 
+    app.send(WhisperUpdate::Status("Levels...".to_string()))?;
     // boost the levels to at least 50% of the max
     let max = resampled.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
     let boost = 0.5f32 / max;
@@ -553,6 +556,7 @@ fn whisperize(
     let mel_start = std::time::Instant::now();
     //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
 
+    app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
     let arcmel = Arc::new(mel_raw);
     let mel_duration = mel_start.elapsed().as_secs_f32();
@@ -574,6 +578,8 @@ fn whisperize(
         num_frames: mel_len / num_bins,
     }))
     .expect("Failed to send mel update");
+
+    app.send(WhisperUpdate::Status("Running Whisper decoder...".to_string()))?;
 
     let segments = state.decoder.run(&mel, None)?;
 
@@ -601,5 +607,7 @@ fn whisperize(
         input_duration,
         duration
     );
+
+    app.send(WhisperUpdate::Status("Transcribed ".to_string()))?;
     Ok(())
 }

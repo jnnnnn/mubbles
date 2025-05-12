@@ -926,7 +926,7 @@ I wonder what happens if I just don't feed in the whole fully-padded mel to the 
 
 Copy implementation from original whisper python, get copilot to translate as much as possible automatically.
 
-Ooh https://github.com/nyrahealth/CrisperWhisper/blob/develop/README.md is interesting, it's aiming to be a more exact transcription including pauses, false starts, and so on. It's more accurate?
+Ooh https://github.com/nyrahealth/CrisperWhisper/blob/develop/README1.md is interesting, it's aiming to be a more exact transcription including pauses, false starts, and so on. It's more accurate?
 
 huh, https://github.com/nyrahealth/CrisperWhisper/blob/develop/run_experiments/visualize_timestamped_transcripts.py is almost exactly what I'm aiming for.
 
@@ -937,4 +937,14 @@ https://github.com/ufal/whisper_streaming
 > we consecutively process new audio chunks, emit the transcripts that are confirmed by 2 iterations, and scroll the audio processing buffer on a timestamp of a confirmed complete sentence. The processing audio buffer is not too long and the processing is fast.
 >
 > In more detail: we use the init prompt, we handle the inaccurate timestamps, we re-process confirmed sentence prefixes and skip them, making sure they don't overlap, and we limit the processing buffer window.
+
+## 2025-05-12
+
+Added a status display, pretty cool. Mels are real fast now.
+
+OK, let's try to get this more accurate.
+
+Split the 30-second window into three. The first ten seconds is context; the second 10 seconds' transcript is saved, and the last ten seconds is context for the next lot. No, can just split in half?
+
+Save as soon as two transcripts overlap enough?
 

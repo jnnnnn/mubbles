@@ -75,6 +75,9 @@ pub struct MubblesApp {
     ai_summary: summary::SummaryState,
 
     accuracy: usize,
+
+    #[serde(skip)]
+    status: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -116,6 +119,7 @@ impl Default for MubblesApp {
             changed: false,
             tab: AppTab::Transcript,
             accuracy: 1,
+            status: "Init".to_owned(),
         }
     }
 }
@@ -145,6 +149,7 @@ pub enum WhisperUpdate {
     Transcript(String),
     Level(f32),
     Mel(DisplayMel),
+    Status(String),
 }
 
 
@@ -170,6 +175,7 @@ impl eframe::App for MubblesApp {
             accuracy,
             changed,
             mel_texture,
+            status,
             ..
         } = self;
         // drain from_whisper channel
@@ -197,6 +203,9 @@ impl eframe::App for MubblesApp {
                         color_image,
                         egui::TextureOptions::default(),
                     ));
+                }
+                Ok(WhisperUpdate::Status(s)) => {
+                    *status = s;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => panic!("Whisper channel disconnected"),
@@ -251,6 +260,7 @@ impl eframe::App for MubblesApp {
                     }
                 },
             );
+            ui.label(format!("Status: {}", status));
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
