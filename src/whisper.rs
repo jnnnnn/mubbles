@@ -633,13 +633,13 @@ fn whisperize(
         "Running Whisper decoder...".to_string(),
     ))?;
 
-    let initial_prompt_for_run = if state.previous_content_tokens.is_empty() {
+    let _initial_prompt_for_run = if state.previous_content_tokens.is_empty() {
         None
     } else {
         Some(state.previous_content_tokens.as_slice())
     };
     let (segments, last_segment_content_tokens) =
-        state.decoder.run(&mel, None, initial_prompt_for_run)?;
+        state.decoder.run(&mel, None, None)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments.iter() {
