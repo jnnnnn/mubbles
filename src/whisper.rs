@@ -88,6 +88,9 @@ struct Decoder {
     no_speech_token: u32,
     no_timestamps_token: u32,
     language_token: Option<u32>,
+    startofprev_token: u32,
+    startoflm_token: u32,
+    timestamp_begin_token: u32,
 }
 
 impl Decoder {
@@ -128,6 +131,9 @@ impl Decoder {
             None => anyhow::bail!("unable to find any non-speech token"),
             Some(n) => n,
         };
+        let startofprev_token = token_id(&tokenizer, "<|startofprev|>").unwrap_or(0);
+        let startoflm_token = token_id(&tokenizer, "<|startoflm|>").unwrap_or(0);
+        let timestamp_begin_token = token_id(&tokenizer, "<|0.00|>").unwrap_or(0);
         Ok(Self {
             model,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
@@ -143,10 +149,18 @@ impl Decoder {
             no_speech_token,
             language_token,
             no_timestamps_token,
+            startofprev_token,
+            startoflm_token,
+            timestamp_begin_token,
         })
     }
 
-    fn decode(&mut self, mel: &Tensor, t: f64) -> Result<DecodingResult> {
+    fn decode(
+        &mut self,
+        mel: &Tensor,
+        t: f64,
+        prompt_content_tokens: Option<&[u32]>,
+    ) -> Result<DecodingResult> {
         let model = &mut self.model;
         let audio_features = model.encoder_forward(mel, true)?;
         if self.verbose {
@@ -155,7 +169,20 @@ impl Decoder {
         let sample_len = model.config().max_target_positions / 2;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
-        let mut tokens = vec![self.sot_token];
+
+        let mut tokens = vec![];
+
+        if let Some(prompt_content_tokens) = prompt_content_tokens {
+            if !prompt_content_tokens.is_empty() {
+                tokens.push(self.startofprev_token);
+                tokens.extend_from_slice(prompt_content_tokens);
+            }
+        }
+
+        let prefix_len = tokens.len();
+
+        tokens.push(self.sot_token);
+
         if let Some(language_token) = self.language_token {
             tokens.push(language_token);
         }
@@ -163,9 +190,11 @@ impl Decoder {
             None | Some(Task::Transcribe) => tokens.push(self.transcribe_token),
             Some(Task::Translate) => tokens.push(self.translate_token),
         }
+
         if !self.timestamps {
             tokens.push(self.no_timestamps_token);
         }
+
         for i in 0..sample_len {
             let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
 
@@ -222,6 +251,13 @@ impl Decoder {
         let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
         let avg_logprob = sum_logprob / tokens.len() as f64;
 
+        // drop prefix tokens from start of vec
+        let tokens = tokens
+            .iter()
+            .skip(prefix_len)
+            .copied()
+            .collect::<Vec<u32>>();
+
         Ok(DecodingResult {
             tokens,
             text,
@@ -232,9 +268,13 @@ impl Decoder {
         })
     }
 
-    fn decode_with_fallback(&mut self, segment: &Tensor) -> Result<DecodingResult> {
+    fn decode_with_fallback(
+        &mut self,
+        segment: &Tensor,
+        prompt_content_tokens: Option<&[u32]>,
+    ) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t);
+            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
@@ -255,21 +295,30 @@ impl Decoder {
         unreachable!()
     }
 
-    fn run(&mut self, mel: &Tensor, _times: Option<(f64, f64)>) -> Result<Vec<Segment>> {
+    fn run(
+        &mut self,
+        mel: &Tensor,
+        _times: Option<(f64, f64)>,
+        prompt_content_tokens: Option<&[u32]>,
+    ) -> Result<(Vec<Segment>, Vec<u32>)> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
         let mut segments = vec![];
+        let mut last_segment_content_tokens = vec![];
         while seek < content_frames {
             let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
             let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
             let mel_segment = mel.narrow(2, seek, segment_size)?;
             let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let dr = self.decode_with_fallback(&mel_segment)?;
+
+            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens)?;
+
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
                 println!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
+            last_segment_content_tokens = dr.tokens.clone();
             let segment = Segment {
                 start: time_offset,
                 duration: segment_duration,
@@ -277,7 +326,7 @@ impl Decoder {
             };
             segments.push(segment)
         }
-        Ok(segments)
+        Ok((segments, last_segment_content_tokens))
     }
 
     fn set_language_token(&mut self, language_token: Option<u32>) {
@@ -408,7 +457,6 @@ impl WhichModel {
     }
 }
 
-
 #[derive(Default)]
 pub struct DisplayMel {
     pub mel: Arc<Vec<f32>>,
@@ -426,6 +474,7 @@ pub struct WhisperContext {
     device: candle_core::Device,
     config: Config,
     mel_filters: Vec<f32>,
+    previous_content_tokens: Vec<u32>, // Added to store context
 }
 
 pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
@@ -483,6 +532,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         device,
         config,
         mel_filters,
+        previous_content_tokens: Vec::new(), // Initialize context
     })
 }
 
@@ -491,14 +541,12 @@ pub fn start_whisper_thread(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
-)  {
+) {
     let result = std::thread::Builder::new()
         .name("whisper".to_string())
-        .spawn(move || {
-            match whisper_loop(app, filtered_rx, params) {
-                Ok(_) => tracing::info!("Whisper thread finished successfully"),
-                Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
-            }
+        .spawn(move || match whisper_loop(app, filtered_rx, params) {
+            Ok(_) => tracing::info!("Whisper thread finished successfully"),
+            Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
         });
     match result {
         Ok(_) => tracing::info!("Whisper thread started"),
@@ -511,7 +559,9 @@ fn whisper_loop(
     filtered_rx: Receiver<Vec<f32>>,
     params: WhisperParams,
 ) -> Result<(), anyhow::Error> {
-    app.send(WhisperUpdate::Status("Loading whisper model...".to_string()))?;
+    app.send(WhisperUpdate::Status(
+        "Loading whisper model...".to_string(),
+    ))?;
     let mut ctx: WhisperContext = load_whisper_model(params.model)?;
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
@@ -579,9 +629,18 @@ fn whisperize(
     }))
     .expect("Failed to send mel update");
 
-    app.send(WhisperUpdate::Status("Running Whisper decoder...".to_string()))?;
+    app.send(WhisperUpdate::Status(
+        "Running Whisper decoder...".to_string(),
+    ))?;
 
-    let segments = state.decoder.run(&mel, None)?;
+    let initial_prompt_for_run = if state.previous_content_tokens.is_empty() {
+        None
+    } else {
+        Some(state.previous_content_tokens.as_slice())
+    };
+    let (segments, last_segment_content_tokens) =
+        state.decoder.run(&mel, None, initial_prompt_for_run)?;
+    state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments.iter() {
         let text = segment.dr.text.clone();
