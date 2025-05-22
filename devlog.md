@@ -948,3 +948,20 @@ Split the 30-second window into three. The first ten seconds is context; the sec
 
 Save as soon as two transcripts overlap enough?
 
+Look at whisper's decoding.py. It feeds in previous tokens (see `_get_initial_tokens`). The candle model in whisper.rs and model.rs (`TextDecoder`) doesn't do that. Let's change that.
+
+## 2025-05-13
+
+feeding in previous tokens seems to make it go crazy. all sorts of repetition. possibly more trouble than its worth. the prev text token and SOT token have to be in the right spots.
+
+I think getting timestamps working will make segmenting much better. 
+
+## 2025-05-18
+
+https://github.com/Zackriya-Solutions/meeting-minutes is not bad but:
+ - tauri frontend -- js / python build process
+
+recommends LLMs above 32B for summarization as otherwise hallucinate
+
+## 2025-05-20
+
