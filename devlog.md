@@ -963,5 +963,33 @@ https://github.com/Zackriya-Solutions/meeting-minutes is not bad but:
 
 recommends LLMs above 32B for summarization as otherwise hallucinate
 
-## 2025-05-20
+## 2025-05-24
+
+Ah, I now understand what a 'segment' is in the original openai code:
+
+The encoder takes mel frames and produces audio tokens (ints). Each audio token represents two mel frames, or 0.02s. 
+
+The decoder takes audio tokens and produces text tokens. Text tokens are decoded into strings, with the tokenizer converting single or paired text tokens into particular strings.
+
+Some text tokens represent timestamps instead of output text. The whisper model takes a 30-second mel audio (1500 mel frames) and produces several segments of text tokens from it. This represents  distinct utterances. These segments are separated by timestamp tokens in the stream of text tokens output.
+
+The openai code returns these segments separately; the candle whisper model just ignores the timestamp tokens, as the heuristics to separate segments are a little spicy.
+
+I think a VAD system would be better; doing the segmentation before feeding the audio into Whisper means I don't have to implement the heuristics. It also makes things more responsive and more efficient. If I rely on Whisper for segmentation, I will have to process some audio multiple times.
+
+The downside is having to incorporate a VAD into my application, making it larger and slower to build. But pretty much every whisper implementation I have seen makes this decision so it seems obvious.
+
+The other major advantage of adding a VAD is that it is cheap to run continuously, even if there may not be speech. This makes listening continuously much more efficient, as non-speech audio will not be processed through whisper at all.
+
+The downside of a VAD is slightly more memory usage. But I guess I could unload the whisper model after a few seconds of silence and that would mean far lower memory usage while the VAD is not detecting speech.
+
+
+It is frustrating that both the openai and the candle implementations make no distinction between the different types of tokens.
+
+It is also hard to keep track of the shapes of the various matrices and what each dimension represents.
+
+
+
+
+
 

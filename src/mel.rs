@@ -2,7 +2,6 @@ use rustfft::{num_complex::Complex, FftPlanner};
 
 
 #[allow(clippy::too_many_arguments)]
-// https://github.com/ggerganov/whisper.cpp/blob/4774d2feb01a772a15de81ffc34b34a1f294f020/whisper.cpp#L2414
 fn log_mel_spectrogram_w(
     hann: &[f32],
     samples: &[f32],
@@ -130,6 +129,10 @@ fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
     buffer
 }
 
+/// Converts PCM audio to a mel spectrogram using the provided mel filters.
+/// The mel filters are used to convert the FFT output to the mel scale.
+/// Each mel frame contains n_mel frequency bins (80 or 128), representing low to high frequencies.
+/// Each mel frame covers a time window of 160 samples (10ms at 16kHz).
 pub(crate) fn pcm_to_mel(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -> Vec<f32> {
     log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, n_mel)
 }

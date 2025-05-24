@@ -1,73 +1,179 @@
+use candle_core::{Device, IndexOp, Result, Tensor};
+use std::cell::RefCell;
+use std::rc::Rc;
+use tokenizers::Tokenizer;
+
+use candle_transformers::models::whisper as m;
+
+const HOP_LENGTH: usize = 160;
+const SAMPLE_RATE: usize = 16000;
+// Time per audio frame fed to the decoder, after encoder's downsampling by 2
+const TIME_PER_AUDIO_FRAME: f64 = (2.0 * HOP_LENGTH as f64) / SAMPLE_RATE as f64;
+
 #[derive(Debug, Clone)]
-pub struct AlignedWord {
+pub struct WordTiming {
     pub word: String,
-    pub start: f32,
-    pub end: f32,
-    pub probability: f32,
     pub tokens: Vec<u32>,
+    pub start: f64,
+    pub end: f64,
+    pub probability: f64,
 }
 
-/// Align tokens to frames using Dynamic Time Warping (DTW).
-/// This function assumes placeholder attention weights for now.
-pub fn find_alignment_with_dtw(
-    tokens: &[u32],
-    num_frames: usize,
-    attention_weights: &[Vec<f32>], // Placeholder for attention weights
-    tokenizer: &tokenizers::Tokenizer,
-) -> Vec<AlignedWord> {
-    // Decode tokens into text
-    let text = tokenizer.decode(tokens, true).unwrap_or_default();
-    let words: Vec<&str> = text.split_whitespace().collect();
+// Helper function for DTW backtracing.
+// trace is an (N+1)x(M+1) matrix where N is number of rows in original cost matrix (text tokens)
+// and M is number of columns (audio frames).
+// Returns a path as Vec<(text_idx, time_idx)>, where indices are 0-based.
+fn backtrace(trace: &Vec<Vec<i8>>, n_rows: usize, n_cols: usize) -> Vec<(usize, usize)> {
+    let mut path = Vec::new();
+    // 1-based for trace, corresponds to 0-based n_rows-1 in x
+    let mut row = n_rows;
+    let mut col = n_cols;
 
-    // Placeholder: Generate dummy attention weights if not provided
-    let attention_weights = if attention_weights.is_empty() {
-        vec![vec![1.0 / num_frames as f32; num_frames]; tokens.len()]
-    } else {
-        attention_weights.to_vec()
-    };
+    while row > 0 || col > 0 {
+        path.push((row.saturating_sub(1), col.saturating_sub(1)));
+        if row == 0 {
+            col = col.saturating_sub(1);
+        } else if col == 0 {
+            row = row.saturating_sub(1);
+        } else {
+            match trace[row][col] {
+                0 => {
+                    row = row.saturating_sub(1);
+                    col = col.saturating_sub(1);
+                }
+                1 => {
+                    row = row.saturating_sub(1);
+                }
+                2 => {
+                    col = col.saturating_sub(1);
+                }
+                _ => {
+                    if row > 0 && col > 0 {
+                        row -= 1;
+                        col -= 1;
+                    } else if row > 0 {
+                        row -= 1;
+                    } else {
+                        col -= 1;
+                    }
+                }
+            }
+        }
+    }
+    path.reverse();
+    path
+}
 
-    // DTW alignment: Map tokens to frames
-    let mut token_to_frame = vec![0; tokens.len()];
-    let mut frame_to_token = vec![0; num_frames];
+/// Calculates the optimal path through a cost matrix using Dynamic Time Warping.
+/// x_tensor is the input cost matrix (e.g., -log_probabilities),
+/// where rows correspond to text tokens and columns to audio frames.
+fn dtw_path_from_matrix(x_tensor: &Tensor) -> Result<Vec<(usize, usize)>> {
+    let x_dims = x_tensor.dims();
+    if x_dims.len() != 2 {
+        return Err(candle_core::Error::Msg(format!(
+            "Cost matrix for DTW must be 2D, got shape {:?}",
+            x_dims
+        )));
+    }
+    let n_rows = x_dims[0]; // Number of text tokens
+    let n_cols = x_dims[1]; // Number of audio frames
 
-    // Naive DTW implementation (replace with optimized version later)
-    for (token_idx, token_weights) in attention_weights.iter().enumerate() {
-        let max_frame = token_weights
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(frame_idx, _)| frame_idx)
-            .unwrap_or(0);
-        token_to_frame[token_idx] = max_frame;
-        frame_to_token[max_frame] = token_idx;
+    if n_rows == 0 || n_cols == 0 {
+        return Ok(Vec::new()); // Return an empty path if either dimension is zero
     }
 
-    // Group tokens into words and assign timestamps
-    let mut aligned_words = Vec::new();
-    let mut current_frame = 0;
-    let mut token_index = 0;
+    let x_data: Vec<Vec<f32>> = x_tensor.to_vec2()?;
 
-    for word in words {
-        let start_frame = token_to_frame.get(token_index).cloned().unwrap_or(current_frame);
-        let end_frame = token_to_frame
-            .get(token_index + word.len())
-            .cloned()
-            .unwrap_or(start_frame + 1);
+    // Dimensions are (n_rows+1) x (n_cols+1) to handle boundary conditions.
+    let mut cost = vec![vec![f32::INFINITY; n_cols + 1]; n_rows + 1];
+    let mut trace = vec![vec![-1i8; n_cols + 1]; n_rows + 1]; // -1 indicates unvisited/error
 
-        // Assign tokens to this word
-        let tokens_for_word = tokens[token_index..token_index + word.len().min(tokens.len())].to_vec();
-        token_index += word.len();
+    cost[0][0] = 0.0; // Cost of aligning empty sequences is 0.
 
-        aligned_words.push(AlignedWord {
-            word: word.to_string(),
-            start: start_frame as f32 / num_frames as f32,
-            end: end_frame as f32 / num_frames as f32,
-            probability: 1.0, // Placeholder probability
-            tokens: tokens_for_word,
-        });
+    for i in 1..=n_rows {
+        for j in 1..=n_cols {
+            let c_diag = cost[i - 1][j - 1];
+            let c_up = cost[i - 1][j];
+            let c_left = cost[i][j - 1];
 
-        current_frame = end_frame;
+            let (min_prev_cost, move_idx) = if c_diag <= c_up && c_diag <= c_left {
+                (c_diag, 0i8) // 0 for diagonal
+            } else if c_up <= c_diag && c_up <= c_left {
+                (c_up, 1i8) // 1 for up
+            } else {
+                (c_left, 2i8) // 2 for left
+            };
+
+            // Current cell's cost in x_data is x_data[i-1][j-1] due to 0-indexing.
+            cost[i][j] = x_data[i - 1][j - 1] + min_prev_cost;
+            trace[i][j] = move_idx;
+        }
     }
 
-    aligned_words
+    let path = backtrace(&trace, n_rows, n_cols);
+    Ok(path)
+}
+
+fn median_filter_tensor(tensor: &Tensor, _filter_width: usize) -> Result<Tensor> {
+    // TODO: Implement median filter for Tensor
+    Ok(tensor.clone())
+}
+
+pub fn set_attention_hooks(
+    decoder: &mut m::model::TextDecoder,
+) -> Result<std::sync::mpsc::Receiver<(usize, Tensor)>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    for i in 0..decoder.n_blocks() {
+        let tx_clone = tx.clone();
+        decoder.set_attention_hook(
+            i,
+            Some(Box::new(move |qk: &Tensor| {
+                let qk_slice = qk.i((0, .., .., ..))?; // Extract the relevant slice
+                tx_clone
+                    .send((i, qk_slice))
+                    .map_err(|e| candle_core::Error::Msg(format!("Failed to send tensor: {}", e)))
+            })),
+        );
+    }
+
+    Ok(rx)
+}
+
+pub fn clear_attention_hooks(decoder: &mut m::model::TextDecoder) {
+    for i in 0..decoder.n_blocks() {
+        decoder.set_attention_hook(i, None);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn find_alignment(
+    decoder: &mut m::model::TextDecoder,
+    config: &m::Config,
+    tokenizer: &Tokenizer,
+    text_tokens_for_alignment: &[u32],
+    audio_features: &Tensor,
+    num_mel_frames: usize,
+    qk_scale: f32, // Typically 1.0 if not included in QK calculation, or 1/sqrt(head_dim)
+    medfilt_width: usize,
+    device: &Device,
+) -> Result<Vec<WordTiming>> {
+    if text_tokens_for_alignment.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // install hooks on the cross-attention layers to retrieve the attention weights
+    let n = decoder.n_blocks();
+
+    /// Original python
+    ///     logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
+    /// sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
+    /// token_probs = sampled_logits.softmax(dim=-1)
+    /// text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
+    /// text_token_probs = text_token_probs.tolist()
+    // rust equivalent
+    for i in 0..n {
+        decoder.set_attention_hook(i, None);
+    }
+
+    Ok(Vec::new())
 }

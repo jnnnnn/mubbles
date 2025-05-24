@@ -12,7 +12,7 @@ use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, Config};
 
-use crate::app::WhisperUpdate;
+use crate::{app::WhisperUpdate, whisper_word_align::{clear_attention_hooks, set_attention_hooks}};
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -158,10 +158,11 @@ impl Decoder {
     fn decode(
         &mut self,
         mel: &Tensor,
-        t: f64,
+        temperature: f64,
         prompt_content_tokens: Option<&[u32]>,
     ) -> Result<DecodingResult> {
         let model = &mut self.model;
+        // todo: running the encoder is expensive! Do it once (separately to decode) and reuse the result for each temperature.
         let audio_features = model.encoder_forward(mel, true)?;
         if self.verbose {
             println!("audio features: {:?}", audio_features.dims());
@@ -201,8 +202,26 @@ impl Decoder {
             // The model expects a batch dim but this inference loop does not handle
             // it so we add it at this point.
             let tokens_t = tokens_t.unsqueeze(0)?;
+            let decoder = match model {
+                Model::Normal(m) => &mut m.decoder,
+                Model::Quantized(m) => anyhow::bail!("Quantized timestamping not implemented"),
+            };
+            let qk_receiver = set_attention_hooks(decoder)?;
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
-
+            // clear hooks to close all senders, so the receiver can be dropped
+            let decoder = match model {
+                Model::Normal(m) => &mut m.decoder,
+                Model::Quantized(m) => anyhow::bail!("Quantized timestamping not implemented"),
+            };
+            clear_attention_hooks(decoder);
+            let query_key_tensors: Vec<(usize, Tensor)> = qk_receiver
+                .into_iter()
+                .collect();
+            // log the indices to check they're in the right order
+            tracing::info!(
+                "QK indices: {:?}",
+                query_key_tensors.iter().map(|(i, _)| i).collect::<Vec<_>>()
+            );
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
             if i == 0 {
@@ -225,8 +244,8 @@ impl Decoder {
             //   only consider timestamps when sampling.
             // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L439
             let logits = logits.broadcast_add(&self.suppress_tokens)?;
-            let next_token = if t > 0f64 {
-                let prs = softmax(&(&logits / t)?, 0)?;
+            let next_token = if temperature > 0f64 {
+                let prs = softmax(&(&logits / temperature)?, 0)?;
                 let logits_v: Vec<f32> = prs.to_vec1()?;
                 let distr = rand::distr::weighted::WeightedIndex::new(&logits_v)?;
                 distr.sample(&mut self.rng) as u32
@@ -263,11 +282,80 @@ impl Decoder {
             text,
             avg_logprob,
             no_speech_prob,
-            temperature: t,
+            temperature,
             compression_ratio: f64::NAN,
         })
     }
 
+    // fn find_alignment() {
+    //     let mut all_word_timings: Vec<WordTiming> = Vec::new();
+
+    //     // Word alignment parameters
+    //     let word_timestamps = true; // Assuming we want word timestamps
+    //     let qk_scale = 1.0f32;
+    //     let medfilt_width = 7;
+    //     let prepend_punctuations = "\"'“¿([{-";
+    //     let append_punctuations = "\"'.。,，!！?？:：”)]}、";
+
+    //     // Collect all text tokens from all segments for alignment
+    //     let mut text_tokens_for_alignment = Vec::new();
+    //     for seg_res in &segments_results {
+    //         // Assuming DecodingResult has a `tokens` field that are *text* tokens (post-SOT, etc.)
+    //         // and *before* EOT. The `find_alignment` Python code filters for token < tokenizer.eot.
+    //         // This needs to match how `seg_res.tokens` are structured.
+    //         let eot_id = state
+    //             .decoder
+    //             .tokenizer
+    //             .token_to_id(m::EOT_TOKEN)
+    //             .unwrap_or(u32::MAX);
+    //         text_tokens_for_alignment.extend(
+    //             seg_res
+    //                 .dr
+    //                 .tokens
+    //                 .iter()
+    //                 .filter(|&&tok| tok < eot_id)
+    //                 .cloned(),
+    //         );
+    //     }
+
+    //     if !text_tokens_for_alignment.is_empty() {
+    //         match &mut state.decoder.model {
+    //             Model::Normal(normal_model) => {
+    //                 match find_alignment(
+    //                     &mut normal_model.decoder,
+    //                     &state.config,
+    //                     &state.decoder.tokenizer,
+    //                     &text_tokens_for_alignment,
+    //                     &audio_features,
+    //                     num_mel_frames,
+    //                     qk_scale,
+    //                     medfilt_width,
+    //                     &state.device,
+    //                 ) {
+    //                     Ok(mut timings) => {
+    //                         merge_punctuations(
+    //                             &mut timings,
+    //                             prepend_punctuations,
+    //                             append_punctuations,
+    //                         );
+    //                         all_word_timings.extend(timings);
+    //                     }
+    //                     Err(e) => {
+    //                         tracing::error!("Word alignment failed: {:?}", e);
+    //                         app.send(WhisperUpdate::Status(format!("Alignment error: {}", e)))?;
+    //                     }
+    //                 }
+    //             }
+    //             Model::Quantized(_) => {
+    //                 // find_alignment might need to be generic or have a quantized path
+    //                 tracing::warn!("Word alignment not implemented for quantized models yet.");
+    //                 app.send(WhisperUpdate::Status(
+    //                     "Alignment not for quantized".to_string(),
+    //                 ))?;
+    //             }
+    //         }
+    //     }
+    // }
     fn decode_with_fallback(
         &mut self,
         segment: &Tensor,
@@ -279,6 +367,8 @@ impl Decoder {
                 return dr;
             }
             // On errors, we try again with a different temperature.
+            // todo: unimplemented. currently the only way for an error to happen is if an allocation fails. 
+            // compression_ratio is not calculated, so very repetitive outputs are not recalculated with a higher temperature.
             match dr {
                 Ok(dr) => {
                     let needs_fallback = dr.compression_ratio > m::COMPRESSION_RATIO_THRESHOLD
@@ -582,7 +672,7 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        whisperize(&mut ctx, &aggregated_data, &app, &params)?;
+        whisperize(&mut ctx, &aggregated_data, &app)?;
     }
 }
 
@@ -590,7 +680,6 @@ fn whisperize(
     state: &mut WhisperContext,
     resampled: &[f32],
     app: &Sender<WhisperUpdate>,
-    _params: &WhisperParams,
 ) -> Result<(), anyhow::Error> {
     let start = std::time::Instant::now();
 
@@ -598,34 +687,31 @@ fn whisperize(
         .expect("Failed to send transcribing update");
 
     app.send(WhisperUpdate::Status("Levels...".to_string()))?;
-    // boost the levels to at least 50% of the max
-    let max = resampled.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
-    let boost = 0.5f32 / max;
-    let resampled: Vec<f32> = resampled.iter().map(|x| x * boost).collect();
 
     let mel_start = std::time::Instant::now();
-    //let mel = log_mel_spectrogram(&resampled, state.config.num_mel_bins); // Use the new function
-
     app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
     let arcmel = Arc::new(mel_raw);
-    let mel_duration = mel_start.elapsed().as_secs_f32();
+    let mel_duration_secs = mel_start.elapsed().as_secs_f32();
     tracing::info!(
         "Mel spectrogram generation took {:.2} seconds",
-        mel_duration
+        mel_duration_secs
     );
 
     let mel_len = arcmel.len();
-    let num_bins = state.config.num_mel_bins;
-    let mel = Tensor::from_slice(
+    let num_bins = state.config.num_mel_bins; 
+    let num_mel_frames = mel_len / num_bins; 
+    // shape typically 1 batch, 80 frequency bins, 3000 10ms frames
+    let mel_tensor = Tensor::from_slice(
         arcmel.as_slice(),
-        (1, num_bins, mel_len / num_bins),
+        (1, num_bins, num_mel_frames),
         &state.device,
-    )?;
+    )?; 
+
     app.send(WhisperUpdate::Mel(DisplayMel {
-        mel: arcmel,
-        num_bins: num_bins,
-        num_frames: mel_len / num_bins,
+        mel: arcmel.clone(),
+        num_bins,
+        num_frames: num_mel_frames,
     }))
     .expect("Failed to send mel update");
 
@@ -633,40 +719,29 @@ fn whisperize(
         "Running Whisper decoder...".to_string(),
     ))?;
 
-    let _initial_prompt_for_run = if state.previous_content_tokens.is_empty() {
-        None
-    } else {
-        Some(state.previous_content_tokens.as_slice())
-    };
-    let (segments, last_segment_content_tokens) =
-        state.decoder.run(&mel, None, None)?;
+    let (segments_results, last_segment_content_tokens) =
+        state.decoder.run(&mel_tensor, None, None)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
-    for segment in segments.iter() {
-        let text = segment.dr.text.clone();
-        tracing::info!("Transcribed segment: {:?}", segment);
-        const NO_SPEECH_THRESHOLD: f64 = 0.07;
-        const LOGPROB_THRESHOLD: f64 = -0.13;
-        if segment.dr.no_speech_prob > NO_SPEECH_THRESHOLD
-            && segment.dr.avg_logprob < LOGPROB_THRESHOLD
-        {
-            tracing::info!("No speech detected, skipping");
-            continue;
-        }
-        app.send(WhisperUpdate::Transcript(text))?;
+    for segment in segments_results.iter() {
+        let text = &segment.dr.text;
+        let start_time_s = segment.start;
+        let end_time_s = segment.start + segment.duration;
+
+        app.send(WhisperUpdate::Transcription(format!(
+            "[{:.2}s -> {:.2}s] {}",
+            start_time_s, end_time_s, text
+        )))?;
     }
 
     app.send(WhisperUpdate::Transcribing(false))?;
-
-    // trace how long it took and how long the input was
-    let duration = start.elapsed().as_secs_f32() as f64;
-    let input_duration = resampled.len() as f64 / 16000.;
+    let duration_secs = start.elapsed().as_secs_f64();
+    let input_duration_secs = resampled.len() as f64 / 16000.0; // Assuming 16kHz
     tracing::info!(
-        "Transcribed {} seconds of audio in {} seconds",
-        input_duration,
-        duration
+        "Whisper processing took {:.2}s for {:.2}s audio (RTF: {:.2}x)",
+        duration_secs,
+        input_duration_secs,
+        duration_secs / input_duration_secs
     );
-
-    app.send(WhisperUpdate::Status("Transcribed ".to_string()))?;
     Ok(())
 }

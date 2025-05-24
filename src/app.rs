@@ -146,7 +146,7 @@ impl MubblesApp {
 pub enum WhisperUpdate {
     Recording(bool),
     Transcribing(bool),
-    Transcript(String),
+    Transcription(String),
     Level(f32),
     Mel(DisplayMel),
     Status(String),
@@ -182,7 +182,7 @@ impl eframe::App for MubblesApp {
         loop {
             let whisper_update_result = from_whisper.try_recv();
             match whisper_update_result {
-                Ok(WhisperUpdate::Transcript(t)) => {
+                Ok(WhisperUpdate::Transcription(t)) => {
                     text.push_str(t.trim());
                     text.push_str("\n");
                     *changed = true;
