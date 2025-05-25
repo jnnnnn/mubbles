@@ -113,7 +113,7 @@ const LANGUAGES: [(&str, &str); 99] = [
 ];
 
 /// Returns the token id for the selected language.
-pub fn detect_language(model: &mut crate::whisper::Model, tokenizer: &Tokenizer, mel: &Tensor) -> Result<u32> {
+pub fn detect_language(model: &mut crate::whisper_model::Model, tokenizer: &Tokenizer, mel: &Tensor) -> Result<u32> {
     let (_bsize, _, seq_len) = mel.dims3()?;
     let mel = mel.narrow(
         2,

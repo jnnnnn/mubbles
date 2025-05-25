@@ -6,6 +6,7 @@ mod app;
 pub use app::MubblesApp;
 
 mod whisper;
+mod whisper_model;
 mod multilingual;
 mod mel;
 mod whisper_word_align;
