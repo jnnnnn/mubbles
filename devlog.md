@@ -988,6 +988,99 @@ It is frustrating that both the openai and the candle implementations make no di
 
 It is also hard to keep track of the shapes of the various matrices and what each dimension represents.
 
+## 2025-05-26
+
+### understanding cross-attention
+
+Reading openai whisper `qkv_attention()` in `model.py`:
+
+The resulting `qk` matrix in the `qkv_attention` function represents the scaled dot-product attention scores between the query (`q`) and key (`k`) tensors. Its shape is determined by the batch size, number of attention heads, and the sequence lengths of the query and key tensors.
+
+#### Breakdown of the `qk` Shape (General Case)
+
+1.  **Input Shapes**:
+    *   `q` (query): Shape `(n_batch, n_ctx_q, n_state)`
+        *   `n_batch`: Number of samples in the batch.
+        *   `n_ctx_q`: Query sequence length (e.g., number of text tokens).
+        *   `n_state`: Hidden state size (dimensionality of the model).
+    *   `k` (key): Shape `(n_batch, n_ctx_k, n_state)`
+        *   `n_ctx_k`: Key sequence length (e.g., number of audio frames or text tokens).
+    *   `v` (value): Shape `(n_batch, n_ctx_k, n_state)` (same shape as `k`)
+
+2.  **Reshaping for Multi-Head Attention**:
+    The `qkv_attention` function in `model.py` reshapes `q` and `k` as follows:
+    *   `q = q.view(n_batch, n_ctx_q, self.n_head, -1).permute(0, 2, 1, 3)`
+        *   Results in `q` having shape `(n_batch, self.n_head, n_ctx_q, head_dim)`, where `head_dim = n_state // self.n_head`.
+    *   `k = k.view(n_batch, n_ctx_k, self.n_head, -1).permute(0, 2, 1, 3)`
+        *   Results in `k` having shape `(n_batch, self.n_head, n_ctx_k, head_dim)`.
+
+3.  **Dot Product to Compute `qk`**:
+    The scaled dot product is computed:
+    ```python
+    qk = (q * scale) @ (k * scale).transpose(-1, -2)
+    ```
+    *   `q` has shape `(n_batch, self.n_head, n_ctx_q, head_dim)`.
+    *   `(k * scale).transpose(-1, -2)` has shape `(n_batch, self.n_head, head_dim, n_ctx_k)`.
+    *   The resulting `qk` has shape `(n_batch, self.n_head, n_ctx_q, n_ctx_k)`.
+
+#### Final Shape of `qk`
+
+*   `qk` is a 4D tensor with shape:
+    ```
+    (n_batch, n_head, n_ctx_q, n_ctx_k)
+    ```
+    *   `n_batch`: Number of samples in the batch.
+    *   `n_head`: Number of attention heads.
+    *   `n_ctx_q`: Sequence length of the query.
+    *   `n_ctx_k`: Sequence length of the key.
+    *   **Note**: For self-attention, `q`, `k`, and `v` are derived from the same input sequence, so `n_ctx_q == n_ctx_k`. For cross-attention, `q` is derived from one sequence (e.g., text tokens) and `k`, `v` from another (e.g., audio features), so `n_ctx_q` and `n_ctx_k` can be different.
+
+#### Interpretation of `qk`
+
+*   Each slice `qk[b, h]` (for a specific batch `b` and head `h`) is a matrix of shape `(n_ctx_q, n_ctx_k)`.
+*   Each element `qk[b, h, i, j]` represents the attention score between the `i`-th query token (from the query sequence) and the `j`-th key token (from the key sequence) for the `h`-th attention head in the `b`-th batch.
+
+#### Related Code in `timing.py` (Cross-Attention for Alignment)
+
+The `timing.py` script uses hooks on the `cross_attn` modules of the decoder blocks. In this context:
+*   The **query (`q`)** is derived from the text tokens. So, `n_ctx_q` corresponds to the number of text tokens in the current sequence (let's call this `n_text_tokens`).
+*   The **key (`k`)** and **value (`v`)** are derived from the encoded audio features (`xa`). So, `n_ctx_k` corresponds to the number of audio frames in the encoded audio (let's call this `n_audio_frames`, which is typically `mel_num_frames // 2`).
+
+The hook `QKs.__setitem__(index, outs[-1][0])` stores `qk[0]` (assuming batch size `n_batch=1` for typical inference in `timing.py`).
+*   The `[-1]` is because `MultiHeadAttention.forward()` returns `(wv, qk)`, and `[0]` selects the only batch at index 0.
+*   Thus, `QKs[layer_index]` will have the shape `(n_text_head, n_text_tokens, n_audio_frames)`.
+*   `QKs[layer_index][head_index]` will be a 2D matrix of shape `(n_text_tokens, n_audio_frames)`.
+
+#### Multiple Iterations
+
+The whole forward pass (qk generation) generates a single text token, so the model is run iteratively until it generates the End-Of-Text token.
+
+In the OpenAI code, the timing pass is after the text tokens are generated, and any generated token is dropped; this is when the hooks are added (and removed once finished) to record the QKs.
+
+Recording the QKs during the model run means only the last run needs to be saved for timing purposes.
+
+#### The timing weights
+
+The `weights` tensor is constructed as:
+```python
+weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
+```
+*   `QKs[_l][_h]` is the 2D attention score matrix `(n_text_tokens, n_audio_frames)` for a specific alignment head `_h` in layer `_l`.
+*   The resulting `weights` tensor will have the shape:
+    ```
+    (N_selected_alignment_heads, n_text_tokens, n_audio_frames)
+    ```
+    where `N_selected_alignment_heads` is the total number of heads selected for alignment across all layers.
+
+The subsequent operations in `timing.py` like `weights = weights[:, :, : num_frames // 2]` use these dimensions.
+
+#### Summary
+
+*   The general shape of `qk` from `qkv_attention` is `(n_batch, n_head, n_ctx_q, n_ctx_k)`.
+*   For **self-attention**, `n_ctx_q = n_ctx_k = n_ctx` (sequence length of the input).
+*   For **cross-attention** (e.g., in decoder attending to encoder output, as used for alignment in `timing.py`), `n_ctx_q` is the target sequence length (e.g., text tokens) and `n_ctx_k` is the source sequence length (e.g., audio frames).
+*   The `weights` tensor in `timing.py`, derived from cross-attention `qk` values, has the shape `(N_selected_alignment_heads, n_text_tokens, n_audio_frames)`.
+
 
 
 

@@ -1,13 +1,15 @@
-
 use anyhow::{Error as E, Result};
 use candle_core::{IndexOp, Tensor};
-use candle_nn::{ops::softmax};
+use candle_nn::ops::softmax;
 use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, Config};
 
-use crate::{whisper_word_align::{clear_attention_hooks, set_attention_hooks}};
+use crate::{
+    whisper::WhichModel,
+    whisper_word_align::{clear_attention_hooks, set_attention_hooks},
+};
 
 pub enum Model {
     Normal(m::model::Whisper),
@@ -68,6 +70,47 @@ pub(crate) struct Segment {
     pub dr: DecodingResult,
 }
 
+pub struct AlignmentHead {
+    pub layer: usize,
+    pub head: usize,
+}
+
+// indexes for (n_layers, n_heads) the cross-attention heads that are highly
+// correlated to the word-level timing, i.e. the alignment between audio and
+// text tokens.
+#[rustfmt::skip]
+pub(crate) static ALIGNMENT_HEADS: &[(WhichModel, &[usize])] = &[
+    (WhichModel::TinyEn, &[6, 12, 17, 18, 19, 20, 21, 22]),
+    (WhichModel::Tiny, &[14, 18, 20, 21, 22, 23]),
+    (WhichModel::BaseEn, &[27, 39, 41, 45, 47]), // [[3, 3], [4, 7], [5, 1], [5, 5], [5, 7]], layers 6, attention_heads 8
+    (WhichModel::Base, &[25, 34, 35, 39, 41, 42, 44, 46]),
+    (WhichModel::SmallEn, &[78, 84, 87, 92, 98, 101, 103, 108, 112, 116, 118, 120, 121, 122, 123, 126, 131, 134, 136]),
+    (WhichModel::Small, &[63, 69, 96, 100, 103, 104, 108, 115, 117, 125]),
+    (WhichModel::MediumEn, &[180, 225, 236, 238, 244, 256, 260, 265, 284, 286, 295, 298, 303, 320, 323, 329, 334, 348]),
+    (WhichModel::Medium, &[223, 244, 255, 257, 320, 372]),
+    (WhichModel::Large, &[199, 222, 224, 237, 447, 451, 457, 462, 475]),
+    (WhichModel::LargeV2, &[212, 277, 331, 332, 333, 355, 356, 364, 371, 379, 391, 422, 423, 443, 449, 452, 465, 467, 473, 505, 521, 532, 555]),
+    (WhichModel::LargeV3, &[140, 217, 258, 272, 321, 354, 391, 424, 481, 506]),
+    (WhichModel::Large, &[140, 217, 258, 272, 321, 354, 391, 424, 481, 506]),
+    (WhichModel::LargeV3Turbo, &[44, 51, 63, 66, 71, 74]),
+    //(WhichModel::Turbo, &[44, 51, 63, 66, 71, 74]),
+];
+
+pub fn get_alignment_heads(model: WhichModel, config: &Config) -> Vec<AlignmentHead> {
+    let heads = ALIGNMENT_HEADS
+        .iter()
+        .find(|(m, _)| *m == model)
+        .map(|(_, h)| *h)
+        .unwrap_or(&[]);
+    heads
+        .iter()
+        .map(|&index| AlignmentHead {
+            layer: index / config.encoder_attention_heads,
+            head: index % config.encoder_attention_heads,
+        })
+        .collect()
+}
+
 pub(crate) struct Decoder {
     model: Model,
     rng: rand::rngs::StdRng,
@@ -86,6 +129,7 @@ pub(crate) struct Decoder {
     startofprev_token: u32,
     startoflm_token: u32,
     timestamp_begin_token: u32,
+    alignment_heads: Vec<AlignmentHead>,
 }
 
 impl Decoder {
@@ -99,6 +143,7 @@ impl Decoder {
         task: Option<Task>,
         timestamps: bool,
         verbose: bool,
+        alignment_heads: Vec<AlignmentHead>,
     ) -> Result<Self> {
         let no_timestamps_token = token_id(&tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
         // Suppress the notimestamps token when in timestamps mode.
@@ -147,6 +192,7 @@ impl Decoder {
             startofprev_token,
             startoflm_token,
             timestamp_begin_token,
+            alignment_heads,
         })
     }
 
@@ -191,6 +237,7 @@ impl Decoder {
             tokens.push(self.no_timestamps_token);
         }
 
+        // Iteratively produce text tokens from encoded audio tokens. Stop when the model generates EOT.
         for i in 0..sample_len {
             let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
 
@@ -199,24 +246,24 @@ impl Decoder {
             let tokens_t = tokens_t.unsqueeze(0)?;
             let decoder = match model {
                 Model::Normal(m) => &mut m.decoder,
-                Model::Quantized(m) => anyhow::bail!("Quantized timestamping not implemented"),
+                Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
             };
             let qk_receiver = set_attention_hooks(decoder)?;
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
             // clear hooks to close all senders, so the receiver can be dropped
             let decoder = match model {
                 Model::Normal(m) => &mut m.decoder,
-                Model::Quantized(m) => anyhow::bail!("Quantized timestamping not implemented"),
+                Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
             };
             clear_attention_hooks(decoder);
-            let query_key_tensors: Vec<(usize, Tensor)> = qk_receiver
-                .into_iter()
-                .collect();
-            // log the indices to check they're in the right order
+            let query_key_tensors: Vec<Tensor> = qk_receiver.into_iter().collect();
+
+            // print shape of first query_key_tensor
             tracing::info!(
-                "QK indices: {:?}",
-                query_key_tensors.iter().map(|(i, _)| i).collect::<Vec<_>>()
+                "query_key_tensors[0] shape: {:?}",
+                query_key_tensors[0].dims()
             );
+            
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
             if i == 0 {
@@ -362,7 +409,7 @@ impl Decoder {
                 return dr;
             }
             // On errors, we try again with a different temperature.
-            // todo: unimplemented. currently the only way for an error to happen is if an allocation fails. 
+            // todo: unimplemented. currently the only way for an error to happen is if an allocation fails.
             // compression_ratio is not calculated, so very repetitive outputs are not recalculated with a higher temperature.
             match dr {
                 Ok(dr) => {

@@ -1,7 +1,4 @@
-use candle_core::{Device, IndexOp, Result, Tensor};
-use std::cell::RefCell;
-use std::rc::Rc;
-use tokenizers::Tokenizer;
+use candle_core::{IndexOp, Result, Tensor};
 
 use candle_transformers::models::whisper as m;
 
@@ -121,7 +118,7 @@ fn median_filter_tensor(tensor: &Tensor, _filter_width: usize) -> Result<Tensor>
 
 pub fn set_attention_hooks(
     decoder: &mut m::model::TextDecoder,
-) -> Result<std::sync::mpsc::Receiver<(usize, Tensor)>> {
+) -> Result<std::sync::mpsc::Receiver<Tensor>> {
     let (tx, rx) = std::sync::mpsc::channel();
     for i in 0..decoder.n_blocks() {
         let tx_clone = tx.clone();
@@ -130,7 +127,7 @@ pub fn set_attention_hooks(
             Some(Box::new(move |qk: &Tensor| {
                 let qk_slice = qk.i((0, .., .., ..))?; // Extract the relevant slice
                 tx_clone
-                    .send((i, qk_slice))
+                    .send(qk_slice)
                     .map_err(|e| candle_core::Error::Msg(format!("Failed to send tensor: {}", e)))
             })),
         );
@@ -145,35 +142,3 @@ pub fn clear_attention_hooks(decoder: &mut m::model::TextDecoder) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn find_alignment(
-    decoder: &mut m::model::TextDecoder,
-    config: &m::Config,
-    tokenizer: &Tokenizer,
-    text_tokens_for_alignment: &[u32],
-    audio_features: &Tensor,
-    num_mel_frames: usize,
-    qk_scale: f32, // Typically 1.0 if not included in QK calculation, or 1/sqrt(head_dim)
-    medfilt_width: usize,
-    device: &Device,
-) -> Result<Vec<WordTiming>> {
-    if text_tokens_for_alignment.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // install hooks on the cross-attention layers to retrieve the attention weights
-    let n = decoder.n_blocks();
-
-    /// Original python
-    ///     logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
-    /// sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
-    /// token_probs = sampled_logits.softmax(dim=-1)
-    /// text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
-    /// text_token_probs = text_token_probs.tolist()
-    // rust equivalent
-    for i in 0..n {
-        decoder.set_attention_hook(i, None);
-    }
-
-    Ok(Vec::new())
-}

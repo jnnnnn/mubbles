@@ -162,6 +162,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
         Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
     };
+
     let mut decoder = Decoder::new(
         active_model,
         tokenizer.clone(),
@@ -171,6 +172,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         None,
         false,
         false,
+        crate::whisper_model::get_alignment_heads(model, &config),
     )?;
 
     decoder.set_language_token(if model.is_multilingual() {
