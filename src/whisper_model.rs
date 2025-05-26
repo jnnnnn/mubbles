@@ -8,7 +8,7 @@ use candle_transformers::models::whisper::{self as m, Config};
 
 use crate::{
     whisper::WhichModel,
-    whisper_word_align::{clear_attention_hooks, set_attention_hooks},
+    whisper_word_align::{clear_attention_hooks, dtw_path_from_matrix, median_filter, set_attention_hooks},
 };
 
 pub enum Model {
@@ -38,6 +38,7 @@ impl Model {
         flush: bool,
     ) -> candle_core::Result<Tensor> {
         match self {
+            // todo: candle_nn::ops::sdpa would probably speed this up a lot
             Self::Normal(m) => m.decoder.forward(x, xa, flush),
             Self::Quantized(m) => m.decoder.forward(x, xa, flush),
         }
@@ -260,10 +261,65 @@ impl Decoder {
 
             // print shape of first query_key_tensor
             tracing::info!(
-                "query_key_tensors[0] shape: {:?}",
-                query_key_tensors[0].dims()
+                "query_key_tensors shape: {:?} {:?}",
+                query_key_tensors.len(),
+                query_key_tensors[0].dims(),
             );
-            
+            // What is qk? Each element `qk[b, h, i, j]` represents the
+            // attention score between the `i`-th query token (from the text
+            // token sequence (so far)) and the `j`-th key token (from the key
+            // (audio token) sequence) for the `h`-th attention head in the
+            // `b`-th batch. qk_receiver gets a qk for each block (layer), so
+            // query_key_tensors is [layer][batch, head, text_query_token,
+            // audio_key_token].
+            // For example, 6 [8, 14, 1500] for base.en with 6 layers, 8 heads per layer, 14 tokens generated so far, and 1500 audio tokens representing 30s of audio.
+
+            // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
+            // py: # heads * tokens * frames
+            // py: weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
+            let useful_slices: Vec<Tensor> = self
+                .alignment_heads
+                .iter()
+                .map(|head| -> Result<Tensor> {
+                    let layer = head.layer;
+                    let head = head.head;
+                    Ok(query_key_tensors[layer].i((0, head, prefix_len.., ..))?)
+                })
+                .collect::<Result<_>>()?;
+            // the python shape is now [head, i, j]
+            // but we stack it to [i, j, head] shape as candlenn wants to softmax the last dim
+            let weights = Tensor::stack(&useful_slices, 2)?;
+            // py: weights = weights[:, :, : num_frames // 2]
+            // todo: cut down to actual length of audio, not the full padded 30s
+            // py: weights = (weights * qk_scale).softmax(dim=-1)
+            // qk_scale always 1
+            let weights = candle_nn::ops::softmax_last_dim(&weights)?;
+            // py: std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
+            // this is a mean across dim `i`, the text query tokens
+            let text_query_mean = weights.mean_keepdim(1)?;
+            let text_query_std = weights.var_keepdim(1)?.sqrt()?;
+            // py: weights = (weights - mean) / std
+            let weights = (weights.sub(&text_query_mean))?.div(&text_query_std)?;
+            // py: weights = median_filter(weights, medfilt_width)
+            // pytorch median filters along the last dimension (j), and medfilt_width is 7
+            // candle doesn't have a median filter, so we do it ourselves
+            // this just smooths the attention weights a bit, removing outliers
+            let weights = median_filter(&weights, 7, 1)?;
+            // py: matrix = weights.mean(axis=0)
+            // this is the mean across all the attention heads. 
+            // we now have [i, j] shape, where i is the text query token and j is the audio key token.
+            let matrix = weights.mean(2)?;
+            // py: matrix = matrix[len(tokenizer.sot_sequence) : -1]
+            // we did this earlier
+            // py: text_indices, time_indices = dtw(-matrix)
+            let text_token_timesteps = dtw_path_from_matrix(&matrix)?;
+
+            tracing::info!(
+                "text_token_timesteps: {:?} {:?}",
+                text_token_timesteps.len(),
+                text_token_timesteps,
+            );
+
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
             if i == 0 {
@@ -329,75 +385,6 @@ impl Decoder {
         })
     }
 
-    // fn find_alignment() {
-    //     let mut all_word_timings: Vec<WordTiming> = Vec::new();
-
-    //     // Word alignment parameters
-    //     let word_timestamps = true; // Assuming we want word timestamps
-    //     let qk_scale = 1.0f32;
-    //     let medfilt_width = 7;
-    //     let prepend_punctuations = "\"'“¿([{-";
-    //     let append_punctuations = "\"'.。,，!！?？:：”)]}、";
-
-    //     // Collect all text tokens from all segments for alignment
-    //     let mut text_tokens_for_alignment = Vec::new();
-    //     for seg_res in &segments_results {
-    //         // Assuming DecodingResult has a `tokens` field that are *text* tokens (post-SOT, etc.)
-    //         // and *before* EOT. The `find_alignment` Python code filters for token < tokenizer.eot.
-    //         // This needs to match how `seg_res.tokens` are structured.
-    //         let eot_id = state
-    //             .decoder
-    //             .tokenizer
-    //             .token_to_id(m::EOT_TOKEN)
-    //             .unwrap_or(u32::MAX);
-    //         text_tokens_for_alignment.extend(
-    //             seg_res
-    //                 .dr
-    //                 .tokens
-    //                 .iter()
-    //                 .filter(|&&tok| tok < eot_id)
-    //                 .cloned(),
-    //         );
-    //     }
-
-    //     if !text_tokens_for_alignment.is_empty() {
-    //         match &mut state.decoder.model {
-    //             Model::Normal(normal_model) => {
-    //                 match find_alignment(
-    //                     &mut normal_model.decoder,
-    //                     &state.config,
-    //                     &state.decoder.tokenizer,
-    //                     &text_tokens_for_alignment,
-    //                     &audio_features,
-    //                     num_mel_frames,
-    //                     qk_scale,
-    //                     medfilt_width,
-    //                     &state.device,
-    //                 ) {
-    //                     Ok(mut timings) => {
-    //                         merge_punctuations(
-    //                             &mut timings,
-    //                             prepend_punctuations,
-    //                             append_punctuations,
-    //                         );
-    //                         all_word_timings.extend(timings);
-    //                     }
-    //                     Err(e) => {
-    //                         tracing::error!("Word alignment failed: {:?}", e);
-    //                         app.send(WhisperUpdate::Status(format!("Alignment error: {}", e)))?;
-    //                     }
-    //                 }
-    //             }
-    //             Model::Quantized(_) => {
-    //                 // find_alignment might need to be generic or have a quantized path
-    //                 tracing::warn!("Word alignment not implemented for quantized models yet.");
-    //                 app.send(WhisperUpdate::Status(
-    //                     "Alignment not for quantized".to_string(),
-    //                 ))?;
-    //             }
-    //         }
-    //     }
-    // }
     pub fn decode_with_fallback(
         &mut self,
         segment: &Tensor,

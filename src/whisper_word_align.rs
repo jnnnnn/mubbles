@@ -64,7 +64,7 @@ fn backtrace(trace: &Vec<Vec<i8>>, n_rows: usize, n_cols: usize) -> Vec<(usize, 
 /// Calculates the optimal path through a cost matrix using Dynamic Time Warping.
 /// x_tensor is the input cost matrix (e.g., -log_probabilities),
 /// where rows correspond to text tokens and columns to audio frames.
-fn dtw_path_from_matrix(x_tensor: &Tensor) -> Result<Vec<(usize, usize)>> {
+pub(crate) fn dtw_path_from_matrix(x_tensor: &Tensor) -> Result<Vec<(usize, usize)>> {
     let x_dims = x_tensor.dims();
     if x_dims.len() != 2 {
         return Err(candle_core::Error::Msg(format!(
@@ -111,8 +111,22 @@ fn dtw_path_from_matrix(x_tensor: &Tensor) -> Result<Vec<(usize, usize)>> {
     Ok(path)
 }
 
-fn median_filter_tensor(tensor: &Tensor, _filter_width: usize) -> Result<Tensor> {
-    // TODO: Implement median filter for Tensor
+pub(crate) fn median_filter(tensor: &Tensor, filter_width: usize, dim: usize) -> Result<Tensor> {
+    if filter_width % 2 == 0 {
+        return Err(candle_core::Error::Msg(
+            "Filter width must be an odd number".to_string(),
+        ));
+    }
+    if dim >= tensor.dims().len() {
+        return Err(candle_core::Error::Msg(format!(
+            "Dimension {} is out of bounds for tensor with shape {:?}",
+            dim,
+            tensor.dims()
+        )));
+    }
+    
+    // todo: finish this implementation. not sure how important it is.
+    
     Ok(tensor.clone())
 }
 
