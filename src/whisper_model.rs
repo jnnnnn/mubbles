@@ -8,7 +8,7 @@ use candle_transformers::models::whisper::{self as m, Config};
 
 use crate::{
     whisper::WhichModel,
-    whisper_word_align::{clear_attention_hooks, dtw_path_from_matrix, median_filter, set_attention_hooks},
+    whisper_word_align::{align, clear_attention_hooks, set_attention_hooks, AlignedWord},
 };
 
 pub enum Model {
@@ -61,6 +61,7 @@ pub(crate) struct DecodingResult {
     pub no_speech_prob: f64,
     pub temperature: f64,
     pub compression_ratio: f64,
+    pub alignment: Vec<AlignedWord>,
 }
 
 #[allow(dead_code)]
@@ -238,6 +239,11 @@ impl Decoder {
             tokens.push(self.no_timestamps_token);
         }
 
+        // for aligning text tokens with audio tokens
+        let mut query_key_tensors: Vec<Tensor> = vec![];
+
+        let mut probs = vec![];
+
         // Iteratively produce text tokens from encoded audio tokens. Stop when the model generates EOT.
         for i in 0..sample_len {
             let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
@@ -245,80 +251,19 @@ impl Decoder {
             // The model expects a batch dim but this inference loop does not handle
             // it so we add it at this point.
             let tokens_t = tokens_t.unsqueeze(0)?;
-            let decoder = match model {
-                Model::Normal(m) => &mut m.decoder,
+            let qk_receiver = match model {
+                Model::Normal(m) => set_attention_hooks(&mut m.decoder)?,
                 Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
             };
-            let qk_receiver = set_attention_hooks(decoder)?;
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
-            // clear hooks to close all senders, so the receiver can be dropped
-            let decoder = match model {
-                Model::Normal(m) => &mut m.decoder,
+            
+            // collect qks for later alignment. clear hooks to close all
+            // senders, so the receiver closes and we can iterate to the end.
+            match model {
+                Model::Normal(m) => clear_attention_hooks(&mut m.decoder),
                 Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
             };
-            clear_attention_hooks(decoder);
-            let query_key_tensors: Vec<Tensor> = qk_receiver.into_iter().collect();
-
-            // print shape of first query_key_tensor
-            tracing::info!(
-                "query_key_tensors shape: {:?} {:?}",
-                query_key_tensors.len(),
-                query_key_tensors[0].dims(),
-            );
-            // What is qk? Each element `qk[b, h, i, j]` represents the
-            // attention score between the `i`-th query token (from the text
-            // token sequence (so far)) and the `j`-th key token (from the key
-            // (audio token) sequence) for the `h`-th attention head in the
-            // `b`-th batch. qk_receiver gets a qk for each block (layer), so
-            // query_key_tensors is [layer][batch, head, text_query_token,
-            // audio_key_token].
-            // For example, 6 [8, 14, 1500] for base.en with 6 layers, 8 heads per layer, 14 tokens generated so far, and 1500 audio tokens representing 30s of audio.
-
-            // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
-            // py: # heads * tokens * frames
-            // py: weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
-            let useful_slices: Vec<Tensor> = self
-                .alignment_heads
-                .iter()
-                .map(|head| -> Result<Tensor> {
-                    let layer = head.layer;
-                    let head = head.head;
-                    Ok(query_key_tensors[layer].i((0, head, prefix_len.., ..))?)
-                })
-                .collect::<Result<_>>()?;
-            // the python shape is now [head, i, j]
-            // but we stack it to [i, j, head] shape as candlenn wants to softmax the last dim
-            let weights = Tensor::stack(&useful_slices, 2)?;
-            // py: weights = weights[:, :, : num_frames // 2]
-            // todo: cut down to actual length of audio, not the full padded 30s
-            // py: weights = (weights * qk_scale).softmax(dim=-1)
-            // qk_scale always 1
-            let weights = candle_nn::ops::softmax_last_dim(&weights)?;
-            // py: std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
-            // this is a mean across dim `i`, the text query tokens
-            let text_query_mean = weights.mean_keepdim(1)?;
-            let text_query_std = weights.var_keepdim(1)?.sqrt()?;
-            // py: weights = (weights - mean) / std
-            let weights = (weights.sub(&text_query_mean))?.div(&text_query_std)?;
-            // py: weights = median_filter(weights, medfilt_width)
-            // pytorch median filters along the last dimension (j), and medfilt_width is 7
-            // candle doesn't have a median filter, so we do it ourselves
-            // this just smooths the attention weights a bit, removing outliers
-            let weights = median_filter(&weights, 7, 1)?;
-            // py: matrix = weights.mean(axis=0)
-            // this is the mean across all the attention heads. 
-            // we now have [i, j] shape, where i is the text query token and j is the audio key token.
-            let matrix = weights.mean(2)?;
-            // py: matrix = matrix[len(tokenizer.sot_sequence) : -1]
-            // we did this earlier
-            // py: text_indices, time_indices = dtw(-matrix)
-            let text_token_timesteps = dtw_path_from_matrix(&matrix)?;
-
-            tracing::info!(
-                "text_token_timesteps: {:?} {:?}",
-                text_token_timesteps.len(),
-                text_token_timesteps,
-            );
+            query_key_tensors = qk_receiver.into_iter().collect();
 
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
@@ -356,16 +301,27 @@ impl Decoder {
                     .map(|(i, _)| i as u32)
                     .unwrap()
             };
-            tokens.push(next_token);
             let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
+
+            probs[tokens.len()] = prob as f32;
+            tokens.push(next_token);
+            
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
                 break;
             }
             sum_logprob += prob.ln();
         }
+
+        tracing::info!("decoded audio to text tokens: {:?}", tokens);
+        tracing::info!("performing alignment...");
+        // map text token index to audio token index
+        let alignment = align(&query_key_tensors, &self.alignment_heads, &tokens, &probs, prefix_len, &self.tokenizer)?;
+
+        tracing::info!("alignment complete: {:?}", alignment);
         let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
+
         let avg_logprob = sum_logprob / tokens.len() as f64;
 
         // drop prefix tokens from start of vec
@@ -382,6 +338,7 @@ impl Decoder {
             no_speech_prob,
             temperature,
             compression_ratio: f64::NAN,
+            alignment,
         })
     }
 

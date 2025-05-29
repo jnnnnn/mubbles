@@ -301,6 +301,7 @@ fn whisperize(
         let start_time_s = segment.start;
         let end_time_s = segment.start + segment.duration;
 
+        app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
         app.send(WhisperUpdate::Transcription(format!(
             "[{:.2}s -> {:.2}s] {}",
             start_time_s, end_time_s, text

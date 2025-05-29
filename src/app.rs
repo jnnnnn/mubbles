@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::{audio::{get_devices, AppDevice, StreamState}, whisper::{
     DisplayMel, WhichModel, WhisperParams,
-}};
+}, whisper_word_align::AlignedWord};
 
 use crate::summary;
 
@@ -58,6 +58,8 @@ pub struct MubblesApp {
 
     #[serde(skip)]
     mel_texture: Option<egui::TextureHandle>,
+    #[serde(skip)]
+    aligned_words: Vec<AlignedWord>,
 
     autotype: bool,
     partials: bool,
@@ -113,6 +115,7 @@ impl Default for MubblesApp {
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
             mel_texture: None,
+            aligned_words: vec![],
             autotype: false,
             partials: false,
             always_on_top: false,
@@ -147,6 +150,7 @@ pub enum WhisperUpdate {
     Recording(bool),
     Transcribing(bool),
     Transcription(String),
+    Alignment(Vec<AlignedWord>),
     Level(f32),
     Mel(DisplayMel),
     Status(String),
@@ -175,6 +179,7 @@ impl eframe::App for MubblesApp {
             accuracy,
             changed,
             mel_texture,
+            aligned_words,
             status,
             ..
         } = self;
@@ -194,6 +199,9 @@ impl eframe::App for MubblesApp {
                         level.pop_front();
                     }
                     level.push_back(l);
+                }
+                Ok(WhisperUpdate::Alignment(a)) => {
+                    *aligned_words = a;
                 }
                 Ok(WhisperUpdate::Mel(m)) => {
                     let color_image = mel_float_to_image(m);
@@ -261,14 +269,36 @@ impl eframe::App for MubblesApp {
                 },
             );
             ui.label(format!("Status: {}", status));
-            ui.with_layout(
+            let texture = ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
                     .with_cross_align(egui::Align::TOP), | ui| {
-
-                        plot_mel(mel_texture, ui);
+                        draw_texture(mel_texture, ui);
                     }
             );
+            // draw the aligned words
+            // hint: If you just want to paint a circle, use ui.painter(). If you want to place a widget, use ui.put or ui.allocate_ui_at_rect.
+            // texture.response.rect is the area to draw on
+            let r = texture.response.rect;
+            for word in aligned_words.iter() {
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(r.left() + r.width() * word.start as f32 / 30.0, 0.0),
+                    egui::pos2(r.left() + r.width() * word.end as f32 / 30.0, r.height()),
+                );
+                
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    word.word.clone(),
+                    egui::TextStyle::Body.resolve(&ctx.style()),
+                    egui::Color32::from_rgb(
+                        (word.probability * 255.0) as u8,
+                        (word.probability * 255.0) as u8,
+                        (word.probability * 255.0) as u8,
+                    )
+                );
+            }
+
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
@@ -418,8 +448,8 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     });
 }
 
-fn plot_mel(mel_texture: &Option<egui::TextureHandle>, ui: &mut egui::Ui) {
-    if let Some(texture) = mel_texture {
+fn draw_texture(texture: &Option<egui::TextureHandle>, ui: &mut egui::Ui) {
+    if let Some(texture) = texture {
         ui.add(
             egui::Image::new(texture)
                 .corner_radius(10.0),
