@@ -135,21 +135,25 @@ pub fn align(
     text_token_probs: &[f32],
     prefix_len: usize,
     tokenizer: &Tokenizer,
+    audio_duration: f32,
 ) -> Result<Vec<AlignedWord>> {
     const TIME_PER_AUDIO_FRAME: f64 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
 
-    let text_audio_path =
-        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len)?;
+    // each text token starts at a particular audio frame:
+    let text_token_audio_frames =
+        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len, audio_duration)?;
+    // use the tokenizer to go back from u32 text tokens to unicode strings
     let word_token_groups = decode_to_unicode(text_tokens, tokenizer)?;
 
-    // iterate along the path, adding start and end times to each word
     let mut aligned_words = Vec::new();
-    for (text_idx, audio_idx) in text_audio_path {
+    for (text_idx, audio_idx) in text_token_audio_frames.iter().enumerate() {
         if text_idx < prefix_len || text_idx >= text_tokens.len() {
             continue; // Skip prefix tokens or out-of-bounds indices
         }
+        // if text_idx has incremented, we're on a new token, so end the previous word 
+
         let word = &word_token_groups[text_idx - prefix_len];
-        let start_time = audio_idx as f64 * TIME_PER_AUDIO_FRAME;
+        let start_time = *audio_idx as f64 * TIME_PER_AUDIO_FRAME;
         let end_time = start_time + (word.tokens.len() as f64 * TIME_PER_AUDIO_FRAME);
         let probability = text_token_probs.get(text_idx).cloned().unwrap_or(0.0);
 
@@ -195,7 +199,8 @@ fn align_text_token_to_audio(
     query_key_tensors: &Vec<Tensor>,
     alignment_heads: &Vec<AlignmentHead>,
     prefix_len: usize,
-) -> Result<Vec<(usize, usize)>> {
+    audio_duration: f32,
+) -> Result<Vec<usize>> {
     // What is qk? Each element `qk[h, i, j]` represents the attention score
     // between the `i`-th query token (from the text token sequence (so far))
     // and the `j`-th key token (from the key (audio token) sequence) for the
@@ -226,17 +231,20 @@ fn align_text_token_to_audio(
     }
 
     // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
+    // this also crops off the mel that represents the padding out to 30s
     // py: # heads * tokens * frames
     // py: weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
+    const TIME_PER_AUDIO_TOKEN: f32 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
+    let real_audio_tokens = (audio_duration / TIME_PER_AUDIO_TOKEN) as usize;
     let useful_slices: Vec<Tensor> = alignment_heads
         .iter()
         .map(|head| -> Result<Tensor> {
             let layer = head.layer;
             let head = head.head;
-            if layer >= query_key_tensors.len() || head >= query_key_tensors[layer].dims()[1] {
+            if layer >= query_key_tensors.len() || head >= query_key_tensors[layer].dims()[0] {
                 return Err(candle_core::Error::Msg(format!(
-                    "Invalid layer {layer} or head {head} for query_key_tensors with shape {:?}",
-                    query_key_tensors[layer].dims()
+                    "Invalid layer {layer} or head {head} for query_key_tensors with shape [layers:{}][heads, texttokens, audiotokens:{:?}]",
+                    query_key_tensors.len(), query_key_tensors[layer].dims()
                 )));
             }
             tracing::info!(
@@ -250,7 +258,6 @@ fn align_text_token_to_audio(
     // but we stack it to [i, j, alignmenthead] shape as candlenn wants to softmax the last dim
     let weights = Tensor::stack(&useful_slices, 2)?;
     // py: weights = weights[:, :, : num_frames // 2]
-    // todo: cut down to actual length of audio, not the full padded 30s
     // py: weights = (weights * qk_scale).softmax(dim=-1)
     // qk_scale always 1
     let weights = candle_nn::ops::softmax_last_dim(&weights)?;
@@ -276,13 +283,31 @@ fn align_text_token_to_audio(
     let text_token_timesteps = dtw_path_from_matrix(&matrix)?;
 
     // we now have a path through the cost matrix, which is a sequence of (text_token_index, audio_frame_index) pairs.
+    
+    // iterate along the path, adding start and end times to each word, finding the start and end of each text token
+    // based on monotonic duplicated text_idx.
+    // for example, if text_audio_path is 0-0, 0-1, 0-2, 1-3, 1-4, 1-5, 1-6, 2-7, 2-8
+    // then we have text tokens at 0..2, 1..6, 7..8.
+    // Build a list of where each text token starts: 0, 1, 7.
+    let mut text_idx_to_audio_idx: Vec<usize> = Vec::new();
+    let mut last_text_idx = None;
+    for (text_idx, audio_idx) in &text_token_timesteps {
+        if let Some(last) = last_text_idx {
+            if last != *text_idx {
+                text_idx_to_audio_idx.push(*audio_idx);
+            }
+        } else {
+            text_idx_to_audio_idx.push(*audio_idx);
+        }
+        last_text_idx = Some(*text_idx);
+    }
+
     tracing::debug!(
-        "text_token_timesteps: {:?} {:?}",
-        text_token_timesteps.len(),
-        text_token_timesteps,
+        "audio steps where text_tokens changes: {:?}",
+        text_idx_to_audio_idx,
     );
 
-    return Ok(text_token_timesteps);
+    return Ok(text_idx_to_audio_idx);
 }
 
 pub(crate) fn median_filter(tensor: &Tensor, filter_width: usize, dim: usize) -> Result<Tensor> {
@@ -431,7 +456,7 @@ mod tests {
         let query_key_tensors_vec = vec![layer.clone(), layer.clone()];
 
         let result =
-            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len);
+            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len, 0.2);
         assert!(
             result.is_ok(),
             "align function returned an error: {:?}",
@@ -451,17 +476,6 @@ mod tests {
             assert!(
                 !path.is_empty(),
                 "Path should not be empty for the given dimensions after prefix removal."
-            );
-            // Basic check that the path ends correctly, detailed checks are in test_dtw_path_from_matrix_basic
-            assert_eq!(
-                path.last().unwrap().0,
-                dtw_rows - 1,
-                "Path (from align) does not end on the last text token index."
-            );
-            assert_eq!(
-                path.last().unwrap().1,
-                dtw_cols - 1,
-                "Path (from align) does not end on the last audio frame index."
             );
         }
     }

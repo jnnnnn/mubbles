@@ -269,21 +269,24 @@ impl eframe::App for MubblesApp {
                 },
             );
             ui.label(format!("Status: {}", status));
-            let texture = ui.with_layout(
+            let mel = ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
                     .with_cross_align(egui::Align::TOP), | ui| {
                         draw_texture(mel_texture, ui);
                     }
             );
+
+            let spacer = ui.label(""); // space to draw the aligned words
             // draw the aligned words
             // hint: If you just want to paint a circle, use ui.painter(). If you want to place a widget, use ui.put or ui.allocate_ui_at_rect.
             // texture.response.rect is the area to draw on
-            let r = texture.response.rect;
+            let ry = spacer.rect;
+            let rx = mel.response.rect;
             for word in aligned_words.iter() {
                 let rect = egui::Rect::from_min_max(
-                    egui::pos2(r.left() + r.width() * word.start as f32 / 30.0, 0.0),
-                    egui::pos2(r.left() + r.width() * word.end as f32 / 30.0, r.height()),
+                    egui::pos2(rx.left() + rx.width() * word.start as f32 / 30.0, ry.top()),
+                    egui::pos2(rx.left() + rx.width() * word.end as f32 / 30.0, ry.bottom()),
                 );
                 
                 ui.painter().text(

@@ -237,9 +237,8 @@ fn whisper_loop(
             }
         };
         // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
-        // worth aggregating several chunks of audio before sending it to whisper (if they are available)
-        // todo: 48000 is hardcoded here, see how candle whisper example handles it
-        while aggregated_data.len() < 48000 * 30 {
+        // worth aggregating several chunks of audio before sending it to whisper (in the rare case that they are available)
+        while aggregated_data.len() < 16000 * 30 {
             match filtered_rx.try_recv() {
                 Ok(data) => aggregated_data.extend(data),
                 Err(_) => break,
@@ -263,7 +262,11 @@ fn whisperize(
 
     let mel_start = std::time::Instant::now();
     app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
+    // the mel pads out to 30s; keep track of how much actual audio we have for initializing the alignment calculation
+    let audio_len = resampled.len() as f32 / 16000.0; // Assuming 16kHz sample rate
+
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
+
     let arcmel = Arc::new(mel_raw);
     let mel_duration_secs = mel_start.elapsed().as_secs_f32();
     tracing::info!(
@@ -293,7 +296,7 @@ fn whisperize(
     ))?;
 
     let (segments_results, last_segment_content_tokens) =
-        state.decoder.run(&mel_tensor, None, None)?;
+        state.decoder.run(&mel_tensor, None, None, audio_len)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments_results.iter() {

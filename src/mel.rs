@@ -1,6 +1,5 @@
 use rustfft::{num_complex::Complex, FftPlanner};
 
-
 #[allow(clippy::too_many_arguments)]
 fn log_mel_spectrogram_w(
     hann: &[f32],

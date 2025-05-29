@@ -203,6 +203,7 @@ impl Decoder {
         mel: &Tensor,
         temperature: f64,
         prompt_content_tokens: Option<&[u32]>,
+        audio_len: f32,
     ) -> Result<DecodingResult> {
         let model = &mut self.model;
         // todo: running the encoder is expensive! Do it once (separately to decode) and reuse the result for each temperature.
@@ -242,7 +243,7 @@ impl Decoder {
         // for aligning text tokens with audio tokens
         let mut query_key_tensors: Vec<Tensor> = vec![];
 
-        let mut probs = vec![];
+        let mut probs = vec![0f32; prefix_len];
 
         // Iteratively produce text tokens from encoded audio tokens. Stop when the model generates EOT.
         for i in 0..sample_len {
@@ -305,7 +306,7 @@ impl Decoder {
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
 
-            probs[tokens.len()] = prob as f32;
+            probs.push(prob as f32);
             tokens.push(next_token);
             
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
@@ -317,7 +318,7 @@ impl Decoder {
         tracing::info!("decoded audio to text tokens: {:?}", tokens);
         tracing::info!("performing alignment...");
         // map text token index to audio token index
-        let alignment = align(&query_key_tensors, &self.alignment_heads, &tokens, &probs, prefix_len, &self.tokenizer)?;
+        let alignment = align(&query_key_tensors, &self.alignment_heads, &tokens, &probs, prefix_len, &self.tokenizer, audio_len)?;
 
         tracing::info!("alignment complete: {:?}", alignment);
         let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
@@ -346,9 +347,10 @@ impl Decoder {
         &mut self,
         segment: &Tensor,
         prompt_content_tokens: Option<&[u32]>,
+        audio_len: f32,
     ) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens);
+            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens, audio_len);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
@@ -364,7 +366,7 @@ impl Decoder {
                     }
                 }
                 Err(err) => {
-                    println!("Error running at {t}: {err}")
+                    tracing::info!("Temperature error running at {t}: {err}")
                 }
             }
         }
@@ -376,6 +378,7 @@ impl Decoder {
         mel: &Tensor,
         _times: Option<(f64, f64)>,
         prompt_content_tokens: Option<&[u32]>,
+        audio_len: f32,
     ) -> Result<(Vec<Segment>, Vec<u32>)> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
@@ -387,7 +390,7 @@ impl Decoder {
             let mel_segment = mel.narrow(2, seek, segment_size)?;
             let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
 
-            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens)?;
+            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens, audio_len)?;
 
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
