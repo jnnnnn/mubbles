@@ -95,22 +95,31 @@ pub(crate) static ALIGNMENT_HEADS: &[(WhichModel, &[usize])] = &[
     (WhichModel::LargeV3, &[140, 217, 258, 272, 321, 354, 391, 424, 481, 506]),
     (WhichModel::Large, &[140, 217, 258, 272, 321, 354, 391, 424, 481, 506]),
     (WhichModel::LargeV3Turbo, &[44, 51, 63, 66, 71, 74]),
-    //(WhichModel::Turbo, &[44, 51, 63, 66, 71, 74]),
 ];
 
 pub fn get_alignment_heads(model: WhichModel, config: &Config) -> Vec<AlignmentHead> {
     let heads = ALIGNMENT_HEADS
         .iter()
         .find(|(m, _)| *m == model)
-        .map(|(_, h)| *h)
-        .unwrap_or(&[]);
-    heads
-        .iter()
-        .map(|&index| AlignmentHead {
-            layer: index / config.encoder_attention_heads,
-            head: index % config.encoder_attention_heads,
-        })
-        .collect()
+        .map(|(_, h)| *h);
+
+    match heads {
+        Some(heads) => heads
+            .iter()
+            .map(|&index| AlignmentHead {
+                layer: index / config.encoder_attention_heads,
+                head: index % config.encoder_attention_heads,
+            })
+            .collect(),
+        None => {
+            tracing::warn!("No alignment heads found for model {model:?}, using last layer");
+            (0..config.decoder_attention_heads - 1).map(move |head| AlignmentHead {
+                layer: config.decoder_layers - 1,
+                head,
+            })
+        }
+        .collect(),
+    }
 }
 
 pub(crate) struct Decoder {
@@ -257,7 +266,7 @@ impl Decoder {
                 Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
             };
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
-            
+
             // collect qks for later alignment. clear hooks to close all
             // senders, so the receiver closes and we can iterate to the end.
             match model {
@@ -308,7 +317,7 @@ impl Decoder {
 
             probs.push(prob as f32);
             tokens.push(next_token);
-            
+
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
                 break;
             }
@@ -318,7 +327,15 @@ impl Decoder {
         tracing::info!("decoded audio to text tokens: {:?}", tokens);
         tracing::info!("performing alignment...");
         // map text token index to audio token index
-        let alignment = align(&query_key_tensors, &self.alignment_heads, &tokens, &probs, prefix_len, &self.tokenizer, audio_len)?;
+        let alignment = align(
+            &query_key_tensors,
+            &self.alignment_heads,
+            &tokens,
+            &probs,
+            prefix_len,
+            &self.tokenizer,
+            audio_len,
+        )?;
 
         tracing::info!("alignment complete: {:?}", alignment);
         let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
@@ -350,7 +367,8 @@ impl Decoder {
         audio_len: f32,
     ) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens, audio_len);
+            let dr: Result<DecodingResult> =
+                self.decode(segment, t, prompt_content_tokens, audio_len);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
