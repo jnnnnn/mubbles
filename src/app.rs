@@ -295,7 +295,7 @@ impl eframe::App for MubblesApp {
                     word.word.clone(),
                     egui::TextStyle::Body.resolve(&ctx.style()),
                     egui::Color32::from_rgb(
-                        (word.probability * 255.0) as u8,
+                        (255.0) as u8, // even low probability words stay red, not black
                         (word.probability * 255.0) as u8,
                         (word.probability * 255.0) as u8,
                     )

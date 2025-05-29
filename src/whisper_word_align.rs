@@ -140,8 +140,12 @@ pub fn align(
     const TIME_PER_AUDIO_FRAME: f64 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
 
     // each text token starts at a particular audio frame:
-    let text_token_audio_frames =
-        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len, audio_duration)?;
+    let text_token_audio_frames = align_text_token_to_audio(
+        query_key_tensors,
+        alignment_heads,
+        prefix_len,
+        audio_duration,
+    )?;
     // use the tokenizer to go back from u32 text tokens to unicode strings
     let word_token_groups = decode_to_unicode(text_tokens, tokenizer)?;
 
@@ -150,7 +154,7 @@ pub fn align(
         if text_idx < prefix_len || text_idx >= text_tokens.len() {
             continue; // Skip prefix tokens or out-of-bounds indices
         }
-        // if text_idx has incremented, we're on a new token, so end the previous word 
+        // if text_idx has incremented, we're on a new token, so end the previous word
 
         let word = &word_token_groups[text_idx - prefix_len];
         let start_time = *audio_idx as f64 * TIME_PER_AUDIO_FRAME;
@@ -251,12 +255,12 @@ fn align_text_token_to_audio(
                 "processing alignment head: layer {layer}, head {head} with dims {:?}",
                 query_key_tensors[layer].dims()
             );
-            Ok(query_key_tensors[layer].i((head, prefix_len.., ..))?)
+            Ok(query_key_tensors[layer].i((head, prefix_len.., ..real_audio_tokens))?)
         })
         .collect::<Result<_>>()?;
-    // the python shape is now [alignmenthead][i, j]
-    // but we stack it to [i, j, alignmenthead] shape as candlenn wants to softmax the last dim
-    let weights = Tensor::stack(&useful_slices, 2)?;
+    // the python shape is now [alignmenthead, i, j]
+    // but we stack it to [alignmenthead, i, j] shape as candlenn wants to softmax the last dim
+    let weights = Tensor::stack(&useful_slices, 0)?;
     // py: weights = weights[:, :, : num_frames // 2]
     // py: weights = (weights * qk_scale).softmax(dim=-1)
     // qk_scale always 1
@@ -273,9 +277,9 @@ fn align_text_token_to_audio(
     // this just smooths the attention weights a bit, removing outliers
     let weights = median_filter(&weights, 7, 1)?;
     // py: matrix = weights.mean(axis=0)
-    // this is the mean across all the attention heads.
-    // we now have [i, j] shape, where i is the text query token and j is the audio key token.
-    let matrix = weights.mean(2)?.neg()?;
+    // we now average over all the attention heads to get an [i, j] shape,
+    // where i is the text query token and j is the audio key token.
+    let matrix = weights.mean(0)?.neg()?;
     // py: matrix = matrix[len(tokenizer.sot_sequence) : -1]
     // we did this earlier
     // py: text_indices, time_indices = dtw(-matrix)
@@ -283,7 +287,7 @@ fn align_text_token_to_audio(
     let text_token_timesteps = dtw_path_from_matrix(&matrix)?;
 
     // we now have a path through the cost matrix, which is a sequence of (text_token_index, audio_frame_index) pairs.
-    
+
     // iterate along the path, adding start and end times to each word, finding the start and end of each text token
     // based on monotonic duplicated text_idx.
     // for example, if text_audio_path is 0-0, 0-1, 0-2, 1-3, 1-4, 1-5, 1-6, 2-7, 2-8
@@ -455,8 +459,12 @@ mod tests {
 
         let query_key_tensors_vec = vec![layer.clone(), layer.clone()];
 
-        let result =
-            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len, 0.2);
+        let result = align_text_token_to_audio(
+            &query_key_tensors_vec,
+            &alignment_heads_vec,
+            prefix_len,
+            0.2,
+        );
         assert!(
             result.is_ok(),
             "align function returned an error: {:?}",
