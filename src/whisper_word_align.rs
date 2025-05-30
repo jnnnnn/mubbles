@@ -158,15 +158,22 @@ pub fn align(
 
         let word = &word_token_groups[text_idx - prefix_len];
         let start_time = *audio_idx as f64 * TIME_PER_AUDIO_FRAME;
-        let end_time = start_time + (word.tokens.len() as f64 * TIME_PER_AUDIO_FRAME);
         let probability = text_token_probs.get(text_idx).cloned().unwrap_or(0.0);
 
         aligned_words.push(AlignedWord {
             word: word.word.clone(),
             start: start_time,
-            end: end_time,
+            end: 0.0, // will be set later
             probability,
         });
+    }
+    // end time is the start time of the next word, so we need to adjust it
+    for i in 0..aligned_words.len() - 1 {
+        aligned_words[i].end = aligned_words[i + 1].start;
+    }
+    // the last word's end time is the end of the audio
+    if let Some(last_word) = aligned_words.last_mut() {
+        last_word.end = audio_duration as f64;
     }
     Ok(aligned_words)
 }
@@ -183,7 +190,7 @@ fn decode_to_unicode(text_tokens: &[u32], tokenizer: &Tokenizer) -> Result<Vec<W
     for &token in text_tokens {
         current_tokens.push(token);
         let subword = tokenizer
-            .decode(&current_tokens, true)
+            .decode(&current_tokens, false)
             .map_err(|e| candle_core::Error::Msg(format!("Tokenizer decode error: {e}")))?;
 
         if !subword.contains(char::from(replacement_char)) {

@@ -277,27 +277,34 @@ impl eframe::App for MubblesApp {
                     }
             );
 
-            let spacer = ui.label(""); // space to draw the aligned words
             // draw the aligned words
             // hint: If you just want to paint a circle, use ui.painter(). If you want to place a widget, use ui.put or ui.allocate_ui_at_rect.
             // texture.response.rect is the area to draw on
-            let ry = spacer.rect;
             let rx = mel.response.rect;
-            for word in aligned_words.iter() {
+            for (i, word) in aligned_words.iter().enumerate() {
+                let o = (i%10) as f32 * 12.0;
                 let rect = egui::Rect::from_min_max(
-                    egui::pos2(rx.left() + rx.width() * word.start as f32 / 30.0, ry.top()),
-                    egui::pos2(rx.left() + rx.width() * word.end as f32 / 30.0, ry.bottom()),
+                    egui::pos2(rx.left() + rx.width() * word.start as f32 / 30.0, rx.top()+o),
+                    egui::pos2(rx.left() + rx.width() * word.end as f32 / 30.0, rx.top() + 12.0 + o),
                 );
-                
+                ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    egui::Color32::from_rgb(
+                        (255.0 * (1.0 - word.probability)) as u8, // low probability words are more red
+                        (word.probability * 255.0) as u8, // high probability words are more green
+                        (0) as u8, // high confidence words need to stand out on white background
+                    ),
+                );
                 ui.painter().text(
                     rect.center(),
-                    egui::Align2::CENTER_CENTER,
+                    egui::Align2::LEFT_TOP,
                     word.word.clone(),
                     egui::TextStyle::Body.resolve(&ctx.style()),
                     egui::Color32::from_rgb(
                         (255.0) as u8, // even low probability words stay red, not black
                         (word.probability * 255.0) as u8,
-                        (word.probability * 255.0) as u8,
+                        (0) as u8, // high confidence words need to stand out on white background
                     )
                 );
             }

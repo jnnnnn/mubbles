@@ -17,6 +17,8 @@ pub enum Model {
 }
 
 impl Model {
+    // todo: there's some config available that I'm not using yet
+    // 
     pub fn config(&self) -> &Config {
         match self {
             Self::Normal(m) => &m.config,
