@@ -1,3 +1,10 @@
+
+# This line needs to come before anything else in Cargo.toml
+cargo-features = ["codegen-backend"]
+[profile.dev]
+codegen-backend = "cranelift"
+
+
 [package]
 name = "mubbles"
 version = "2.0.0"
@@ -67,8 +74,10 @@ opt-level = 2 # fast and small wasm
 [profile.dev.package."*"]
 opt-level = 2
 
+
 # Override crates.io to use local submodule
 [patch.crates-io]
 candle-core = { path = "candle/candle-core" }
 candle-nn = { path = "candle/candle-nn" }
 candle-transformers = { path = "candle/candle-transformers" }
+

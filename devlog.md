@@ -1081,6 +1081,18 @@ The subsequent operations in `timing.py` like `weights = weights[:, :, : num_fra
 *   For **cross-attention** (e.g., in decoder attending to encoder output, as used for alignment in `timing.py`), `n_ctx_q` is the target sequence length (e.g., text tokens) and `n_ctx_k` is the source sequence length (e.g., audio frames).
 *   The `weights` tensor in `timing.py`, derived from cross-attention `qk` values, has the shape `(N_selected_alignment_heads, n_text_tokens, n_audio_frames)`.
 
+## 2025-06-03
+
+
+## 2025-06-03
+
+tpde alternative to LLVM just released. no instructions for using it with rust yet. try cranelift.
+
+```sh
+rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+cargo +nightly build
+```
+
 
 
 

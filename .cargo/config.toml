@@ -4,3 +4,10 @@
 # we don't use `[build]` because of rust analyzer's build cache invalidation https://github.com/emilk/mubbles/issues/93
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg=web_sys_unstable_apis"]
+
+
+# try this because it builds much faster (?)
+[unstable]
+codegen-backend = true
+[profile.dev]
+codegen-backend = "cranelift"
