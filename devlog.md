@@ -1091,10 +1091,16 @@ tpde alternative to LLVM just released. no instructions for using it with rust y
 ```sh
 rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 cargo +nightly build
+# Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 28s
 ```
 
+that does not seem faster. try normal build
 
+oh it's a lot faster. normal build
 
-
+```sh
+cargo build
+# Finished `dev` profile [unoptimized + debuginfo] target(s) in 13m 39s
+```
 
 

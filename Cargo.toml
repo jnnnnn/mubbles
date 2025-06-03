@@ -1,8 +1,7 @@
-
-# This line needs to come before anything else in Cargo.toml
-cargo-features = ["codegen-backend"]
-[profile.dev]
-codegen-backend = "cranelift"
+# 
+# cargo-features = ["codegen-backend"]
+# [profile.dev]
+# codegen-backend = "cranelift"
 
 
 [package]

@@ -6,8 +6,7 @@
 rustflags = ["--cfg=web_sys_unstable_apis"]
 
 
-# try this because it builds much faster (?)
-[unstable]
-codegen-backend = true
-[profile.dev]
-codegen-backend = "cranelift"
+#[unstable]
+#codegen-backend = true
+#[profile.dev]
+#codegen-backend = "cranelift"
