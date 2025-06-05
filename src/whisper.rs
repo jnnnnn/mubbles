@@ -284,13 +284,6 @@ fn whisperize(
         &state.device,
     )?;
 
-    app.send(WhisperUpdate::Mel(DisplayMel {
-        mel: arcmel.clone(),
-        num_bins,
-        num_frames: num_mel_frames,
-    }))
-    .expect("Failed to send mel update");
-
     app.send(WhisperUpdate::Status(
         "Running Whisper decoder...".to_string(),
     ))?;

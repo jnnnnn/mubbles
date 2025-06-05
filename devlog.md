@@ -1103,4 +1103,18 @@ cargo build
 # Finished `dev` profile [unoptimized + debuginfo] target(s) in 13m 39s
 ```
 
+## 2025-06-04
 
+OK, now that word alignment is done and showing up in the UI, the next step is to make it continuous.
+
+That means:
+
+1. streaming MEL frames to the UI
+2. streaming MEL frames to a new preview model
+3. setting up the new preview model
+4. setting up some sort of chunking (last five seconds?) for previews
+5. voice activity chunking
+
+## 2025-06-05
+
+I wrote the UI code to receive individual columns (frames) of mel spectrogram. then I tried to modify the audio loop. how much audio to process through pcm_to_mel ? turns out, the fft takes 400 samples, but then it only steps forward 160 samples. so it's actually looking ahead by about 2.5 frames.

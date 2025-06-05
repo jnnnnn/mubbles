@@ -4,13 +4,14 @@ use cpal::{
     SupportedStreamConfig,
 };
 use rubato::Resampler;
-use std::{sync::mpsc::{self, Receiver, Sender}, thread};
+use std::{collections::VecDeque, sync::mpsc::{self, Receiver, Sender}, thread};
 
 pub struct AudioChunk {
     data: Vec<f32>,
 }
 
-use crate::app::WhisperUpdate;
+use crate::{app::WhisperUpdate, mel::pcm_to_mel_frame};
+const TARGET_SAMPLE_RATE: f64 = 16000.;
 
 fn convert_sample_rate(
     audio: &[f32],
@@ -23,7 +24,6 @@ fn convert_sample_rate(
         oversampling_factor: 256,
         window: rubato::WindowFunction::BlackmanHarris2,
     };
-    const TARGET_SAMPLE_RATE: f64 = 16000.;
     let ratio = TARGET_SAMPLE_RATE / original_sample_rate as f64;
     let mut resampler =
         rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
@@ -33,6 +33,10 @@ fn convert_sample_rate(
     Ok(waves_out[0].to_vec())
 }
 
+struct PartialAudio {
+    resampled: VecDeque<f32>,
+    unused: usize,
+}
 
 // a thread that collects non-silent audio samples and sends them on
 fn filter_audio_loop(
@@ -46,6 +50,11 @@ fn filter_audio_loop(
     // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
     let mut under_threshold_count = 101;
     let mut recording_buffer: Vec<f32> = Vec::new();
+
+    let mut partial = PartialAudio {
+        resampled: VecDeque::new(),
+        unused: 0,
+    };
 
     // a dynamic threshold (or something like silero-vad) would be better
     let threshold = 0.05f32;
@@ -72,6 +81,37 @@ fn filter_audio_loop(
         let sample_rate = device_config.sample_rate().0 as usize;
         let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
 
+        // push data into the resampled buffer
+        let extra = convert_sample_rate(&data, sample_rate).unwrap();
+        let extra_len = extra.len();
+        partial.resampled.extend(extra);
+        // keep the resampled buffer under 5 seconds, discarding the oldest samples
+        let max_size = (5.0 * TARGET_SAMPLE_RATE) as usize;
+        let stale = partial.resampled.len().saturating_sub(max_size);
+        partial.resampled.rotate_left(stale);
+        // keep the offset in sync with the resampled buffer
+        partial.unused += extra_len - stale;
+        partial.resampled.truncate(max_size);
+        // if we have enough for at least one more mel frame, generate
+        if partial.unused >= 400 {
+            // there are enough `unused` samples that we can generate at least one more frame.
+            // each frame is 160 samples, but the mel needs to look ahead 240 samples to get the next frame.
+            // so we can generate `floor((unused - 240) / 160)` frames.
+            let frames = (partial.unused - 240) / 160;
+            let _pcm = partial
+                            .resampled
+                            .range(partial.unused .. partial.unused + frames * 160 + 240)
+                            .cloned()
+                            .collect::<Vec<f32>>();
+            partial.unused -= frames * 160;
+            // todo
+            // let mels = pcm_to_mel_frame(80, pcm, mel_filters);
+            // for frame in mels.chunks(80) {
+            //     app.send(WhisperUpdate::MelFrame(frame.to_vec()))
+            //         .expect("Failed to send mel update");
+            // }
+        }
+        
         if max > threshold {
             if under_threshold_count > 100 {
                 // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.

@@ -34,3 +34,4 @@ Install the app into the default cargo bin directory (probably `~/.cargo/bin`):
 
 ![mubbles screenshot.png](./doc/mubbles-screenshot.png) 
 
+

@@ -5,9 +5,10 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use egui::TextureHandle;
 
 use crate::{audio::{get_devices, AppDevice, StreamState}, whisper::{
-    DisplayMel, WhichModel, WhisperParams,
+    WhichModel, WhisperParams,
 }, whisper_word_align::AlignedWord};
 
 use crate::summary;
@@ -21,6 +22,12 @@ enum AppTab {
     AISummary,
     AIUserPrompt,
     AISystemPrompt,
+}
+
+struct DisplayMel {
+    buffer: VecDeque<[u8; 128]>,
+    texture: Option<egui::TextureHandle>,
+    image: Option<egui::ColorImage>,
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -57,7 +64,8 @@ pub struct MubblesApp {
     level: VecDeque<f32>,
 
     #[serde(skip)]
-    mel_texture: Option<egui::TextureHandle>,
+    mel: DisplayMel,
+
     #[serde(skip)]
     aligned_words: Vec<AlignedWord>,
 
@@ -114,7 +122,11 @@ impl Default for MubblesApp {
             selected_model: 1,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
-            mel_texture: None,
+            mel: DisplayMel {
+                buffer: VecDeque::with_capacity(100),
+                texture: None,
+                image: None,
+            },
             aligned_words: vec![],
             autotype: false,
             partials: false,
@@ -152,8 +164,9 @@ pub enum WhisperUpdate {
     Transcription(String),
     Alignment(Vec<AlignedWord>),
     Level(f32),
-    Mel(DisplayMel),
+    //Mel(DisplayMel),
     Status(String),
+    MelFrame(Vec<f32>),
 }
 
 
@@ -174,11 +187,11 @@ impl eframe::App for MubblesApp {
             worker: stream,
             whisper_tx,
             level,
+            mel,
             autotype,
             partials,
             accuracy,
             changed,
-            mel_texture,
             aligned_words,
             status,
             ..
@@ -203,14 +216,8 @@ impl eframe::App for MubblesApp {
                 Ok(WhisperUpdate::Alignment(a)) => {
                     *aligned_words = a;
                 }
-                Ok(WhisperUpdate::Mel(m)) => {
-                    let color_image = mel_float_to_image(m);
-
-                    *mel_texture = Some(ctx.load_texture(
-                        "mel_spectrogram",
-                        color_image,
-                        egui::TextureOptions::default(),
-                    ));
+                Ok(WhisperUpdate::MelFrame(frame)) => {
+                    update_mel_buffer(frame, &mut mel.buffer, ctx);
                 }
                 Ok(WhisperUpdate::Status(s)) => {
                     *status = s;
@@ -273,7 +280,7 @@ impl eframe::App for MubblesApp {
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
                     .with_cross_align(egui::Align::TOP), | ui| {
-                        draw_texture(mel_texture, ui);
+                        draw_mel(mel, ui);
                     }
             );
 
@@ -407,31 +414,31 @@ impl eframe::App for MubblesApp {
         });
     }
 }
-
-fn mel_float_to_image(m: DisplayMel) -> egui::ColorImage {
-    // map -1..1 m.mel float vec to 0..255 u8 vec
+fn update_mel_buffer(
+    frame: Vec<f32>,
+    mel_buffer: &mut VecDeque<[u8; 128]>,
+    _ctx: &egui::Context,
+) {
     let min = -1.0;
     let max = 1.0;
-    let bytes = m
-        .mel
+    let bytes: Vec<u8> = frame
         .iter()
         .map(|&x| {
-            let x = (x -min) * (255.0 / (max - min));
-            if x < 0.0 {
-                0
-            } else if x > 255.0 {
-                255
-            } else {
-                x as u8
-            }
+            let x = (x - min) * (255.0 / (max - min));
+            let x = x.clamp(0.0, 255.0);
+            x as u8
         })
-        .collect::<Vec<u8>>();
-    // Convert Mel data to ColorImage
-    let color_image = egui::ColorImage::from_gray(
-        [m.num_frames, m.num_bins], // Dimensions of the Mel spectrogram
-        &bytes,                     // Raw RGB data
-    );
-    color_image
+        .collect();
+
+    // smaller models only send 80 bins; pad with 0
+    let mut arr = [0u8; 128];
+    let len = bytes.len().min(128);
+    arr[..len].copy_from_slice(&bytes[..len]);
+
+    if mel_buffer.len() >= 100 {
+        mel_buffer.pop_front();
+    }
+    mel_buffer.push_back(arr);
 }
 
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
@@ -452,13 +459,47 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     });
 }
 
-fn draw_texture(texture: &Option<egui::TextureHandle>, ui: &mut egui::Ui) {
-    if let Some(texture) = texture {
-        ui.add(
-            egui::Image::new(texture)
-                .corner_radius(10.0),
+fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
+    let DisplayMel {
+        buffer,
+        texture,
+        image,
+    } = mel;
+
+    let image = if let Some(image) = image {
+        image
+    } else {
+        let black = egui::Color32::from_black_alpha(0);
+        let img = egui::ColorImage::new( [128, 100], black);
+        *image = Some(img);
+        image.as_mut().unwrap()
+    };
+
+    let texture = if let Some(texture) = texture {
+        texture
+    } else {
+        let tex = ui.ctx().load_texture(
+            "mel_spectrogram",
+            image.clone(),
+            egui::TextureOptions::default(),
         );
-    }
+        *texture = Some(tex);
+        texture.as_mut().unwrap()
+    };
+
+    let pixels = buffer
+        .iter()
+        .flat_map(|arr| arr.iter().map(|&x| egui::Color32::from_black_alpha(x)))
+        .collect::<Vec<_>>();
+
+    image.pixels = pixels;
+    image.size = [128, buffer.len()];
+    texture.set(image.clone(), egui::TextureOptions::default());
+        
+    ui.add(
+        egui::Image::from_texture(&*texture)
+            .corner_radius(10.0),
+    );
 }
 
 // Needed to hold thread handles so the threads stay open
