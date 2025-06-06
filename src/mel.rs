@@ -5,12 +5,12 @@ fn log_mel_spectrogram_w(
     hann: &[f32],
     samples: &[f32],
     filters: &[f32],
-    fft_size: usize, // 400
+    fft_size: usize, // 400: 200 real + 200 im
     fft_step: usize, // 160
     n_len: usize,    // number of frames (usually 3000 for a 30s audio clip)
     n_mel: usize,    // number of mel bins (80 or 128)
 ) -> Vec<f32> {
-    let n_fft = 1 + fft_size / 2;
+    let n_fft = 1 + fft_size / 2; // 201
 
     let zero = 0.0f32;
     let mut fft_in = vec![zero; fft_size];
@@ -47,23 +47,23 @@ fn log_mel_spectrogram_w(
         }
 
         // mel spectrogram
-        for j in 0..n_mel {
+        for bin in 0..n_mel {
             let mut sum = zero;
-            let mut k = 0;
+            let mut fbin = 0;
             // Unroll loop
-            while k < n_fft.saturating_sub(3) {
-                sum += fft_out[k].re * filters[j * n_fft + k]
-                    + fft_out[k + 1].re * filters[j * n_fft + k + 1]
-                    + fft_out[k + 2].re * filters[j * n_fft + k + 2]
-                    + fft_out[k + 3].re * filters[j * n_fft + k + 3];
-                k += 4;
+            while fbin < n_fft.saturating_sub(3) {
+                sum += fft_out[fbin].re * filters[bin * n_fft + fbin]
+                    + fft_out[fbin + 1].re * filters[bin * n_fft + fbin + 1]
+                    + fft_out[fbin + 2].re * filters[bin * n_fft + fbin + 2]
+                    + fft_out[fbin + 3].re * filters[bin * n_fft + fbin + 3];
+                fbin += 4;
             }
             // Handle remainder
-            while k < n_fft {
-                sum += fft_out[k].re * filters[j * n_fft + k];
-                k += 1;
+            while fbin < n_fft {
+                sum += fft_out[fbin].re * filters[bin * n_fft + fbin];
+                fbin += 1;
             }
-            mel[j * n_len + frame_index] = f32::max(sum, 1e-10f32).log10();
+            mel[bin * n_len + frame_index] = f32::max(sum, 1e-10f32).log10();
         }
     }
     mel
@@ -76,19 +76,14 @@ pub fn log_mel_spectrogram_(
     fft_step: usize,
     n_mel: usize,
 ) -> Vec<f32> {
-    const CHUNK_LENGTH: usize = 30;
-    let two_pi = std::f32::consts::PI + std::f32::consts::PI;
-    let half = 0.5f32;
-    let one = 1.0f32;
-    let fft_size_t = fft_size as f32;
 
-    let hann: Vec<f32> = (0..fft_size)
-        .map(|i| half * (one - ((two_pi * i as f32) / fft_size_t).cos()))
-        .collect();
-    let n_len = samples.len() / fft_step;
+    let hann = hanning_window(fft_size);
+    
 
     // pad audio with at least one extra chunk of zeros
+    const CHUNK_LENGTH: usize = 30;
     let pad = 100 * CHUNK_LENGTH / 2;
+    let n_len = samples.len() / fft_step;
     let n_len = if n_len % pad != 0 {
         (n_len / pad + 1) * pad
     } else {
@@ -103,6 +98,17 @@ pub fn log_mel_spectrogram_(
     };
 
     log_mel_spectrogram_w(&hann, &samples, &filters, fft_size, fft_step, n_len, n_mel)
+}
+
+fn hanning_window(fft_size: usize) -> Vec<f32> {
+    let one = 1.0f32;
+    let half = 0.5f32;
+    let two_pi = std::f32::consts::PI + std::f32::consts::PI;
+    let fft_size_t = fft_size as f32;
+    let hann: Vec<f32> = (0..fft_size)
+        .map(|i| half * (one - ((two_pi * i as f32) / fft_size_t).cos()))
+        .collect();
+    hann
 }
 
 fn normalize(mel: &mut Vec<f32>) {

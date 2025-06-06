@@ -1,19 +1,21 @@
-
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    SupportedStreamConfig,
 };
 use rubato::Resampler;
-use std::{collections::VecDeque, sync::mpsc::{self, Receiver, Sender}, thread};
+use std::{
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+};
 
 pub struct AudioChunk {
     data: Vec<f32>,
 }
 
-use crate::{app::WhisperUpdate, mel::pcm_to_mel_frame};
-const TARGET_SAMPLE_RATE: f64 = 16000.;
+use crate::app::WhisperUpdate;
+// whisper is trained on 16kHz audio
+pub(crate) const TARGET_SAMPLE_RATE: usize = 16000; 
 
-fn convert_sample_rate(
+pub(crate) fn convert_sample_rate(
     audio: &[f32],
     original_sample_rate: usize,
 ) -> Result<Vec<f32>, &'static str> {
@@ -24,7 +26,7 @@ fn convert_sample_rate(
         oversampling_factor: 256,
         window: rubato::WindowFunction::BlackmanHarris2,
     };
-    let ratio = TARGET_SAMPLE_RATE / original_sample_rate as f64;
+    let ratio = TARGET_SAMPLE_RATE as f64 / original_sample_rate as f64;
     let mut resampler =
         rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
 
@@ -33,17 +35,11 @@ fn convert_sample_rate(
     Ok(waves_out[0].to_vec())
 }
 
-struct PartialAudio {
-    resampled: VecDeque<f32>,
-    unused: usize,
-}
-
 // a thread that collects non-silent audio samples and sends them on
 fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
-    audio_rx: Receiver<Vec<f32>>,
-    filtered_tx: Sender<Vec<f32>>,
-    device_config: SupportedStreamConfig,
+    audio_rx: Receiver<PcmAudio>,
+    filtered_tx: Sender<PcmAudio>,
 ) {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
@@ -51,18 +47,13 @@ fn filter_audio_loop(
     let mut under_threshold_count = 101;
     let mut recording_buffer: Vec<f32> = Vec::new();
 
-    let mut partial = PartialAudio {
-        resampled: VecDeque::new(),
-        unused: 0,
-    };
-
     // a dynamic threshold (or something like silero-vad) would be better
     let threshold = 0.05f32;
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
-        let data = match audio_rx.recv() {
-            Ok(data) => data,
+        let PcmAudio{data, sample_rate} = match audio_rx.recv() {
+            Ok(pcmaudio) => pcmaudio,
             Err(_) => {
                 tracing::info!("Audio stream closed");
                 return;
@@ -78,40 +69,8 @@ fn filter_audio_loop(
         app.send(WhisperUpdate::Level(max))
             .expect("Failed to send level update");
 
-        let sample_rate = device_config.sample_rate().0 as usize;
         let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
 
-        // push data into the resampled buffer
-        let extra = convert_sample_rate(&data, sample_rate).unwrap();
-        let extra_len = extra.len();
-        partial.resampled.extend(extra);
-        // keep the resampled buffer under 5 seconds, discarding the oldest samples
-        let max_size = (5.0 * TARGET_SAMPLE_RATE) as usize;
-        let stale = partial.resampled.len().saturating_sub(max_size);
-        partial.resampled.rotate_left(stale);
-        // keep the offset in sync with the resampled buffer
-        partial.unused += extra_len - stale;
-        partial.resampled.truncate(max_size);
-        // if we have enough for at least one more mel frame, generate
-        if partial.unused >= 400 {
-            // there are enough `unused` samples that we can generate at least one more frame.
-            // each frame is 160 samples, but the mel needs to look ahead 240 samples to get the next frame.
-            // so we can generate `floor((unused - 240) / 160)` frames.
-            let frames = (partial.unused - 240) / 160;
-            let _pcm = partial
-                            .resampled
-                            .range(partial.unused .. partial.unused + frames * 160 + 240)
-                            .cloned()
-                            .collect::<Vec<f32>>();
-            partial.unused -= frames * 160;
-            // todo
-            // let mels = pcm_to_mel_frame(80, pcm, mel_filters);
-            // for frame in mels.chunks(80) {
-            //     app.send(WhisperUpdate::MelFrame(frame.to_vec()))
-            //         .expect("Failed to send mel update");
-            // }
-        }
-        
         if max > threshold {
             if under_threshold_count > 100 {
                 // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
@@ -131,7 +90,7 @@ fn filter_audio_loop(
                     app.send(WhisperUpdate::Recording(false))
                         .expect("Failed to send recording update");
                     let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                    filtered_tx.send(resampled).expect("Send filtered");
+                    filtered_tx.send(PcmAudio{data: resampled, sample_rate: TARGET_SAMPLE_RATE}).expect("Send filtered");
                     recording_buffer.clear();
                 }
             }
@@ -140,14 +99,11 @@ fn filter_audio_loop(
         // Whisper is trained to process 30 seconds at a time. So if we've got that much, send it now.
         if recording_buffer.len() >= full_whisper_buffer {
             let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-            filtered_tx.send(resampled).expect("Send filtered");
+            filtered_tx.send(PcmAudio{data: resampled, sample_rate: TARGET_SAMPLE_RATE}).expect("Send filtered");
             recording_buffer.clear();
         }
     }
 }
-
-
-
 
 pub fn get_devices() -> Vec<AppDevice> {
     let host = cpal::default_host();
@@ -200,7 +156,6 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
-
 pub struct StreamState {
     // the app holds this handle to keep the stream open (and the thread alive)
     #[allow(dead_code)]
@@ -213,52 +168,61 @@ pub struct AppDevice {
     pub config: cpal::SupportedStreamConfig,
 }
 
-
+pub struct PcmAudio {
+    pub data: Vec<f32>,
+    pub sample_rate: usize,
+}
 
 // once the return value is dropped, listening stops
 // and the sender is closed
 pub fn start_audio_thread(
     app: Sender<WhisperUpdate>,
     app_device: &AppDevice,
-) -> anyhow::Result<(StreamState, Receiver<Vec<f32>>)> {
-    tracing::info!(
-        "Listening on device: {}",
-        app_device.device.name()?
-    );
+) -> anyhow::Result<(StreamState, Receiver<PcmAudio>, Receiver<PcmAudio>)> {
+    tracing::info!("Listening on device: {}", app_device.device.name()?);
 
-    let (audio_tx, audio_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
+    let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
+    let (partial_tx, partial_rx) = mpsc::channel::<PcmAudio>();
 
     let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
 
     let audio_config = &app_device.config;
     let channel_count = audio_config.channels() as usize;
-    let data_callback = move |data: &[f32], _: &_| {
-        let singlechannel = data
+    let sample_rate = audio_config.sample_rate().0 as usize;
+    let data_callback = move |raw: &[f32], _: &_| {
+        let data = raw
             .iter()
             .step_by(channel_count)
             .copied()
             .collect::<Vec<f32>>();
-        audio_tx.send(singlechannel).expect("Send audio data");
+        audio_tx
+            .send(PcmAudio {
+                data: data.clone(),
+                sample_rate,
+            })
+            .expect("Send audio data");
+        partial_tx
+            .send(PcmAudio {
+                data,
+                sample_rate,
+            })
+            .expect("Send partial audio data");
     };
-    let stream = app_device
-        .device
-        .build_input_stream(
-            &app_device.config.clone().into(),
-            data_callback,
-            err_fn,
-            None,
-        )
-        ?;
+    let config2 = app_device.config.clone();
+    let stream = app_device.device.build_input_stream(
+        &config2.into(),
+        data_callback,
+        err_fn,
+        None,
+    )?;
 
     stream.play()?;
 
     let app2 = app.clone();
-    let (filtered_tx, filtered_rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = mpsc::channel();
-    let config2 = app_device.config.clone();
+    let (filtered_tx, filtered_rx): (Sender<PcmAudio>, Receiver<PcmAudio>) = mpsc::channel();
     thread::spawn(move || {
-        filter_audio_loop(app2, audio_rx, filtered_tx, config2);
+        filter_audio_loop(app2, audio_rx, filtered_tx);
     });
 
-    Ok((StreamState{stream}, filtered_rx))
+    Ok((StreamState { stream }, filtered_rx, partial_rx))
 }
-

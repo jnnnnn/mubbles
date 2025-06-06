@@ -11,7 +11,7 @@ use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, Config};
 
-use crate::{app::WhisperUpdate, whisper_model::{token_id, Decoder, Model}};
+use crate::{app::WhisperUpdate, audio::PcmAudio, whisper_model::{token_id, Decoder, Model}};
 
 
 #[derive(Clone, Copy, Debug)]
@@ -202,7 +202,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
 // thread closes when the receiver is closed
 pub fn start_whisper_thread(
     app: Sender<WhisperUpdate>,
-    filtered_rx: Receiver<Vec<f32>>,
+    filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
 ) {
     let result = std::thread::Builder::new()
@@ -219,7 +219,7 @@ pub fn start_whisper_thread(
 
 fn whisper_loop(
     app: Sender<WhisperUpdate>,
-    filtered_rx: Receiver<Vec<f32>>,
+    filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
 ) -> Result<(), anyhow::Error> {
     app.send(WhisperUpdate::Status(
@@ -229,8 +229,8 @@ fn whisper_loop(
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
-        let mut aggregated_data = match filtered_rx.recv() {
-            Ok(data) => data,
+        let PcmAudio{data: mut aggregated, sample_rate} = match filtered_rx.recv() {
+            Ok(pcm) => pcm,
             Err(_) => {
                 tracing::info!("Filtered stream closed");
                 return Ok(());
@@ -238,13 +238,13 @@ fn whisper_loop(
         };
         // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
         // worth aggregating several chunks of audio before sending it to whisper (in the rare case that they are available)
-        while aggregated_data.len() < 16000 * 30 {
+        while aggregated.len() < sample_rate * 30 {
             match filtered_rx.try_recv() {
-                Ok(data) => aggregated_data.extend(data),
+                Ok(pcm) => aggregated.extend(pcm.data),
                 Err(_) => break,
             }
         }
-        whisperize(&mut ctx, &aggregated_data, &app)?;
+        whisperize(&mut ctx, &aggregated, &app)?;
     }
 }
 

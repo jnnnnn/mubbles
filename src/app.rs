@@ -519,7 +519,9 @@ fn start_listening(
         tracing::error!("Failed to start audio thread");
         return None;
     }
-    let (stream, rx) = result.unwrap();
+    let (stream, rx, rx_partial) = result.unwrap();
+
+    crate::partial::start_partial_thread(app.clone(), rx_partial);
 
     crate::whisper::start_whisper_thread(
         app.clone(),
