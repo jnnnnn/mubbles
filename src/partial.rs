@@ -67,7 +67,7 @@ fn partial_loop(
         recent_samples.rotate_left(stale);
         offset -= stale;
         recent_samples.truncate(max_size);
-        tracing::info!(
+        tracing::debug!(
             "Received {} samples, recent_samples {}, offset {}",
             extra_len,
             recent_samples.len(),
@@ -81,7 +81,7 @@ fn partial_loop(
                 .range(offset..offset + frames * 160 + 240)
                 .cloned()
                 .collect::<Vec<f32>>();
-            tracing::info!(
+            tracing::debug!(
                 "Generating {} mel frames from {} samples",
                 frames,
                 _pcm.len()

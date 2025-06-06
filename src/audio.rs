@@ -201,10 +201,14 @@ pub fn start_audio_thread(
                 data: data.clone(),
                 sample_rate,
             })
-            .expect("Send audio data");
+            .unwrap_or_else(|_| {
+                tracing::debug!("Audio channel closed, can't send audio data");
+            });
         partial_tx
             .send(PcmAudio { data, sample_rate })
-            .expect("Send partial audio data");
+            .unwrap_or_else(|_| {
+                tracing::debug!("Partial channel closed, can't send partial audio data");
+            });
     };
     let config2 = app_device.config.clone();
     let stream =

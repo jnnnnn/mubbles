@@ -5,12 +5,12 @@ const FFT_STEP: usize = 160; // 10ms at 16kHz
 
 #[allow(clippy::too_many_arguments)]
 fn log_mel_spectrogram_w(
-    hann: &[f32],
     samples: &[f32],
     filters: &[f32],
     n_len: usize, // number of frames (usually 3000 for a 30s audio clip)
     n_mel: usize, // number of mel bins (80 or 128)
 ) -> Vec<f32> {
+    let hann = hanning_window();
     let n_fft = 1 + FFT_SIZE / 2; // 201
 
     let zero = 0.0f32;
@@ -22,20 +22,17 @@ fn log_mel_spectrogram_w(
     for frame_index in 0..end {
         let offset = frame_index * FFT_STEP;
 
-        // apply Hanning window
         for j in 0..std::cmp::min(FFT_SIZE, n_samples - offset) {
             fft_in[j] = hann[j] * samples[offset + j];
         }
 
-        // fill the rest with zeros
         if n_samples - offset < FFT_SIZE {
             fft_in[n_samples - offset..].fill(zero);
         }
 
-        // FFT
         let mut fft_out: Vec<Complex<f32>> = fft(&fft_in);
 
-        // Calculate modulus^2 of complex numbers
+        // We only need the magnitude of the FFT output
         for j in 0..FFT_SIZE {
             fft_out[j] = Complex::new(
                 fft_out[j].re * fft_out[j].re + fft_out[j].im * fft_out[j].im,
@@ -68,17 +65,6 @@ fn log_mel_spectrogram_w(
         }
     }
     mel
-}
-
-pub fn log_mel_spectrogram_(
-    samples: &[f32],
-    filters: &[f32],
-    n_mel: usize,
-    n_len: usize,
-) -> Vec<f32> {
-    let hann = hanning_window();
-
-    log_mel_spectrogram_w(&hann, &samples, &filters, n_len, n_mel)
 }
 
 fn pad(samples: &[f32]) -> (usize, Vec<f32>) {
@@ -139,7 +125,7 @@ fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
 /// Each mel frame covers a time window of 160 samples (10ms at 16kHz).
 pub(crate) fn pcm_to_mel(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -> Vec<f32> {
     let (n_len, samples) = pad(resampled);
-    let mut mel = log_mel_spectrogram_(&samples, &mel_filters, n_mel, n_len);
+    let mut mel = log_mel_spectrogram_w(&samples, &mel_filters, n_len, n_mel);
     normalize(&mut mel);
     mel
 }
@@ -152,8 +138,8 @@ pub(crate) fn pcm_to_mel_frame(
     resampled: &[f32],
     mel_filters: &[f32],
 ) -> Vec<[f32; 128]> {
-    let n_len = (resampled.len() + FFT_STEP - FFT_SIZE) / FFT_SIZE; // number of frames
-    let mel = log_mel_spectrogram_(&resampled, &mel_filters, n_mel, n_len);
+    let n_frames = (resampled.len() + FFT_STEP - FFT_SIZE) / FFT_STEP; // number of frames
+    let mel = log_mel_spectrogram_w(&resampled, &mel_filters, n_frames, n_mel);
 
     // quickly calculate a rough histogram of the mel values for debugging. ten bins.
     let mut mel2 = mel.clone();
@@ -163,14 +149,14 @@ pub(crate) fn pcm_to_mel_frame(
         let min = chunk.first().copied().unwrap_or(0f32);
         hist[i] = min;
     }
-    tracing::info!("Mel {} histogram: {:?} ", mel.len(), hist);
+    // silence is -10, quite a strong frequency is -5.
+    tracing::debug!("Mel {} histogram: {:?} ", mel.len(), hist);
 
-    let n_frames = (resampled.len() - 240) / 160;
     let mut mel_frames = Vec::with_capacity(n_frames);
     for f in 0..n_frames {
         let mut frame = [0f32; 128];
         for bin in 0..n_mel {
-            frame[bin] = mel[bin * n_mel + f];
+            frame[bin] = mel[bin + f * n_mel];
         }
         mel_frames.push(frame);
     }
