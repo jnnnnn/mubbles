@@ -27,6 +27,8 @@ struct DisplayMel {
     buffer: VecDeque<[u8; 128]>,
     texture: Option<egui::TextureHandle>,
     image: Option<egui::ColorImage>,
+    min: f32,
+    max: f32,
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -125,6 +127,8 @@ impl Default for MubblesApp {
                 buffer: VecDeque::with_capacity(100),
                 texture: None,
                 image: None,
+                min: -10.0,
+                max: -10.0,
             },
             aligned_words: vec![],
             autotype: false,
@@ -216,7 +220,7 @@ impl eframe::App for MubblesApp {
                     *aligned_words = a;
                 }
                 Ok(WhisperUpdate::MelFrame(frame)) => {
-                    update_mel_buffer(frame, &mut mel.buffer, ctx);
+                    update_mel_buffer(frame, mel);
                 }
                 Ok(WhisperUpdate::Status(s)) => {
                     *status = s;
@@ -415,29 +419,28 @@ impl eframe::App for MubblesApp {
 }
 fn update_mel_buffer(
     frame: Vec<f32>,
-    mel_buffer: &mut VecDeque<[u8; 128]>,
-    _ctx: &egui::Context,
+    mel: &mut DisplayMel,
 ) {
-    let min = frame.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max = frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max) + 0.01;
+    mel.min = mel.min.min(frame.iter().cloned().fold(f32::INFINITY, f32::min));
+    mel.max = mel.max.max(frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+    
     let bytes: Vec<u8> = frame
         .iter()
         .map(|&x| {
-            let x = (x - min) * (255.0 / (max - min));
+            let x = (x - mel.min) * (255.0 / (mel.max - mel.min));
             let x = x.clamp(0.0, 255.0);
             x as u8
         })
         .collect();
 
-    // smaller models only send 80 bins; pad with 0
     let mut arr = [0u8; 128];
     let len = bytes.len().min(128);
     arr[..len].copy_from_slice(&bytes[..len]);
 
-    if mel_buffer.len() >= 500 {
-        mel_buffer.pop_front();
+    if mel.buffer.len() >= 500 {
+        mel.buffer.pop_front();
     }
-    mel_buffer.push_back(arr);
+    mel.buffer.push_back(arr);
 }
 
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
@@ -463,6 +466,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         buffer,
         texture,
         image,
+        min: _, max:_,
     } = mel;
 
     let image = if let Some(image) = image {
@@ -486,14 +490,16 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         texture.as_mut().unwrap()
     };
 
-    let pixels = buffer
-        .iter()
-        .flat_map(|arr| arr.iter().map(|&x| egui::Color32::from_black_alpha(x)))
-        .collect::<Vec<_>>();
-
+    let xmax = buffer.len();
+    let mut pixels: Vec<egui::Color32> = vec![egui::Color32::from_gray(0); 128 * xmax];
+    for (x, frame) in buffer.iter().enumerate() {
+        for (y, &value) in frame.iter().enumerate() {
+            pixels[x + y * xmax] = egui::Color32::from_gray(value);
+        }
+    }
 
     image.pixels = pixels;
-    image.size = [128, buffer.len()];
+    image.size = [xmax, 128];
     texture.set(image.clone(), egui::TextureOptions::default());
         
     ui.add(

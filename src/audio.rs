@@ -1,6 +1,4 @@
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::Resampler;
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -13,7 +11,7 @@ pub struct AudioChunk {
 
 use crate::app::WhisperUpdate;
 // whisper is trained on 16kHz audio
-pub(crate) const TARGET_SAMPLE_RATE: usize = 16000; 
+pub(crate) const TARGET_SAMPLE_RATE: usize = 16000;
 
 pub(crate) fn convert_sample_rate(
     audio: &[f32],
@@ -40,7 +38,7 @@ fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
     filtered_tx: Sender<PcmAudio>,
-) {
+) -> Result<(), anyhow::Error> {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
     // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
@@ -52,11 +50,11 @@ fn filter_audio_loop(
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
-        let PcmAudio{data, sample_rate} = match audio_rx.recv() {
+        let PcmAudio { data, sample_rate } = match audio_rx.recv() {
             Ok(pcmaudio) => pcmaudio,
             Err(_) => {
                 tracing::info!("Audio stream closed");
-                return;
+                return Ok(());
             }
         };
 
@@ -66,16 +64,14 @@ fn filter_audio_loop(
                 max = *sample;
             }
         }
-        app.send(WhisperUpdate::Level(max))
-            .expect("Failed to send level update");
+        app.send(WhisperUpdate::Level(max))?;
 
         let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
 
         if max > threshold {
             if under_threshold_count > 100 {
                 // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
-                app.send(WhisperUpdate::Recording(true))
-                    .expect("Failed to send recording update");
+                app.send(WhisperUpdate::Recording(true))?;
             }
             recording_buffer.extend_from_slice(&data);
             under_threshold_count = 0;
@@ -87,10 +83,12 @@ fn filter_audio_loop(
                 recording_buffer.extend_from_slice(&data);
             } else {
                 if recording_buffer.len() > 0 {
-                    app.send(WhisperUpdate::Recording(false))
-                        .expect("Failed to send recording update");
+                    app.send(WhisperUpdate::Recording(false))?;
                     let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                    filtered_tx.send(PcmAudio{data: resampled, sample_rate: TARGET_SAMPLE_RATE}).expect("Send filtered");
+                    filtered_tx.send(PcmAudio {
+                        data: resampled,
+                        sample_rate: TARGET_SAMPLE_RATE,
+                    })?;
                     recording_buffer.clear();
                 }
             }
@@ -99,7 +97,10 @@ fn filter_audio_loop(
         // Whisper is trained to process 30 seconds at a time. So if we've got that much, send it now.
         if recording_buffer.len() >= full_whisper_buffer {
             let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-            filtered_tx.send(PcmAudio{data: resampled, sample_rate: TARGET_SAMPLE_RATE}).expect("Send filtered");
+            filtered_tx.send(PcmAudio {
+                data: resampled,
+                sample_rate: TARGET_SAMPLE_RATE,
+            })?;
             recording_buffer.clear();
         }
     }
@@ -202,27 +203,25 @@ pub fn start_audio_thread(
             })
             .expect("Send audio data");
         partial_tx
-            .send(PcmAudio {
-                data,
-                sample_rate,
-            })
+            .send(PcmAudio { data, sample_rate })
             .expect("Send partial audio data");
     };
     let config2 = app_device.config.clone();
-    let stream = app_device.device.build_input_stream(
-        &config2.into(),
-        data_callback,
-        err_fn,
-        None,
-    )?;
+    let stream =
+        app_device
+            .device
+            .build_input_stream(&config2.into(), data_callback, err_fn, None)?;
 
     stream.play()?;
 
     let app2 = app.clone();
     let (filtered_tx, filtered_rx): (Sender<PcmAudio>, Receiver<PcmAudio>) = mpsc::channel();
-    thread::spawn(move || {
-        filter_audio_loop(app2, audio_rx, filtered_tx);
-    });
+    thread::spawn(
+        move || match filter_audio_loop(app2, audio_rx, filtered_tx) {
+            Ok(_) => tracing::info!("Audio filter thread finished successfully"),
+            Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
+        },
+    );
 
     Ok((StreamState { stream }, filtered_rx, partial_rx))
 }

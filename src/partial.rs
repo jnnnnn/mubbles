@@ -39,19 +39,30 @@ fn partial_loop(
         load_whisper_model(WhichModel::TinyEn).expect("Failed to load whisper model");
 
     loop {
-        let PcmAudio { data, sample_rate } = match partial_rx.recv() {
+        let PcmAudio {
+            mut data,
+            sample_rate,
+        } = match partial_rx.recv() {
             Ok(pcm) => pcm,
             Err(_) => {
                 tracing::info!("Partial stream closed");
                 return Ok(());
             }
         };
-
-        let extra = crate::audio::convert_sample_rate(&data, sample_rate).unwrap();
+        // consume any other messages in the queue
+        while let Ok(pcm) = partial_rx.try_recv() {
+            let PcmAudio {
+                data: other,
+                sample_rate: _,
+            } = pcm;
+            data.extend(other);
+        }
+        let max_size = (5 * TARGET_SAMPLE_RATE) as usize;
+        let mut extra = crate::audio::convert_sample_rate(&data, sample_rate).unwrap();
+        extra.truncate(max_size);
         let extra_len = extra.len();
         recent_samples.extend(extra);
         // we only want to preview the most recent samples
-        let max_size = (5 * TARGET_SAMPLE_RATE) as usize;
         let stale = recent_samples.len().saturating_sub(max_size);
         recent_samples.rotate_left(stale);
         offset -= stale;
@@ -81,8 +92,7 @@ fn partial_loop(
 
             for frame in mels {
                 frame_count += 1;
-                app.send(WhisperUpdate::MelFrame(frame.into()))
-                    .expect("Failed to send mel frame");
+                app.send(WhisperUpdate::MelFrame(frame.into()))?;
             }
             tracing::debug!("Generated {} mel frames", frame_count);
         }

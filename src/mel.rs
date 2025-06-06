@@ -1,33 +1,34 @@
 use rustfft::{num_complex::Complex, FftPlanner};
 
+const FFT_SIZE: usize = 400; // 200 real + 200 imaginary
+const FFT_STEP: usize = 160; // 10ms at 16kHz
+
 #[allow(clippy::too_many_arguments)]
 fn log_mel_spectrogram_w(
     hann: &[f32],
     samples: &[f32],
     filters: &[f32],
-    fft_size: usize, // 400: 200 real + 200 im
-    fft_step: usize, // 160
-    n_len: usize,    // number of frames (usually 3000 for a 30s audio clip)
-    n_mel: usize,    // number of mel bins (80 or 128)
+    n_len: usize, // number of frames (usually 3000 for a 30s audio clip)
+    n_mel: usize, // number of mel bins (80 or 128)
 ) -> Vec<f32> {
-    let n_fft = 1 + fft_size / 2; // 201
+    let n_fft = 1 + FFT_SIZE / 2; // 201
 
     let zero = 0.0f32;
-    let mut fft_in = vec![zero; fft_size];
+    let mut fft_in = vec![zero; FFT_SIZE];
     let mut mel = vec![zero; n_len * n_mel];
     let n_samples = samples.len();
-    let end = std::cmp::min(n_samples / fft_step + 1, n_len);
+    let end = std::cmp::min(n_samples / FFT_STEP + 1, n_len);
 
     for frame_index in 0..end {
-        let offset = frame_index * fft_step;
+        let offset = frame_index * FFT_STEP;
 
         // apply Hanning window
-        for j in 0..std::cmp::min(fft_size, n_samples - offset) {
+        for j in 0..std::cmp::min(FFT_SIZE, n_samples - offset) {
             fft_in[j] = hann[j] * samples[offset + j];
         }
 
         // fill the rest with zeros
-        if n_samples - offset < fft_size {
+        if n_samples - offset < FFT_SIZE {
             fft_in[n_samples - offset..].fill(zero);
         }
 
@@ -35,14 +36,14 @@ fn log_mel_spectrogram_w(
         let mut fft_out: Vec<Complex<f32>> = fft(&fft_in);
 
         // Calculate modulus^2 of complex numbers
-        for j in 0..fft_size {
+        for j in 0..FFT_SIZE {
             fft_out[j] = Complex::new(
                 fft_out[j].re * fft_out[j].re + fft_out[j].im * fft_out[j].im,
                 0.0f32,
             );
         }
-        for j in 1..fft_size / 2 {
-            let v = fft_out[fft_size - j].re;
+        for j in 1..FFT_SIZE / 2 {
+            let v = fft_out[FFT_SIZE - j].re;
             fft_out[j].re += v;
         }
 
@@ -72,16 +73,19 @@ fn log_mel_spectrogram_w(
 pub fn log_mel_spectrogram_(
     samples: &[f32],
     filters: &[f32],
-    fft_size: usize,
-    fft_step: usize,
     n_mel: usize,
+    n_len: usize,
 ) -> Vec<f32> {
-    let hann = hanning_window(fft_size);
+    let hann = hanning_window();
 
+    log_mel_spectrogram_w(&hann, &samples, &filters, n_len, n_mel)
+}
+
+fn pad(samples: &[f32]) -> (usize, Vec<f32>) {
     // pad audio with at least one extra chunk of zeros
     const CHUNK_LENGTH: usize = 30;
-    let pad = 100 * CHUNK_LENGTH / 2;
-    let n_len = samples.len() / fft_step;
+    let pad = 100 * CHUNK_LENGTH / 2; // 1500
+    let n_len = samples.len() / FFT_STEP;
     let n_len = if n_len % pad != 0 {
         (n_len / pad + 1) * pad
     } else {
@@ -90,34 +94,33 @@ pub fn log_mel_spectrogram_(
     let n_len = n_len + pad;
     let samples = {
         let mut samples_padded = samples.to_vec();
-        let to_add = n_len * fft_step - samples.len();
+        let to_add = n_len * FFT_STEP - samples.len();
         samples_padded.extend(std::iter::repeat_n(0f32, to_add));
         samples_padded
     };
-
-    log_mel_spectrogram_w(&hann, &samples, &filters, fft_size, fft_step, n_len, n_mel)
+    (n_len, samples)
 }
 
-fn hanning_window(fft_size: usize) -> Vec<f32> {
+fn hanning_window() -> Vec<f32> {
     let one = 1.0f32;
     let half = 0.5f32;
     let two_pi = std::f32::consts::PI + std::f32::consts::PI;
-    let fft_size_t = fft_size as f32;
-    let hann: Vec<f32> = (0..fft_size)
-        .map(|i| half * (one - ((two_pi * i as f32) / fft_size_t).cos()))
+    let hann: Vec<f32> = (0..FFT_SIZE)
+        .map(|i| half * (one - ((two_pi * i as f32) / FFT_SIZE as f32).cos()))
         .collect();
     hann
 }
 
+// spread the range from 0 to 1. Anything more than 8dB below the maximum is set to 0.
 fn normalize(mel: &mut Vec<f32>) {
-    let mmax = mel
+    let threshold = mel
         .iter()
         .max_by(|&u, &v| u.partial_cmp(v).unwrap_or(std::cmp::Ordering::Greater))
         .copied()
         .unwrap_or(0f32)
         - 8f32;
     for m in mel.iter_mut() {
-        let v = f32::max(*m, mmax);
+        let v = f32::max(*m, threshold);
         *m = v / 4f32 + 1f32
     }
 }
@@ -135,7 +138,8 @@ fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
 /// Each mel frame contains n_mel frequency bins (80 or 128), representing low to high frequencies.
 /// Each mel frame covers a time window of 160 samples (10ms at 16kHz).
 pub(crate) fn pcm_to_mel(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -> Vec<f32> {
-    let mut mel = log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, n_mel);
+    let (n_len, samples) = pad(resampled);
+    let mut mel = log_mel_spectrogram_(&samples, &mel_filters, n_mel, n_len);
     normalize(&mut mel);
     mel
 }
@@ -148,14 +152,25 @@ pub(crate) fn pcm_to_mel_frame(
     resampled: &[f32],
     mel_filters: &[f32],
 ) -> Vec<[f32; 128]> {
-    let mut mel = log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, n_mel);
-    normalize(&mut mel);
+    let n_len = (resampled.len() + FFT_STEP - FFT_SIZE) / FFT_SIZE; // number of frames
+    let mel = log_mel_spectrogram_(&resampled, &mel_filters, n_mel, n_len);
+
+    // quickly calculate a rough histogram of the mel values for debugging. ten bins.
+    let mut mel2 = mel.clone();
+    mel2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut hist = [0f32; 10];
+    for (i, chunk) in mel2.chunks(mel2.len() / 10).enumerate() {
+        let min = chunk.first().copied().unwrap_or(0f32);
+        hist[i] = min;
+    }
+    tracing::info!("Mel {} histogram: {:?} ", mel.len(), hist);
+
     let n_frames = (resampled.len() - 240) / 160;
     let mut mel_frames = Vec::with_capacity(n_frames);
-    for i in 0..n_frames {
+    for f in 0..n_frames {
         let mut frame = [0f32; 128];
-        for j in 0..n_mel {
-            frame[j] = mel[i * n_mel + j];
+        for bin in 0..n_mel {
+            frame[bin] = mel[bin * n_mel + f];
         }
         mel_frames.push(frame);
     }
