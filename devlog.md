@@ -1133,5 +1133,6 @@ ERROR mubbles::whisper: Whisper thread failed: narrow invalid args start + len >
 
 I think because of a very short input; the attention bit can't do the median thing neatly. wait I disabled that. I dunno. this will be probably be fixed by VAD and requiring at least 2s of audio. a stack trace would help.
 
+make sure the image is getting updated
 
-
+it's not

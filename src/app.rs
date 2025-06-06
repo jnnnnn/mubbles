@@ -466,6 +466,13 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         image,
     } = mel;
 
+    match buffer.iter_mut().last() {
+        Some(last) => {
+            last[60] = 255; // set the middle bin to white for visibility
+        }
+        _ => { }
+    }
+
     let image = if let Some(image) = image {
         image
     } else {
