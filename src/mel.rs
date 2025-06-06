@@ -154,7 +154,7 @@ pub(crate) fn pcm_to_mel_frame(
 
     let mut mel_frames = Vec::with_capacity(n_frames);
     for f in 0..n_frames {
-        let mut frame = [0f32; 128];
+        let mut frame = [-10.0f32; 128];
         for bin in 0..n_mel {
             frame[bin] = mel[bin + f * n_mel];
         }

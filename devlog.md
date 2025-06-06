@@ -1136,3 +1136,5 @@ I think because of a very short input; the attention bit can't do the median thi
 make sure the image is getting updated
 
 it's not
+
+ok, spectrogram working now. It's upside down and the default value should be -10, but it's working.

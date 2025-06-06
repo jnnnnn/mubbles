@@ -128,7 +128,7 @@ impl Default for MubblesApp {
                 texture: None,
                 image: None,
                 min: -10.0,
-                max: -10.0,
+                max: 0.0,
             },
             aligned_words: vec![],
             autotype: false,
@@ -417,6 +417,7 @@ impl eframe::App for MubblesApp {
         });
     }
 }
+
 fn update_mel_buffer(
     frame: Vec<f32>,
     mel: &mut DisplayMel,
