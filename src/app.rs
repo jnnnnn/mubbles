@@ -5,7 +5,6 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use egui::TextureHandle;
 
 use crate::{audio::{get_devices, AppDevice, StreamState}, whisper::{
     WhichModel, WhisperParams,
@@ -419,8 +418,8 @@ fn update_mel_buffer(
     mel_buffer: &mut VecDeque<[u8; 128]>,
     _ctx: &egui::Context,
 ) {
-    let min = -1.0;
-    let max = 1.0;
+    let min = frame.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max) + 0.01;
     let bytes: Vec<u8> = frame
         .iter()
         .map(|&x| {
@@ -435,7 +434,7 @@ fn update_mel_buffer(
     let len = bytes.len().min(128);
     arr[..len].copy_from_slice(&bytes[..len]);
 
-    if mel_buffer.len() >= 100 {
+    if mel_buffer.len() >= 500 {
         mel_buffer.pop_front();
     }
     mel_buffer.push_back(arr);
@@ -466,13 +465,6 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         image,
     } = mel;
 
-    match buffer.iter_mut().last() {
-        Some(last) => {
-            last[60] = 255; // set the middle bin to white for visibility
-        }
-        _ => { }
-    }
-
     let image = if let Some(image) = image {
         image
     } else {
@@ -498,6 +490,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         .iter()
         .flat_map(|arr| arr.iter().map(|&x| egui::Color32::from_black_alpha(x)))
         .collect::<Vec<_>>();
+
 
     image.pixels = pixels;
     image.size = [128, buffer.len()];

@@ -76,9 +76,7 @@ pub fn log_mel_spectrogram_(
     fft_step: usize,
     n_mel: usize,
 ) -> Vec<f32> {
-
     let hann = hanning_window(fft_size);
-    
 
     // pad audio with at least one extra chunk of zeros
     const CHUNK_LENGTH: usize = 30;
@@ -145,6 +143,21 @@ pub(crate) fn pcm_to_mel(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -
 // this is for incremental processing. Provide 400 samples of audio, and it will
 // return a mel frame. each time you get another 160 samples, call this function
 // again (after discarding the oldest 160 samples) to get the next frame.
-pub(crate) fn pcm_to_mel_frame(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -> Vec<f32> {
-    log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, n_mel)
+pub(crate) fn pcm_to_mel_frame(
+    n_mel: usize,
+    resampled: &[f32],
+    mel_filters: &[f32],
+) -> Vec<[f32; 128]> {
+    let mut mel = log_mel_spectrogram_(&resampled, &mel_filters, 400, 160, n_mel);
+    normalize(&mut mel);
+    let n_frames = (resampled.len() - 240) / 160;
+    let mut mel_frames = Vec::with_capacity(n_frames);
+    for i in 0..n_frames {
+        let mut frame = [0f32; 128];
+        for j in 0..n_mel {
+            frame[j] = mel[i * n_mel + j];
+        }
+        mel_frames.push(frame);
+    }
+    mel_frames
 }

@@ -1,6 +1,11 @@
 use std::collections::VecDeque;
 
-use crate::{app::WhisperUpdate, audio::{PcmAudio, TARGET_SAMPLE_RATE}, mel::pcm_to_mel_frame, whisper::{load_whisper_model, WhichModel}};
+use crate::{
+    app::WhisperUpdate,
+    audio::{PcmAudio, TARGET_SAMPLE_RATE},
+    mel::pcm_to_mel_frame,
+    whisper::{load_whisper_model, WhichModel},
+};
 
 pub(crate) fn start_partial_thread(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
@@ -27,15 +32,14 @@ fn partial_loop(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
     partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
 ) -> Result<(), anyhow::Error> {
-
     let mut recent_samples = VecDeque::<f32>::new();
     let mut offset: usize = 0;
 
-    let whisper_context = load_whisper_model(WhichModel::TinyEn)
-        .expect("Failed to load whisper model");
+    let whisper_context =
+        load_whisper_model(WhichModel::TinyEn).expect("Failed to load whisper model");
 
     loop {
-        let PcmAudio{data, sample_rate} = match partial_rx.recv() {
+        let PcmAudio { data, sample_rate } = match partial_rx.recv() {
             Ok(pcm) => pcm,
             Err(_) => {
                 tracing::info!("Partial stream closed");
@@ -52,8 +56,12 @@ fn partial_loop(
         recent_samples.rotate_left(stale);
         offset -= stale;
         recent_samples.truncate(max_size);
-        tracing::info!("Received {} samples, recent_samples {}, offset {}", 
-            extra_len, recent_samples.len(), offset);
+        tracing::info!(
+            "Received {} samples, recent_samples {}, offset {}",
+            extra_len,
+            recent_samples.len(),
+            offset
+        );
 
         // mel frames are generated with a bit of lookahead -- 160 samples plus lookahead of 240 goes into the fft.
         if offset + 400 < recent_samples.len() {
@@ -62,14 +70,19 @@ fn partial_loop(
                 .range(offset..offset + frames * 160 + 240)
                 .cloned()
                 .collect::<Vec<f32>>();
-            tracing::info!("Generating {} mel frames from {} samples", frames, _pcm.len());
+            tracing::info!(
+                "Generating {} mel frames from {} samples",
+                frames,
+                _pcm.len()
+            );
             offset += frames * 160;
             let mels = pcm_to_mel_frame(80, &_pcm, &whisper_context.mel_filters);
             let mut frame_count = 0;
-            for frame in mels.chunks(80) {
+
+            for frame in mels {
                 frame_count += 1;
-                app.send(WhisperUpdate::MelFrame(frame.to_vec()))
-                    .expect("Failed to send mel update");
+                app.send(WhisperUpdate::MelFrame(frame.into()))
+                    .expect("Failed to send mel frame");
             }
             tracing::debug!("Generated {} mel frames", frame_count);
         }
