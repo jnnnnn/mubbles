@@ -258,7 +258,7 @@ fn align_text_token_to_audio(
                     query_key_tensors.len(), query_key_tensors[layer].dims()
                 )));
             }
-            tracing::info!(
+            tracing::debug!(
                 "processing alignment head: layer {layer}, head {head} with dims {:?}",
                 query_key_tensors[layer].dims()
             );

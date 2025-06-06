@@ -1118,3 +1118,20 @@ That means:
 ## 2025-06-05
 
 I wrote the UI code to receive individual columns (frames) of mel spectrogram. then I tried to modify the audio loop. how much audio to process through pcm_to_mel ? turns out, the fft takes 400 samples, but then it only steps forward 160 samples. so it's actually looking ahead by about 2.5 frames.
+
+## 2025-06-06
+
+partials mostly implemented now. but not showing up in the ui.
+
+I think the frame shape is wrong -- columns vs. rows.
+
+got this error again as well
+
+```log
+ERROR mubbles::whisper: Whisper thread failed: narrow invalid args start + len > dim_len: [4, 750], dim: 1, start: 0, len:867
+```
+
+I think because of a very short input; the attention bit can't do the median thing neatly. wait I disabled that. I dunno. this will be probably be fixed by VAD and requiring at least 2s of audio. a stack trace would help.
+
+
+

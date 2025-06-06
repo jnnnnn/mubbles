@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::audio::{PcmAudio, TARGET_SAMPLE_RATE};
+use crate::{app::WhisperUpdate, audio::{PcmAudio, TARGET_SAMPLE_RATE}, mel::pcm_to_mel_frame, whisper::{load_whisper_model, WhichModel}};
 
 pub(crate) fn start_partial_thread(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
@@ -28,7 +28,11 @@ fn partial_loop(
     partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
 ) -> Result<(), anyhow::Error> {
 
-    let recent_samples = VecDeque::<f32>::new();
+    let mut recent_samples = VecDeque::<f32>::new();
+    let mut offset: usize = 0;
+
+    let whisper_context = load_whisper_model(WhichModel::TinyEn)
+        .expect("Failed to load whisper model");
 
     loop {
         let PcmAudio{data, sample_rate} = match partial_rx.recv() {
@@ -39,36 +43,35 @@ fn partial_loop(
             }
         };
 
-        // push data into the resampled buffer
         let extra = crate::audio::convert_sample_rate(&data, sample_rate).unwrap();
         let extra_len = extra.len();
         recent_samples.extend(extra);
-        // keep the resampled buffer under 5 seconds, discarding the oldest samples
+        // we only want to preview the most recent samples
         let max_size = (5 * TARGET_SAMPLE_RATE) as usize;
         let stale = recent_samples.len().saturating_sub(max_size);
         recent_samples.rotate_left(stale);
-        // keep the offset in sync with the resampled buffer
-        partial.unused += extra_len - stale;
+        offset -= stale;
         recent_samples.truncate(max_size);
-        // if we have enough for at least one more mel frame, generate
-        if partial.unused >= 400 {
-            // there are enough `unused` samples that we can generate at least one more frame.
-            // each frame is 160 samples, but the mel needs to look ahead 240 samples to get the next frame.
-            // so we can generate `floor((unused - 240) / 160)` frames.
-            let frames = (partial.unused - 240) / 160;
-            let _pcm = partial
-                .resampled
-                .range(partial.unused..partial.unused + frames * 160 + 240)
+        tracing::info!("Received {} samples, recent_samples {}, offset {}", 
+            extra_len, recent_samples.len(), offset);
+
+        // mel frames are generated with a bit of lookahead -- 160 samples plus lookahead of 240 goes into the fft.
+        if offset + 400 < recent_samples.len() {
+            let frames = (recent_samples.len() - offset - 240) / 160;
+            let _pcm = recent_samples
+                .range(offset..offset + frames * 160 + 240)
                 .cloned()
                 .collect::<Vec<f32>>();
-            partial.unused -= frames * 160;
-            let mels = pcm_to_mel_frame(80, pcm, mel_filters);
+            tracing::info!("Generating {} mel frames from {} samples", frames, _pcm.len());
+            offset += frames * 160;
+            let mels = pcm_to_mel_frame(80, &_pcm, &whisper_context.mel_filters);
+            let mut frame_count = 0;
             for frame in mels.chunks(80) {
+                frame_count += 1;
                 app.send(WhisperUpdate::MelFrame(frame.to_vec()))
                     .expect("Failed to send mel update");
             }
+            tracing::debug!("Generated {} mel frames", frame_count);
         }
     }
-
-    Ok(())
 }

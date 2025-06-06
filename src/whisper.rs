@@ -134,7 +134,7 @@ pub struct WhisperContext {
     decoder: crate::whisper_model::Decoder,
     device: candle_core::Device,
     config: Config,
-    mel_filters: Vec<f32>,
+    pub mel_filters: Vec<f32>,
     previous_content_tokens: Vec<u32>, // Added to store context
 }
 
