@@ -149,14 +149,14 @@ pub(crate) fn pcm_to_mel_frame(
         let min = chunk.first().copied().unwrap_or(0f32);
         hist[i] = min;
     }
-    // silence is -10, quite a strong frequency is -5.
+    // silence is -10, most values -8ish, quite a strong frequency is -5.
     tracing::debug!("Mel {} histogram: {:?} ", mel.len(), hist);
 
     let mut mel_frames = Vec::with_capacity(n_frames);
     for f in 0..n_frames {
         let mut frame = [-10.0f32; 128];
         for bin in 0..n_mel {
-            frame[bin] = mel[bin + f * n_mel];
+            frame[bin] = mel[bin * n_frames + f];
         }
         mel_frames.push(frame);
     }
