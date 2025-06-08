@@ -261,7 +261,7 @@ fn whisperize(
     app.send(WhisperUpdate::Status("Levels...".to_string()))?;
 
     let mel_start = std::time::Instant::now();
-    app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
+app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     // the mel pads out to 30s; keep track of how much actual audio we have for initializing the alignment calculation
     let audio_len = resampled.len() as f32 / 16000.0; // Assuming 16kHz sample rate
 

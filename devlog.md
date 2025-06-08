@@ -954,12 +954,13 @@ Look at whisper's decoding.py. It feeds in previous tokens (see `_get_initial_to
 
 feeding in previous tokens seems to make it go crazy. all sorts of repetition. possibly more trouble than its worth. the prev text token and SOT token have to be in the right spots.
 
-I think getting timestamps working will make segmenting much better. 
+I think getting timestamps working will make segmenting much better.
 
 ## 2025-05-18
 
 https://github.com/Zackriya-Solutions/meeting-minutes is not bad but:
- - tauri frontend -- js / python build process
+
+-   tauri frontend -- js / python build process
 
 recommends LLMs above 32B for summarization as otherwise hallucinate
 
@@ -967,11 +968,11 @@ recommends LLMs above 32B for summarization as otherwise hallucinate
 
 Ah, I now understand what a 'segment' is in the original openai code:
 
-The encoder takes mel frames and produces audio tokens (ints). Each audio token represents two mel frames, or 0.02s. 
+The encoder takes mel frames and produces audio tokens (ints). Each audio token represents two mel frames, or 0.02s.
 
 The decoder takes audio tokens and produces text tokens. Text tokens are decoded into strings, with the tokenizer converting single or paired text tokens into particular strings.
 
-Some text tokens represent timestamps instead of output text. The whisper model takes a 30-second mel audio (1500 mel frames) and produces several segments of text tokens from it. This represents  distinct utterances. These segments are separated by timestamp tokens in the stream of text tokens output.
+Some text tokens represent timestamps instead of output text. The whisper model takes a 30-second mel audio (1500 mel frames) and produces several segments of text tokens from it. This represents distinct utterances. These segments are separated by timestamp tokens in the stream of text tokens output.
 
 The openai code returns these segments separately; the candle whisper model just ignores the timestamp tokens, as the heuristics to separate segments are a little spicy.
 
@@ -982,7 +983,6 @@ The downside is having to incorporate a VAD into my application, making it large
 The other major advantage of adding a VAD is that it is cheap to run continuously, even if there may not be speech. This makes listening continuously much more efficient, as non-speech audio will not be processed through whisper at all.
 
 The downside of a VAD is slightly more memory usage. But I guess I could unload the whisper model after a few seconds of silence and that would mean far lower memory usage while the VAD is not detecting speech.
-
 
 It is frustrating that both the openai and the candle implementations make no distinction between the different types of tokens.
 
@@ -999,57 +999,61 @@ The resulting `qk` matrix in the `qkv_attention` function represents the scaled 
 #### Breakdown of the `qk` Shape (General Case)
 
 1.  **Input Shapes**:
-    *   `q` (query): Shape `(n_batch, n_ctx_q, n_state)`
-        *   `n_batch`: Number of samples in the batch.
-        *   `n_ctx_q`: Query sequence length (e.g., number of text tokens).
-        *   `n_state`: Hidden state size (dimensionality of the model).
-    *   `k` (key): Shape `(n_batch, n_ctx_k, n_state)`
-        *   `n_ctx_k`: Key sequence length (e.g., number of audio frames or text tokens).
-    *   `v` (value): Shape `(n_batch, n_ctx_k, n_state)` (same shape as `k`)
+
+    -   `q` (query): Shape `(n_batch, n_ctx_q, n_state)`
+        -   `n_batch`: Number of samples in the batch.
+        -   `n_ctx_q`: Query sequence length (e.g., number of text tokens).
+        -   `n_state`: Hidden state size (dimensionality of the model).
+    -   `k` (key): Shape `(n_batch, n_ctx_k, n_state)`
+        -   `n_ctx_k`: Key sequence length (e.g., number of audio frames or text tokens).
+    -   `v` (value): Shape `(n_batch, n_ctx_k, n_state)` (same shape as `k`)
 
 2.  **Reshaping for Multi-Head Attention**:
     The `qkv_attention` function in `model.py` reshapes `q` and `k` as follows:
-    *   `q = q.view(n_batch, n_ctx_q, self.n_head, -1).permute(0, 2, 1, 3)`
-        *   Results in `q` having shape `(n_batch, self.n_head, n_ctx_q, head_dim)`, where `head_dim = n_state // self.n_head`.
-    *   `k = k.view(n_batch, n_ctx_k, self.n_head, -1).permute(0, 2, 1, 3)`
-        *   Results in `k` having shape `(n_batch, self.n_head, n_ctx_k, head_dim)`.
+
+    -   `q = q.view(n_batch, n_ctx_q, self.n_head, -1).permute(0, 2, 1, 3)`
+        -   Results in `q` having shape `(n_batch, self.n_head, n_ctx_q, head_dim)`, where `head_dim = n_state // self.n_head`.
+    -   `k = k.view(n_batch, n_ctx_k, self.n_head, -1).permute(0, 2, 1, 3)`
+        -   Results in `k` having shape `(n_batch, self.n_head, n_ctx_k, head_dim)`.
 
 3.  **Dot Product to Compute `qk`**:
     The scaled dot product is computed:
     ```python
     qk = (q * scale) @ (k * scale).transpose(-1, -2)
     ```
-    *   `q` has shape `(n_batch, self.n_head, n_ctx_q, head_dim)`.
-    *   `(k * scale).transpose(-1, -2)` has shape `(n_batch, self.n_head, head_dim, n_ctx_k)`.
-    *   The resulting `qk` has shape `(n_batch, self.n_head, n_ctx_q, n_ctx_k)`.
+    -   `q` has shape `(n_batch, self.n_head, n_ctx_q, head_dim)`.
+    -   `(k * scale).transpose(-1, -2)` has shape `(n_batch, self.n_head, head_dim, n_ctx_k)`.
+    -   The resulting `qk` has shape `(n_batch, self.n_head, n_ctx_q, n_ctx_k)`.
 
 #### Final Shape of `qk`
 
-*   `qk` is a 4D tensor with shape:
+-   `qk` is a 4D tensor with shape:
     ```
     (n_batch, n_head, n_ctx_q, n_ctx_k)
     ```
-    *   `n_batch`: Number of samples in the batch.
-    *   `n_head`: Number of attention heads.
-    *   `n_ctx_q`: Sequence length of the query.
-    *   `n_ctx_k`: Sequence length of the key.
-    *   **Note**: For self-attention, `q`, `k`, and `v` are derived from the same input sequence, so `n_ctx_q == n_ctx_k`. For cross-attention, `q` is derived from one sequence (e.g., text tokens) and `k`, `v` from another (e.g., audio features), so `n_ctx_q` and `n_ctx_k` can be different.
+    -   `n_batch`: Number of samples in the batch.
+    -   `n_head`: Number of attention heads.
+    -   `n_ctx_q`: Sequence length of the query.
+    -   `n_ctx_k`: Sequence length of the key.
+    -   **Note**: For self-attention, `q`, `k`, and `v` are derived from the same input sequence, so `n_ctx_q == n_ctx_k`. For cross-attention, `q` is derived from one sequence (e.g., text tokens) and `k`, `v` from another (e.g., audio features), so `n_ctx_q` and `n_ctx_k` can be different.
 
 #### Interpretation of `qk`
 
-*   Each slice `qk[b, h]` (for a specific batch `b` and head `h`) is a matrix of shape `(n_ctx_q, n_ctx_k)`.
-*   Each element `qk[b, h, i, j]` represents the attention score between the `i`-th query token (from the query sequence) and the `j`-th key token (from the key sequence) for the `h`-th attention head in the `b`-th batch.
+-   Each slice `qk[b, h]` (for a specific batch `b` and head `h`) is a matrix of shape `(n_ctx_q, n_ctx_k)`.
+-   Each element `qk[b, h, i, j]` represents the attention score between the `i`-th query token (from the query sequence) and the `j`-th key token (from the key sequence) for the `h`-th attention head in the `b`-th batch.
 
 #### Related Code in `timing.py` (Cross-Attention for Alignment)
 
 The `timing.py` script uses hooks on the `cross_attn` modules of the decoder blocks. In this context:
-*   The **query (`q`)** is derived from the text tokens. So, `n_ctx_q` corresponds to the number of text tokens in the current sequence (let's call this `n_text_tokens`).
-*   The **key (`k`)** and **value (`v`)** are derived from the encoded audio features (`xa`). So, `n_ctx_k` corresponds to the number of audio frames in the encoded audio (let's call this `n_audio_frames`, which is typically `mel_num_frames // 2`).
+
+-   The **query (`q`)** is derived from the text tokens. So, `n_ctx_q` corresponds to the number of text tokens in the current sequence (let's call this `n_text_tokens`).
+-   The **key (`k`)** and **value (`v`)** are derived from the encoded audio features (`xa`). So, `n_ctx_k` corresponds to the number of audio frames in the encoded audio (let's call this `n_audio_frames`, which is typically `mel_num_frames // 2`).
 
 The hook `QKs.__setitem__(index, outs[-1][0])` stores `qk[0]` (assuming batch size `n_batch=1` for typical inference in `timing.py`).
-*   The `[-1]` is because `MultiHeadAttention.forward()` returns `(wv, qk)`, and `[0]` selects the only batch at index 0.
-*   Thus, `QKs[layer_index]` will have the shape `(n_text_head, n_text_tokens, n_audio_frames)`.
-*   `QKs[layer_index][head_index]` will be a 2D matrix of shape `(n_text_tokens, n_audio_frames)`.
+
+-   The `[-1]` is because `MultiHeadAttention.forward()` returns `(wv, qk)`, and `[0]` selects the only batch at index 0.
+-   Thus, `QKs[layer_index]` will have the shape `(n_text_head, n_text_tokens, n_audio_frames)`.
+-   `QKs[layer_index][head_index]` will be a 2D matrix of shape `(n_text_tokens, n_audio_frames)`.
 
 #### Multiple Iterations
 
@@ -1062,11 +1066,13 @@ Recording the QKs during the model run means only the last run needs to be saved
 #### The timing weights
 
 The `weights` tensor is constructed as:
+
 ```python
 weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
 ```
-*   `QKs[_l][_h]` is the 2D attention score matrix `(n_text_tokens, n_audio_frames)` for a specific alignment head `_h` in layer `_l`.
-*   The resulting `weights` tensor will have the shape:
+
+-   `QKs[_l][_h]` is the 2D attention score matrix `(n_text_tokens, n_audio_frames)` for a specific alignment head `_h` in layer `_l`.
+-   The resulting `weights` tensor will have the shape:
     ```
     (N_selected_alignment_heads, n_text_tokens, n_audio_frames)
     ```
@@ -1076,13 +1082,12 @@ The subsequent operations in `timing.py` like `weights = weights[:, :, : num_fra
 
 #### Summary
 
-*   The general shape of `qk` from `qkv_attention` is `(n_batch, n_head, n_ctx_q, n_ctx_k)`.
-*   For **self-attention**, `n_ctx_q = n_ctx_k = n_ctx` (sequence length of the input).
-*   For **cross-attention** (e.g., in decoder attending to encoder output, as used for alignment in `timing.py`), `n_ctx_q` is the target sequence length (e.g., text tokens) and `n_ctx_k` is the source sequence length (e.g., audio frames).
-*   The `weights` tensor in `timing.py`, derived from cross-attention `qk` values, has the shape `(N_selected_alignment_heads, n_text_tokens, n_audio_frames)`.
+-   The general shape of `qk` from `qkv_attention` is `(n_batch, n_head, n_ctx_q, n_ctx_k)`.
+-   For **self-attention**, `n_ctx_q = n_ctx_k = n_ctx` (sequence length of the input).
+-   For **cross-attention** (e.g., in decoder attending to encoder output, as used for alignment in `timing.py`), `n_ctx_q` is the target sequence length (e.g., text tokens) and `n_ctx_k` is the source sequence length (e.g., audio frames).
+-   The `weights` tensor in `timing.py`, derived from cross-attention `qk` values, has the shape `(N_selected_alignment_heads, n_text_tokens, n_audio_frames)`.
 
 ## 2025-06-03
-
 
 ## 2025-06-03
 
@@ -1138,3 +1143,28 @@ make sure the image is getting updated
 it's not
 
 ok, spectrogram working now. It's upside down and the default value should be -10, but it's working.
+
+## 2025-06-07
+
+### time travel debugging
+
+Tomorrow Corporation Game Devs post about how this works:
+
+> The act of going forward and back is not itself recorded – just the evolution of the game’s state.
+>
+> The snapshots happen according to 2 different schedules – a coarse grain schedule that records a new snapshot every so often based on time (we do every 2 minutes currently) and a fine grain limited set of snapshots that move around depending on where you are currently working on the timeline. That’s why the initial reverse debugger step causes a brief pause and then becomes fast – the first one seeks back to the most recent coarse grain snapshot, simulates forward creating fine grained snapshots that are exponentially spaced out backwards from your seek target, and then the subsequent steps will tend to have a snapshot that is right on the frame you need (or very close – unless you step back far enough to need to go create more snapshots but that is the rare case.)
+>
+> The state capture is mostly just a memcpy of the game’s heap (snapshots only happen on frame boundaries so the stack is never needed.) It for sure could be too big to keep as many snapshots as we currently do – that will just be game dependent. Something to use to calibrate what you expect is possible though is to remember that games like Metroid Prime, LOZ The Wind Waker, RE4, Mario Sunshine, etc. all ran on a system that basically had 24MB of RAM to use for your game. And it wasn’t just game state filling up that 24MB, it was your code and other read only resources – the kind of stuff that we don’t have to include in our snapshots. So while it’s true that this system is not a general purpose solution for any and all kinds of games, it’s also true that you can make some pretty incredible games with not a ton of actual game state.
+>
+> Yes in theory you could totally fork the timeline in the past and create a new session based off of the old one up to that point. That is a feature that I had in the reverse engineering debugger I made before this because it was good for creating what were basically tool assisted speed run videos for code coverage purposes. For our current system though it hasn’t been something that I thought we would actually use enough to justify spending the time to implement it.
+>
+> The code gen is totally custom but keep in mind that this toolchain only needs to run on our development platform which is Windows. To ship the finished game we will transpile the code to C and then compile it with the native toolchains on whatever platforms we’re targeting.
+
+The main trick here is replaying inputs (deterministically) to recreate the state of the program. Dumping the heap is an optimization to avoid having to replay from the beginning.
+
+Code modifications are also tracked (I guess the same way inputs are?).
+
+## 2025-06-09
+
+getting ready to call the incremental model
+
