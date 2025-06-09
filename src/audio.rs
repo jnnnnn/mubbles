@@ -12,6 +12,7 @@ pub struct AudioChunk {
 use crate::app::WhisperUpdate;
 // whisper is trained on 16kHz audio
 pub(crate) const TARGET_SAMPLE_RATE: usize = 16000;
+const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
 
 pub(crate) fn convert_sample_rate(
     audio: &[f32],
@@ -78,19 +79,19 @@ fn filter_audio_loop(
         } else {
             // the incoming audio is below the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
-            if under_threshold_count < 50 {
+            if under_threshold_count < 50
+                || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate
+            {
                 // not long enough, keep listening
                 recording_buffer.extend_from_slice(&data);
             } else {
-                if recording_buffer.len() > 0 {
-                    app.send(WhisperUpdate::Recording(false))?;
-                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                    filtered_tx.send(PcmAudio {
-                        data: resampled,
-                        sample_rate: TARGET_SAMPLE_RATE,
-                    })?;
-                    recording_buffer.clear();
-                }
+                app.send(WhisperUpdate::Recording(false))?;
+                let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                filtered_tx.send(PcmAudio {
+                    data: resampled,
+                    sample_rate: TARGET_SAMPLE_RATE,
+                })?;
+                recording_buffer.clear();
             }
         }
 

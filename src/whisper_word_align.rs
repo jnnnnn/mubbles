@@ -262,11 +262,13 @@ fn align_text_token_to_audio(
                 "processing alignment head: layer {layer}, head {head} with dims {:?}",
                 query_key_tensors[layer].dims()
             );
+            // error here: narrow invalid args start + len > dim_len: [4, 53], dim: 1, start: 0, len:525000
             Ok(query_key_tensors[layer].i((head, prefix_len.., ..real_audio_tokens))?)
         })
         .collect::<Result<_>>()?;
-    // the python shape is now [alignmenthead, i, j]
-    // but we stack it to [alignmenthead, i, j] shape as candlenn wants to softmax the last dim
+    // the python shape is now [alignmenthead][i, j]
+    // we stack it to [alignmenthead, i, j] shape as candlenn wants to softmax the last dim
+    // softmax takes in real numbers and outputs a probability distribution
     let weights = Tensor::stack(&useful_slices, 0)?;
     // py: weights = weights[:, :, : num_frames // 2]
     // py: weights = (weights * qk_scale).softmax(dim=-1)

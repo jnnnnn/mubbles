@@ -98,7 +98,7 @@ fn hanning_window() -> Vec<f32> {
 }
 
 // spread the range from 0 to 1. Anything more than 8dB below the maximum is set to 0.
-fn normalize(mel: &mut Vec<f32>) {
+pub fn normalize(mel: &mut Vec<f32>) {
     let threshold = mel
         .iter()
         .max_by(|&u, &v| u.partial_cmp(v).unwrap_or(std::cmp::Ordering::Greater))
@@ -137,7 +137,7 @@ pub(crate) fn pcm_to_mel_frame(
     n_mel: usize,
     resampled: &[f32],
     mel_filters: &[f32],
-) -> Vec<[f32; 128]> {
+) -> Vec<[f32; 80]> {
     let n_frames = (resampled.len() + FFT_STEP - FFT_SIZE) / FFT_STEP; // number of frames
     let mel = log_mel_spectrogram_w(&resampled, &mel_filters, n_frames, n_mel);
 
@@ -154,7 +154,7 @@ pub(crate) fn pcm_to_mel_frame(
 
     let mut mel_frames = Vec::with_capacity(n_frames);
     for f in 0..n_frames {
-        let mut frame = [-10.0f32; 128];
+        let mut frame = [-10.0f32; 80];
         for bin in 0..n_mel {
             frame[bin] = mel[bin * n_frames + f];
         }

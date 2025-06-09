@@ -5,8 +5,9 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use egui::Rect;
 
-use crate::{audio::{get_devices, AppDevice, StreamState}, whisper::{
+use crate::{audio::{get_devices, AppDevice, StreamState}, partial::PARTIAL_MEL_BINS, whisper::{
     WhichModel, WhisperParams,
 }, whisper_word_align::AlignedWord};
 
@@ -24,7 +25,7 @@ enum AppTab {
 }
 
 struct DisplayMel {
-    buffer: VecDeque<[u8; 128]>,
+    buffer: VecDeque<[u8; PARTIAL_MEL_BINS]>,
     texture: Option<egui::TextureHandle>,
     image: Option<egui::ColorImage>,
     min: f32,
@@ -199,6 +200,11 @@ impl eframe::App for MubblesApp {
             status,
             ..
         } = self;
+        
+        // eframe will go to sleep when data is waiting.. this is a hack to keep it awake.
+        // it would be better for the channel to call this when it has posted data.
+        ctx.request_repaint_after(Duration::from_millis(100));
+
         // drain from_whisper channel
         loop {
             let whisper_update_result = from_whisper.try_recv();
@@ -230,9 +236,6 @@ impl eframe::App for MubblesApp {
             }
         }
 
-        // eframe will go to sleep when data is waiting.. this is a hack to keep it awake.
-        // it would be better for the channel to call this when it has posted data.
-        ctx.request_repaint_after(Duration::from_millis(100));
 
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -287,31 +290,7 @@ impl eframe::App for MubblesApp {
                     }
             );
 
-            // draw the aligned words
-            // hint: If you just want to paint a circle, use ui.painter(). If you want to place a widget, use ui.put or ui.allocate_ui_at_rect.
-            // texture.response.rect is the area to draw on
-            let rx = mel.response.rect;
-            for (i, word) in aligned_words.iter().enumerate() {
-                let row = (i%10) as f32 * 12.0;
-                let word_pixels = (10 * word.word.len()) as f32;
-                let seconds_to_pixels = rx.width() / 30.0;
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(rx.left() + seconds_to_pixels * word.start as f32 , rx.top()+row),
-                    egui::pos2(rx.left() + seconds_to_pixels * word.end as f32 + word_pixels, rx.top() + 12.0 + row),
-                );
-                ui.painter().rect_filled( rect, 0.0, egui::Color32::from_rgb(0,0,0));
-                ui.painter().text(
-                    rect.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    word.word.clone(),
-                    egui::TextStyle::Body.resolve(&ctx.style()),
-                    egui::Color32::from_rgb(
-                        (255) as u8, // even low probability words stay red, not black
-                        (word.probability * 255.0) as u8,
-                        (word.probability * 255.0) as u8,
-                    )
-                );
-            }
+            draw_aligned_words(ctx, aligned_words, ui, mel);
 
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
@@ -418,6 +397,31 @@ impl eframe::App for MubblesApp {
     }
 }
 
+fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>) {
+    let rx = mel.response.rect;
+    for (i, word) in aligned_words.iter().enumerate() {
+        let row = (i%10) as f32 * 12.0;
+        let word_pixels = (10 * word.word.len()) as f32;
+        let seconds_to_pixels = rx.width() / 30.0;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(rx.left() + seconds_to_pixels * word.start as f32 , rx.top()+row),
+            egui::pos2(rx.left() + seconds_to_pixels * word.end as f32 + word_pixels, rx.top() + 12.0 + row),
+        );
+        ui.painter().rect_filled( rect, 0.0, egui::Color32::from_rgb(0,0,0));
+        ui.painter().text(
+            rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            word.word.clone(),
+            egui::TextStyle::Body.resolve(&ctx.style()),
+            egui::Color32::from_rgb(
+                (255) as u8, // even low probability words stay red, not black
+                (word.probability * 255.0) as u8,
+                (word.probability * 255.0) as u8,
+            )
+        );
+    }
+}
+
 fn update_mel_buffer(
     frame: Vec<f32>,
     mel: &mut DisplayMel,
@@ -434,8 +438,8 @@ fn update_mel_buffer(
         })
         .collect();
 
-    let mut arr = [0u8; 128];
-    let len = bytes.len().min(128);
+    let mut arr = [0u8; PARTIAL_MEL_BINS];
+    let len = bytes.len().min(PARTIAL_MEL_BINS);
     arr[..len].copy_from_slice(&bytes[..len]);
 
     if mel.buffer.len() >= 500 {
@@ -474,7 +478,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         image
     } else {
         let black = egui::Color32::from_black_alpha(0);
-        let img = egui::ColorImage::new( [128, 100], black);
+        let img = egui::ColorImage::new( [PARTIAL_MEL_BINS, 100], black);
         *image = Some(img);
         image.as_mut().unwrap()
     };
@@ -492,7 +496,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
     };
 
     let xmax = buffer.len();
-    let mut pixels: Vec<egui::Color32> = vec![egui::Color32::from_gray(0); 128 * xmax];
+    let mut pixels: Vec<egui::Color32> = vec![egui::Color32::from_gray(0); PARTIAL_MEL_BINS * xmax];
     for (x, frame) in buffer.iter().enumerate() {
         for (y, &value) in frame.iter().enumerate() {
             pixels[x + y * xmax] = egui::Color32::from_gray(value);
@@ -500,16 +504,17 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
     }
 
     image.pixels = pixels;
-    image.size = [xmax, 128];
+    image.size = [xmax, PARTIAL_MEL_BINS];
     texture.set(image.clone(), egui::TextureOptions::default());
         
     ui.add(
         egui::Image::from_texture(&*texture)
-            .corner_radius(10.0),
+            .corner_radius(10.0)
+            .uv(Rect::from_min_max( egui::pos2(0.0, 0.0), egui::pos2(4.0, 1.0), )),
     );
 }
 
-// Needed to hold thread handles so the threads stay open
+// Needed to hold a handle to keep the audio stream alive
 struct Worker {
     audio: StreamState,
 }
@@ -519,7 +524,6 @@ fn start_listening(
     app_device: &AppDevice,
     params: WhisperParams,
 ) -> Option<Worker> {
-    // start the audio thread
     let result = crate::audio::start_audio_thread(app.clone(), app_device);
     
     if result.is_err() {

@@ -131,11 +131,11 @@ pub struct WhisperParams {
 }
 
 pub struct WhisperContext {
-    decoder: crate::whisper_model::Decoder,
-    device: candle_core::Device,
-    config: Config,
+    pub decoder: crate::whisper_model::Decoder,
+    pub device: candle_core::Device,
+    pub config: Config,
     pub mel_filters: Vec<f32>,
-    previous_content_tokens: Vec<u32>, // Added to store context
+    pub previous_content_tokens: Vec<u32>, // Added to store context
 }
 
 pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
