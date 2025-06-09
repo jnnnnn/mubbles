@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
+use eframe::Result;
+
 use crate::{
     app::WhisperUpdate,
     audio::{PcmAudio, TARGET_SAMPLE_RATE},
-    mel::pcm_to_mel_frame,
+    mel::{pcm_to_mel_frame},
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
@@ -27,9 +29,6 @@ struct PartialAudio {
     resampled: VecDeque<f32>,
     unused: usize, // the number of samples that have not yet been used to generate mel frames
 }
-
-pub const PARTIAL_MEL_BINS: usize = 80; // smaller models store MEL_BINS frequency bins per frame
-const MEL_FRAME_CAPACITY: usize = PARTIAL_LEN * 100; // Mel 10ms per frame for 5s
 
 fn partial_loop(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
@@ -56,12 +55,43 @@ fn partial_loop(
         if last_5s_mel.len() == 0 {
             continue;
         }
-        perform_partial_transcription(&mut last_5s_mel, &mut whisper_context, &app)?;
+        perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app)?;
+        //let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
+        //perform2(&mel, &mut whisper_context, &app)?;
     }
 }
 
+fn perform2(
+    mel: &[f32],
+    whisper_context: &mut WhisperContext,
+    app: &std::sync::mpsc::Sender<WhisperUpdate>,
+) -> Result<(), anyhow::Error> {
+    let n_mel_frames = mel.len() / whisper_context.config.num_mel_bins;
+    let mel_tensor = candle_core::Tensor::from_slice(
+        mel,
+        (1, whisper_context.config.num_mel_bins, n_mel_frames),
+        &whisper_context.device,
+    )?;
+    app.send(WhisperUpdate::Mel(mel.to_vec()))?;
+
+    let (segments_results, _last_segment_content_tokens) =
+        whisper_context
+            .decoder
+            .run(&mel_tensor, None, None, n_mel_frames as f32 / 100.0)?;
+    match segments_results.last() {
+        Some(segment) => {
+            app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub const PARTIAL_LEN: usize = 5;
+const MEL_FRAME_CAPACITY: usize = PARTIAL_LEN * 100; // Mel 10ms per frame for 5s
 const PAD_MEL: usize = 30; // an extra second of silence keeps the model stable when the last frame would otherwise be part way through a word
 const MEL_SILENT: f32 = -10.0; // the mel value for silence, used to pad the mel frames
+pub const PARTIAL_MEL_BINS: usize = 80; // smaller models use this many frequency bins per frame
 
 // Fades a mel value to "silence" over PAD_MEL frames.
 // This is used to avoid abrupt changes in the mel spectrogram at the start and end of the audio which can confuse the model.
@@ -76,13 +106,16 @@ fn fade_factor(frame: usize, n_frames: usize) -> f32 {
 }
 
 fn perform_partial_transcription(
-    last_5s_mel: &mut VecDeque<[f32; 80]>,
+    last_5s_mel: &VecDeque<[f32; 80]>,
     whisper_context: &mut WhisperContext,
     app: &std::sync::mpsc::Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
     let n_mel_frames = last_5s_mel.len();
     // whisper takes mel as a flat vector, ordered as [mel_bin, mel_frame]
-    let mut melvec = vec![-10.0; n_mel_frames * PARTIAL_MEL_BINS];
+    // openai code pads to this to help with hallucinations which I am also struggling with https://github.com/openai/whisper/pull/1052/files
+    const PADDED_LEN_FRAMES: usize = 4500; 
+    const MEL_SILENT: f32 = -10.0;
+    let mut melvec = vec![MEL_SILENT; PADDED_LEN_FRAMES * PARTIAL_MEL_BINS];
     for (f, &frame) in last_5s_mel.iter().enumerate() {
         let fade = fade_factor(f, n_mel_frames);
         for (b, &amplitude) in frame.iter().enumerate() {
@@ -90,7 +123,7 @@ fn perform_partial_transcription(
         }
     }
     crate::mel::normalize(&mut melvec);
-    app.send(WhisperUpdate::Mel(melvec.clone()))?;
+    //app.send(WhisperUpdate::Mel(melvec.clone()))?;
 
     let c = &whisper_context.config;
     let mel_tensor = candle_core::Tensor::from_slice(
@@ -146,7 +179,7 @@ fn generate_new_mel_frames(
 
         for frame in mels {
             frame_count += 1;
-            //app.send(WhisperUpdate::MelFrame(frame.into()))?;
+            app.send(WhisperUpdate::MelFrame(frame.into()))?;
             if last_5s_mel.len() >= MEL_FRAME_CAPACITY {
                 last_5s_mel.pop_front();
             }
@@ -157,7 +190,6 @@ fn generate_new_mel_frames(
     Ok(())
 }
 
-pub const PARTIAL_LEN: usize = 5;
 fn accumulate_audio(
     recent_samples: &mut VecDeque<f32>,
     offset: &mut usize,

@@ -22,7 +22,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 fn set_up_tracing() -> Box<dyn std::any::Any> {
     // keep ten days of logs in daily files up to 1MB
@@ -37,13 +37,14 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let console_layer = tracing_subscriber::fmt::Layer::new()
-        .with_writer(std::io::stdout)
-        .pretty();
+        .pretty()
+        .with_writer(std::io::stdout.with_max_level(tracing::Level::WARN))
+        .with_filter(EnvFilter::from_default_env());
     let file_layer = tracing_subscriber::fmt::Layer::new()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .without_time();
-
+        .without_time()
+        .with_filter(EnvFilter::from_default_env());
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(console_layer)

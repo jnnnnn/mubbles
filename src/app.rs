@@ -128,7 +128,7 @@ impl Default for MubblesApp {
                 texture: None,
                 image: None,
                 min: -10.0,
-                max: 0.0,
+                max: -0.0,
             },
             aligned_words: vec![],
             autotype: false,
@@ -457,8 +457,8 @@ fn overwrite_mel_buffer(
     mel: Vec<f32>,
 ) {
     tracing::debug!("Overwrite mel buffer with {} frames", mel.len() / PARTIAL_MEL_BINS);
-    display.min = -10.0;
-    display.max = 0.0;
+    display.min = f32::INFINITY;
+    display.max = f32::NEG_INFINITY;
     let n_frames = mel.len() / PARTIAL_MEL_BINS;
     let mut frame = vec![0f32; PARTIAL_MEL_BINS];
     for f in 0..n_frames {

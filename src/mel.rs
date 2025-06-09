@@ -162,3 +162,39 @@ pub(crate) fn pcm_to_mel_frame(
     }
     mel_frames
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mel_zero() {
+        let samples = &vec![0.0f32; 16000 * 30]; // 30 seconds of silence at 16kHz
+
+        // load model to get filters
+        let model = crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny).unwrap();
+        let mel_filters = &model.mel_filters;
+
+        let mel = pcm_to_mel(80, samples, mel_filters);
+        assert_eq!(mel.len(), 4500 * 80);
+        assert_eq!(mel[0], -1.5f32);
+        assert_eq!(mel[1], -1.5f32);
+        assert_eq!(mel[2], -1.5f32);
+    }
+
+    
+    #[test]
+    fn mel_incremental_zero() {
+        let samples = &vec![0.0f32; 16000 * 1]; // 1 seconds of silence at 16kHz
+
+        // load model to get filters
+        let model = crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny).unwrap();
+        let mel_filters = &model.mel_filters;
+
+        let mel = pcm_to_mel_frame(80, samples, mel_filters);
+        // need lookahead to calculate last 2 frames
+        assert_eq!(mel.len(), 98); 
+        let first_frame = mel.first().unwrap();
+        assert_eq!(first_frame[0], -10.0f32);
+    }
+}

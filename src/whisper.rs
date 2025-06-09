@@ -170,7 +170,7 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         &device,
         None,
         None,
-        false,
+        true,
         false,
         crate::whisper_model::get_alignment_heads(model, &config),
     )?;
@@ -294,14 +294,11 @@ app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
 
     for segment in segments_results.iter() {
         let text = &segment.dr.text;
-        let start_time_s = segment.start;
-        let end_time_s = segment.start + segment.duration;
+        // let start_time_s = segment.start;
+        // let end_time_s = segment.start + segment.duration;
 
         app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
-        app.send(WhisperUpdate::Transcription(format!(
-            "[{:.2}s -> {:.2}s] {}",
-            start_time_s, end_time_s, text
-        )))?;
+        app.send(WhisperUpdate::Transcription(text.clone()))?;
     }
 
     app.send(WhisperUpdate::Transcribing(false))?;

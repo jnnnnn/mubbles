@@ -18,7 +18,6 @@ pub enum Model {
 
 impl Model {
     // todo: there's some config available that I'm not using yet
-    // 
     pub fn config(&self) -> &Config {
         match self {
             Self::Normal(m) => &m.config,
@@ -320,6 +319,12 @@ impl Decoder {
             probs.push(prob as f32);
             tokens.push(next_token);
 
+            // if we're in a repetition loop, abort. check for 1,2,3, or 4 token sequences.
+            if repeating_any(&tokens, 20) {
+                tracing::info!("repetition detected, breaking");
+                break;
+            }
+
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
                 break;
             }
@@ -327,7 +332,7 @@ impl Decoder {
         }
 
         tracing::info!("decoded audio to text tokens: {:?}", tokens);
-        tracing::info!("performing alignment...");
+        tracing::debug!("performing alignment...");
         // map text token index to audio token index
         let alignment = align(
             &query_key_tensors,
@@ -445,6 +450,35 @@ impl Decoder {
     }
 }
 
+fn repeating_any(tokens: &Vec<u32>, max_len: usize) -> bool {
+    for len in 1..=max_len {
+        if repeating_len(tokens, len) {
+            return true;
+        }
+    }
+    false
+}
+
+fn repeating_len(tokens: &[u32], len: usize) -> bool {
+    let count = match len {
+        1 => 4,
+        2 => 3,
+        3 => 2,
+        _ => 2,
+    };
+    if tokens.len() < len * count {
+        return false;
+    }
+    for c in 1..count {
+        let start = tokens.len() - (c + 1) * len;
+        let end = tokens.len() - c * len;
+        if tokens[start..end] != tokens[tokens.len() - len..] {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn token_id(tokenizer: &Tokenizer, token: &str) -> candle_core::Result<u32> {
     match tokenizer.token_to_id(token) {
         None => candle_core::bail!("no token-id for {token}"),
@@ -456,4 +490,33 @@ pub fn token_id(tokenizer: &Tokenizer, token: &str) -> candle_core::Result<u32> 
 pub enum Task {
     Transcribe,
     Translate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repeating() {
+        let tokens = &vec![1, 2, 3, 1, 2, 3];
+        assert_eq!(
+            true,
+            repeating_any(tokens, 10),
+            "three tokens repeating twice"
+        );
+
+        let tokens = &vec![1, 2, 3, 4, 5, 6];
+        assert_eq!(
+            false,
+            repeating_any(tokens, 10),
+            "three tokens not repeating"
+        );
+
+        let tokens = &vec![1, 2, 1, 2, 1, 2];
+        assert_eq!(
+            true,
+            repeating_any(tokens, 10),
+            "two tokens repeating three times"
+        );
+    }
 }
