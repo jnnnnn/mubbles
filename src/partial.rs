@@ -29,7 +29,7 @@ struct PartialAudio {
 }
 
 pub const PARTIAL_MEL_BINS: usize = 80; // smaller models store MEL_BINS frequency bins per frame
-const MEL_FRAME_CAPACITY: usize = 500; // Mel 10ms per frame for 5s
+const MEL_FRAME_CAPACITY: usize = PARTIAL_LEN * 100; // Mel 10ms per frame for 5s
 
 fn partial_loop(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
@@ -67,7 +67,7 @@ const MEL_SILENT: f32 = -10.0; // the mel value for silence, used to pad the mel
 // This is used to avoid abrupt changes in the mel spectrogram at the start and end of the audio which can confuse the model.
 fn fade_factor(frame: usize, n_frames: usize) -> f32 {
     if frame < PAD_MEL {
-        (PAD_MEL - frame) as f32 / PAD_MEL as f32
+        frame as f32 / PAD_MEL as f32
     } else if frame >= n_frames - PAD_MEL {
         (n_frames - frame) as f32 / PAD_MEL as f32
     } else {
@@ -85,8 +85,8 @@ fn perform_partial_transcription(
     let mut melvec = vec![-10.0; n_mel_frames * PARTIAL_MEL_BINS];
     for (f, &frame) in last_5s_mel.iter().enumerate() {
         let fade = fade_factor(f, n_mel_frames);
-        for (b, &bin) in frame.iter().enumerate() {
-            melvec[b * n_mel_frames + (PAD_MEL + f)] = (bin - MEL_SILENT) * fade + MEL_SILENT;
+        for (b, &amplitude) in frame.iter().enumerate() {
+            melvec[b * n_mel_frames + f] = (amplitude - MEL_SILENT) * fade + MEL_SILENT;
         }
     }
     crate::mel::normalize(&mut melvec);
@@ -157,6 +157,7 @@ fn generate_new_mel_frames(
     Ok(())
 }
 
+pub const PARTIAL_LEN: usize = 5;
 fn accumulate_audio(
     recent_samples: &mut VecDeque<f32>,
     offset: &mut usize,

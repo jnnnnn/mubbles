@@ -76,8 +76,8 @@ fn filter_audio_loop(
             }
             recording_buffer.extend_from_slice(&data);
             under_threshold_count = 0;
-        } else {
-            // the incoming audio is below the threshold. Check how long it's been silent for.
+        } else if recording_buffer.len() > 0 {
+            // the incoming audio is back under the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
             if under_threshold_count < 50
                 || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate

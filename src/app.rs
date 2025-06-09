@@ -6,7 +6,7 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::{audio::{get_devices, AppDevice, StreamState}, partial::PARTIAL_MEL_BINS, whisper::{
+use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_LEN, PARTIAL_MEL_BINS}, whisper::{
     WhichModel, WhisperParams,
 }, whisper_word_align::AlignedWord};
 
@@ -399,7 +399,8 @@ impl eframe::App for MubblesApp {
     }
 }
 
-const MEL_SECONDS: usize = 7;
+const MEL_SECONDS: usize = PARTIAL_LEN;
+
 fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>) {
     let rx = mel.response.rect;
     for (i, word) in aligned_words.iter().enumerate() {
@@ -455,6 +456,7 @@ fn overwrite_mel_buffer(
     display: &mut DisplayMel,
     mel: Vec<f32>,
 ) {
+    tracing::debug!("Overwrite mel buffer with {} frames", mel.len() / PARTIAL_MEL_BINS);
     display.min = -10.0;
     display.max = 0.0;
     let n_frames = mel.len() / PARTIAL_MEL_BINS;

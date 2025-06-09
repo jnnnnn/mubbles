@@ -37,10 +37,10 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let console_layer = tracing_subscriber::fmt::Layer::new()
-        .with_writer(std::io::stdout.with_max_level(tracing::Level::INFO))
+        .with_writer(std::io::stdout)
         .pretty();
     let file_layer = tracing_subscriber::fmt::Layer::new()
-        .with_writer(non_blocking.with_max_level(tracing::Level::INFO))
+        .with_writer(non_blocking)
         .with_ansi(false)
         .without_time();
 
