@@ -139,6 +139,11 @@ pub fn align(
 ) -> Result<Vec<AlignedWord>> {
     const TIME_PER_AUDIO_FRAME: f64 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
 
+    const MAX_TEXT_TOKENS: usize = 50; // more than this means the model has gone crazy repeating; it's slow, so skip.
+    if text_tokens.len() > MAX_TEXT_TOKENS {
+        tracing::warn!("Too many text tokens ({}) for alignment, skipping alignment.", text_tokens.len());
+    }
+
     // each text token starts at a particular audio frame:
     let text_token_audio_frames = align_text_token_to_audio(
         query_key_tensors,

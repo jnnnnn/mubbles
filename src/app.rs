@@ -5,7 +5,6 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use egui::Rect;
 
 use crate::{audio::{get_devices, AppDevice, StreamState}, partial::PARTIAL_MEL_BINS, whisper::{
     WhichModel, WhisperParams,
@@ -168,7 +167,7 @@ pub enum WhisperUpdate {
     Transcription(String),
     Alignment(Vec<AlignedWord>),
     Level(f32),
-    //Mel(DisplayMel),
+    Mel(Vec<f32>),
     Status(String),
     MelFrame(Vec<f32>),
 }
@@ -226,7 +225,10 @@ impl eframe::App for MubblesApp {
                     *aligned_words = a;
                 }
                 Ok(WhisperUpdate::MelFrame(frame)) => {
-                    update_mel_buffer(frame, mel);
+                    update_mel_buffer(&frame, mel);
+                }
+                Ok(WhisperUpdate::Mel(m)) => {
+                    overwrite_mel_buffer(mel, m);
                 }
                 Ok(WhisperUpdate::Status(s)) => {
                     *status = s;
@@ -397,12 +399,13 @@ impl eframe::App for MubblesApp {
     }
 }
 
+const MEL_SECONDS: usize = 7;
 fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>) {
     let rx = mel.response.rect;
     for (i, word) in aligned_words.iter().enumerate() {
         let row = (i%10) as f32 * 12.0;
         let word_pixels = (10 * word.word.len()) as f32;
-        let seconds_to_pixels = rx.width() / 30.0;
+        let seconds_to_pixels = rx.width() / MEL_SECONDS as f32;
         let rect = egui::Rect::from_min_max(
             egui::pos2(rx.left() + seconds_to_pixels * word.start as f32 , rx.top()+row),
             egui::pos2(rx.left() + seconds_to_pixels * word.end as f32 + word_pixels, rx.top() + 12.0 + row),
@@ -423,7 +426,7 @@ fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>,
 }
 
 fn update_mel_buffer(
-    frame: Vec<f32>,
+    frame: &Vec<f32>,
     mel: &mut DisplayMel,
 ) {
     mel.min = mel.min.min(frame.iter().cloned().fold(f32::INFINITY, f32::min));
@@ -442,10 +445,26 @@ fn update_mel_buffer(
     let len = bytes.len().min(PARTIAL_MEL_BINS);
     arr[..len].copy_from_slice(&bytes[..len]);
 
-    if mel.buffer.len() >= 500 {
+    if mel.buffer.len() >= MEL_SECONDS * 100 {
         mel.buffer.pop_front();
     }
     mel.buffer.push_back(arr);
+}
+
+fn overwrite_mel_buffer(
+    display: &mut DisplayMel,
+    mel: Vec<f32>,
+) {
+    display.min = -10.0;
+    display.max = 0.0;
+    let n_frames = mel.len() / PARTIAL_MEL_BINS;
+    let mut frame = vec![0f32; PARTIAL_MEL_BINS];
+    for f in 0..n_frames {
+        for b in 0..PARTIAL_MEL_BINS {
+            frame[b] = mel[b * n_frames + f];
+        }
+        update_mel_buffer(&frame, display);
+    }
 }
 
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
@@ -510,7 +529,8 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
     ui.add(
         egui::Image::from_texture(&*texture)
             .corner_radius(10.0)
-            .uv(Rect::from_min_max( egui::pos2(0.0, 0.0), egui::pos2(4.0, 1.0), )),
+            .maintain_aspect_ratio(false)
+            .fit_to_exact_size(egui::vec2(buffer.len() as f32 * 4.0, PARTIAL_MEL_BINS as f32)),
     );
 }
 

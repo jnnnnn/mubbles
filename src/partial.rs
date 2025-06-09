@@ -60,22 +60,37 @@ fn partial_loop(
     }
 }
 
+const PAD_MEL: usize = 30; // an extra second of silence keeps the model stable when the last frame would otherwise be part way through a word
+const MEL_SILENT: f32 = -10.0; // the mel value for silence, used to pad the mel frames
+
+// Fades a mel value to "silence" over PAD_MEL frames.
+// This is used to avoid abrupt changes in the mel spectrogram at the start and end of the audio which can confuse the model.
+fn fade_factor(frame: usize, n_frames: usize) -> f32 {
+    if frame < PAD_MEL {
+        (PAD_MEL - frame) as f32 / PAD_MEL as f32
+    } else if frame >= n_frames - PAD_MEL {
+        (n_frames - frame) as f32 / PAD_MEL as f32
+    } else {
+        1.0
+    }
+}
+
 fn perform_partial_transcription(
     last_5s_mel: &mut VecDeque<[f32; 80]>,
     whisper_context: &mut WhisperContext,
     app: &std::sync::mpsc::Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
-    const PAD_MEL: usize = 100; // an extra second of silence keeps the model stable when the last frame would otherwise be part way through a word
-    let n_mel_frames = last_5s_mel.len() + PAD_MEL;
+    let n_mel_frames = last_5s_mel.len();
     // whisper takes mel as a flat vector, ordered as [mel_bin, mel_frame]
     let mut melvec = vec![-10.0; n_mel_frames * PARTIAL_MEL_BINS];
     for (f, &frame) in last_5s_mel.iter().enumerate() {
+        let fade = fade_factor(f, n_mel_frames);
         for (b, &bin) in frame.iter().enumerate() {
-            melvec[b * n_mel_frames + f] = bin;
+            melvec[b * n_mel_frames + (PAD_MEL + f)] = (bin - MEL_SILENT) * fade + MEL_SILENT;
         }
     }
     crate::mel::normalize(&mut melvec);
-
+    app.send(WhisperUpdate::Mel(melvec.clone()))?;
 
     let c = &whisper_context.config;
     let mel_tensor = candle_core::Tensor::from_slice(
@@ -83,7 +98,17 @@ fn perform_partial_transcription(
         (1, c.num_mel_bins, n_mel_frames),
         &whisper_context.device,
     )?;
-    let (segments_results, _last_segment_content_tokens) = whisper_context .decoder .run(&mel_tensor, None, None, n_mel_frames as f32 / 100.0)?;
+    let start_time = std::time::Instant::now();
+    let (segments_results, _last_segment_content_tokens) =
+        whisper_context
+            .decoder
+            .run(&mel_tensor, None, None, n_mel_frames as f32 / 100.0)?;
+    let elapsed = start_time.elapsed();
+    tracing::debug!(
+        "Partial transcription took {:.2?} for {} mel frames",
+        elapsed,
+        n_mel_frames
+    );
 
     match segments_results.last() {
         Some(segment) => {
@@ -121,7 +146,7 @@ fn generate_new_mel_frames(
 
         for frame in mels {
             frame_count += 1;
-            app.send(WhisperUpdate::MelFrame(frame.into()))?;
+            //app.send(WhisperUpdate::MelFrame(frame.into()))?;
             if last_5s_mel.len() >= MEL_FRAME_CAPACITY {
                 last_5s_mel.pop_front();
             }
