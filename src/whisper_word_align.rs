@@ -231,9 +231,10 @@ fn align_text_token_to_audio(
     // 1500 audio tokens representing 30s of audio.
 
     // The slice will panic if there aren't enough text tokens compared to prefix_len, so check.
-    let dims = query_key_tensors[0].dims();
     const TIME_PER_AUDIO_TOKEN: f32 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
     let real_audio_tokens = (audio_duration / TIME_PER_AUDIO_TOKEN) as usize;
+
+    let dims = query_key_tensors[0].dims();
     let (max_layer, max_head) = alignment_heads
         .iter()
         .fold((0, 0), |(max_layer, max_head), head| {
@@ -243,17 +244,17 @@ fn align_text_token_to_audio(
         || query_key_tensors.len() <= max_layer
         || dims[0] <= max_head
         || dims[1] <= prefix_len
-    // audio tokens already trimmed I think.
+    // j already trimmed, don't need to check len
     //|| dims[2] <= real_audio_tokens
     {
         return Err(candle_core::Error::Msg(format!(
-            "query_key_tensors shape not good, got shape [{}]{dims:?}, needed [l][h, i, j] at least [{max_layer}][{max_head}, {prefix_len}, {real_audio_tokens}]",
+            "query_key_tensors shape too small, got shape [{}]{dims:?}, needed [l][h, i, j] at least [{max_layer}][{max_head}, {prefix_len}, {real_audio_tokens}]",
             query_key_tensors.len(),
         )));
     }
-
+    
     // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
-    // this also crops off the mel that represents the padding out to 30s
+    // audio_tokens has already pruned the mel that represents the padding out to 30s
     // py: # heads * tokens * frames
     // py: weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
     let useful_slices: Vec<Tensor> = alignment_heads

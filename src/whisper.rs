@@ -148,6 +148,16 @@ struct MyProgress {
     current: usize,
     fname: String,
 }
+impl MyProgress {
+    fn new(sender: Sender<WhisperUpdate>) -> Self {
+        MyProgress {
+            sender,
+            total_size: 0,
+            current: 0,
+            fname: String::new(),
+        }
+    }
+}
 impl hf_hub::api::Progress for MyProgress {
     fn init(&mut self, size: usize, filename: &str) {
         self.total_size = size;
@@ -160,11 +170,33 @@ impl hf_hub::api::Progress for MyProgress {
         self.sender
             .send(WhisperUpdate::Status(format!(
                 "Downloading {}: {} MiB ({percentage:.1}%)",
-                self.fname, self.current / (1024*1024)
+                self.fname,
+                self.current / (1024 * 1024)
             )))
             .unwrap_or_default();
     }
     fn finish(&mut self) {}
+}
+
+fn get_with_progress(
+    repo: hf_hub::Repo,
+    app: Sender<WhisperUpdate>,
+    filename: &str,
+) -> Result<std::path::PathBuf, E> {
+    // unfortunately, api::download_with_progress does not check cache first, so we do it manually
+    // this is made harder by ApiRepo not exposing the cache, so we have to use the Cache directly
+    let cache = hf_hub::Cache::default();
+    let cached = cache.repo(repo.clone()).get(filename);
+    let path = if let Some(path) = cached {
+        tracing::info!("Using cached file: {}", path.display());
+        path
+    } else {
+        tracing::info!("Downloading file: {}", filename);
+        Api::new()?
+            .repo(repo)
+            .download_with_progress(filename, MyProgress::new(app))?
+    };
+    Ok(path)
 }
 
 pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Result<WhisperContext> {
@@ -173,44 +205,26 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
     let (model_id, revision) = model.model_and_revision();
     let (config_filename, tokenizer_filename, weights_filename) = {
         let api = Api::new()?;
-        let repo = api.repo(Repo::with_revision(
-            model_id.to_string(),
-            RepoType::Model,
-            revision.to_string(),
-        ));
-        let config = repo.get("config.json")?;
-        let tokenizer = repo.get("tokenizer.json")?;
-        let model = repo.download_with_progress(
-            "model.safetensors",
-            MyProgress {
-                sender: app,
-                total_size: 0,
-                current: 0,
-                fname: "".into(),
-            },
-        )?;
+        let inner_repo =
+            Repo::with_revision(model_id.to_string(), RepoType::Model, revision.to_string());
+        let repo_with_api = api.repo(inner_repo.clone());
+        let config = repo_with_api.get("config.json")?;
+        let tokenizer = repo_with_api.get("tokenizer.json")?;
+        let model = get_with_progress(inner_repo, app.clone(), "model.safetensors")?;
         (config, tokenizer, model)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
     tracing::info!("Config: {:?}", config);
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-    let active_model = {
+    let mdl = {
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
         Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
     };
 
-    let mut decoder = Decoder::new(
-        active_model,
-        tokenizer.clone(),
-        0,
-        &device,
-        None,
-        None,
-        true,
-        false,
-        crate::whisper_model::get_alignment_heads(model, &config),
-    )?;
+    let heads = crate::whisper_model::get_alignment_heads(model, &config);
+    let tokenizer1 = tokenizer.clone();
+    let mut decoder = Decoder::new(mdl, tokenizer1, 0, &device, None, None, true, false, heads)?;
 
     decoder.set_language_token(if model.is_multilingual() {
         Some(token_id(&tokenizer, "<|en|>")?)
