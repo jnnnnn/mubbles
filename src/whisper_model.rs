@@ -213,13 +213,12 @@ impl Decoder {
         mel: &Tensor,
         temperature: f64,
         prompt_content_tokens: Option<&[u32]>,
-        audio_len: f32,
     ) -> Result<DecodingResult> {
         let model = &mut self.model;
         // todo: running the encoder is expensive! Do it once (separately to decode) and reuse the result for each temperature.
         let audio_features = model.encoder_forward(mel, true)?;
         if self.verbose {
-            println!("audio features: {:?}", audio_features.dims());
+            tracing::debug!("audio features: {:?}", audio_features.dims());
         }
         let sample_len = model.config().max_target_positions / 2;
         let mut sum_logprob = 0f64;
@@ -321,8 +320,7 @@ impl Decoder {
 
             // if we're in a repetition loop, abort. check for 1,2,3, or 4 token sequences.
             if repeating_any(&tokens, 20) {
-                tracing::info!("repetition detected, breaking");
-                break;
+                return Err(E::msg("repetition detected, breaking decoding loop"));
             }
 
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
@@ -331,7 +329,7 @@ impl Decoder {
             sum_logprob += prob.ln();
         }
 
-        tracing::info!("decoded audio to text tokens: {:?}", tokens);
+        tracing::debug!("decoded audio to text tokens: {:?}", tokens);
         tracing::debug!("performing alignment...");
         // map text token index to audio token index
         let alignment = align(
@@ -341,10 +339,9 @@ impl Decoder {
             &probs,
             prefix_len,
             &self.tokenizer,
-            audio_len,
         )?;
 
-        tracing::info!("alignment complete: {:?}", alignment);
+        tracing::debug!("alignment complete: {:?}", alignment);
         let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
 
         let avg_logprob = sum_logprob / tokens.len() as f64;
@@ -371,17 +368,16 @@ impl Decoder {
         &mut self,
         segment: &Tensor,
         prompt_content_tokens: Option<&[u32]>,
-        audio_len: f32,
     ) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> =
-                self.decode(segment, t, prompt_content_tokens, audio_len);
+            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
             // On errors, we try again with a different temperature.
-            // todo: unimplemented. currently the only way for an error to happen is if an allocation fails.
+            // todo: unimplemented. currently the only way for an error to happen is if there is a bug (out of memory is a panic which ends the thread).
             // compression_ratio is not calculated, so very repetitive outputs are not recalculated with a higher temperature.
+            // instead, decode detects repetitions as they happen and breaks the loop early.
             match dr {
                 Ok(dr) => {
                     let needs_fallback = dr.compression_ratio > m::COMPRESSION_RATIO_THRESHOLD
@@ -403,7 +399,6 @@ impl Decoder {
         mel: &Tensor,
         _times: Option<(f64, f64)>,
         prompt_content_tokens: Option<&[u32]>,
-        audio_len: f32,
     ) -> Result<(Vec<Segment>, Vec<u32>)> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
@@ -415,11 +410,11 @@ impl Decoder {
             let mel_segment = mel.narrow(2, seek, segment_size)?;
             let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
 
-            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens, audio_len)?;
+            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens)?;
 
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
-                println!("no speech detected, skipping {seek} {dr:?}");
+                tracing::debug!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
             last_segment_content_tokens = dr.tokens.clone();

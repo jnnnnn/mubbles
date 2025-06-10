@@ -317,7 +317,6 @@ fn whisperize(
     let mel_start = std::time::Instant::now();
     app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     // the mel pads out to 30s; keep track of how much actual audio we have for initializing the alignment calculation
-    let audio_len = resampled.len() as f32 / 16000.0; // Assuming 16kHz sample rate
 
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
 
@@ -343,16 +342,14 @@ fn whisperize(
     ))?;
 
     let (segments_results, last_segment_content_tokens) =
-        state.decoder.run(&mel_tensor, None, None, audio_len)?;
+        state.decoder.run(&mel_tensor, None, None)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments_results.iter() {
         let text = &segment.dr.text;
-        // let start_time_s = segment.start;
-        // let end_time_s = segment.start + segment.duration;
-
         app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
         app.send(WhisperUpdate::Transcription(text.clone()))?;
+        tracing::info!("Whisper segment: {:?}", segment.dr);
     }
 
     app.send(WhisperUpdate::Transcribing(false))?;

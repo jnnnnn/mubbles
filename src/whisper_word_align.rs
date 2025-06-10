@@ -135,7 +135,6 @@ pub fn align(
     text_token_probs: &[f32],
     prefix_len: usize,
     tokenizer: &Tokenizer,
-    audio_duration: f32,
 ) -> Result<Vec<AlignedWord>> {
     const TIME_PER_AUDIO_FRAME: f64 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
 
@@ -148,12 +147,8 @@ pub fn align(
     }
 
     // each text token starts at a particular audio frame:
-    let text_token_audio_frames = align_text_token_to_audio(
-        query_key_tensors,
-        alignment_heads,
-        prefix_len,
-        audio_duration,
-    )?;
+    let text_token_audio_frames =
+        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len)?;
     // use the tokenizer to go back from u32 text tokens to unicode strings
     let word_token_groups = decode_to_unicode(text_tokens, tokenizer)?;
 
@@ -181,6 +176,7 @@ pub fn align(
     }
     // the last word's end time is the end of the audio
     if let Some(last_word) = aligned_words.last_mut() {
+        let audio_duration = text_token_audio_frames.len() as f64 * TIME_PER_AUDIO_FRAME;
         last_word.end = audio_duration as f64;
     }
     Ok(aligned_words)
@@ -218,7 +214,6 @@ fn align_text_token_to_audio(
     query_key_tensors: &Vec<Tensor>,
     alignment_heads: &Vec<AlignmentHead>,
     prefix_len: usize,
-    audio_duration: f32,
 ) -> Result<Vec<usize>> {
     // What is qk? Each element `qk[h, i, j]` represents the attention score
     // between the `i`-th query token (from the text token sequence (so far))
@@ -232,7 +227,6 @@ fn align_text_token_to_audio(
 
     // The slice will panic if there aren't enough text tokens compared to prefix_len, so check.
     const TIME_PER_AUDIO_TOKEN: f32 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
-    let real_audio_tokens = (audio_duration / TIME_PER_AUDIO_TOKEN) as usize;
 
     let dims = query_key_tensors[0].dims();
     let (max_layer, max_head) = alignment_heads
@@ -244,15 +238,15 @@ fn align_text_token_to_audio(
         || query_key_tensors.len() <= max_layer
         || dims[0] <= max_head
         || dims[1] <= prefix_len
-    // j already trimmed, don't need to check len
-    //|| dims[2] <= real_audio_tokens
+        || dims[2] < 10
+    // model really doesn't work at all with less than 200ms of audio
     {
         return Err(candle_core::Error::Msg(format!(
-            "query_key_tensors shape too small, got shape [{}]{dims:?}, needed [l][h, i, j] at least [{max_layer}][{max_head}, {prefix_len}, {real_audio_tokens}]",
+            "query_key_tensors shape too small, got shape [{}]{dims:?}, needed [l][h, i, j] at least [{max_layer}][{max_head}, {prefix_len}, 10]",
             query_key_tensors.len(),
         )));
     }
-    
+
     // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
     // audio_tokens has already pruned the mel that represents the padding out to 30s
     // py: # heads * tokens * frames
@@ -481,12 +475,8 @@ mod tests {
 
         let query_key_tensors_vec = vec![layer.clone(), layer.clone()];
 
-        let result = align_text_token_to_audio(
-            &query_key_tensors_vec,
-            &alignment_heads_vec,
-            prefix_len,
-            0.2,
-        );
+        let result =
+            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len);
         assert!(
             result.is_ok(),
             "align function returned an error: {:?}",

@@ -5,7 +5,7 @@ use eframe::Result;
 use crate::{
     app::WhisperUpdate,
     audio::{PcmAudio, TARGET_SAMPLE_RATE},
-    mel::{pcm_to_mel_frame},
+    mel::pcm_to_mel_frame,
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
@@ -75,9 +75,7 @@ fn perform2(
     app.send(WhisperUpdate::Mel(mel.to_vec()))?;
 
     let (segments_results, _last_segment_content_tokens) =
-        whisper_context
-            .decoder
-            .run(&mel_tensor, None, None, n_mel_frames as f32 / 100.0)?;
+        whisper_context.decoder.run(&mel_tensor, None, None)?;
     match segments_results.last() {
         Some(segment) => {
             app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
@@ -113,7 +111,7 @@ fn perform_partial_transcription(
     let n_mel_frames = last_5s_mel.len();
     // whisper takes mel as a flat vector, ordered as [mel_bin, mel_frame]
     // openai code pads to this to help with hallucinations which I am also struggling with https://github.com/openai/whisper/pull/1052/files
-    const PADDED_LEN_FRAMES: usize = 4500; 
+    const PADDED_LEN_FRAMES: usize = 4500;
     const MEL_SILENT: f32 = -10.0;
     let mut melvec = vec![MEL_SILENT; PADDED_LEN_FRAMES * PARTIAL_MEL_BINS];
     for (f, &frame) in last_5s_mel.iter().enumerate() {
@@ -133,9 +131,7 @@ fn perform_partial_transcription(
     )?;
     let start_time = std::time::Instant::now();
     let (segments_results, _last_segment_content_tokens) =
-        whisper_context
-            .decoder
-            .run(&mel_tensor, None, None, n_mel_frames as f32 / 100.0)?;
+        whisper_context.decoder.run(&mel_tensor, None, None)?;
     let elapsed = start_time.elapsed();
     tracing::debug!(
         "Partial transcription took {:.2?} for {} mel frames",
