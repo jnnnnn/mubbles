@@ -67,13 +67,15 @@ fn log_mel_spectrogram_w(
     mel
 }
 
+/// Pads the audio samples to ensure that the mel spectrogram can be computed correctly.
 fn pad(samples: &[f32]) -> (usize, Vec<f32>) {
     // pad audio with at least one extra chunk of zeros
+    // todo: this seems like half the padding we need?
     const CHUNK_LENGTH: usize = 30;
     let pad = 100 * CHUNK_LENGTH / 2; // 1500
-    let n_len = samples.len() / FFT_STEP;
+    let n_len = samples.len() / FFT_STEP; // 3000;
     let n_len = if n_len % pad != 0 {
-        (n_len / pad + 1) * pad
+        (n_len / pad + 1) * pad // 3001 -> 4500
     } else {
         n_len
     };
@@ -171,8 +173,10 @@ mod tests {
     fn mel_zero() {
         let samples = &vec![0.0f32; 16000 * 30]; // 30 seconds of silence at 16kHz
 
+        let (tx, _rx) = std::sync::mpsc::channel();
         // load model to get filters
-        let model = crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny).unwrap();
+        let model =
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
         let mel_filters = &model.mel_filters;
 
         let mel = pcm_to_mel(80, samples, mel_filters);
@@ -182,18 +186,19 @@ mod tests {
         assert_eq!(mel[2], -1.5f32);
     }
 
-    
     #[test]
     fn mel_incremental_zero() {
         let samples = &vec![0.0f32; 16000 * 1]; // 1 seconds of silence at 16kHz
 
         // load model to get filters
-        let model = crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let model =
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
         let mel_filters = &model.mel_filters;
 
         let mel = pcm_to_mel_frame(80, samples, mel_filters);
         // need lookahead to calculate last 2 frames
-        assert_eq!(mel.len(), 98); 
+        assert_eq!(mel.len(), 98);
         let first_frame = mel.first().unwrap();
         assert_eq!(first_frame[0], -10.0f32);
     }

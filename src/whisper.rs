@@ -11,8 +11,11 @@ use tokenizers::Tokenizer;
 
 use candle_transformers::models::whisper::{self as m, Config};
 
-use crate::{app::WhisperUpdate, audio::PcmAudio, whisper_model::{token_id, Decoder, Model}};
-
+use crate::{
+    app::WhisperUpdate,
+    audio::PcmAudio,
+    whisper_model::{token_id, Decoder, Model},
+};
 
 #[derive(Clone, Copy, Debug)]
 enum Task {
@@ -128,6 +131,7 @@ pub struct DisplayMel {
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
     pub model: WhichModel,
+    pub partials: bool,
 }
 
 pub struct WhisperContext {
@@ -138,7 +142,32 @@ pub struct WhisperContext {
     pub previous_content_tokens: Vec<u32>, // Added to store context
 }
 
-pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
+struct MyProgress {
+    sender: Sender<WhisperUpdate>,
+    total_size: usize,
+    current: usize,
+    fname: String,
+}
+impl hf_hub::api::Progress for MyProgress {
+    fn init(&mut self, size: usize, filename: &str) {
+        self.total_size = size;
+        self.fname = filename.to_string();
+    }
+    fn update(&mut self, size: usize) {
+        self.current += size;
+        let percentage = (self.current as f64 / self.total_size as f64) * 100.0;
+
+        self.sender
+            .send(WhisperUpdate::Status(format!(
+                "Downloading {}: {} MiB ({percentage:.1}%)",
+                self.fname, self.current / (1024*1024)
+            )))
+            .unwrap_or_default();
+    }
+    fn finish(&mut self) {}
+}
+
+pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Result<WhisperContext> {
     tracing::info!("Loading whisper model: {:?}", model);
     let device = candle_core::Device::new_cuda(0)?;
     let (model_id, revision) = model.model_and_revision();
@@ -151,7 +180,15 @@ pub fn load_whisper_model(model: WhichModel) -> Result<WhisperContext> {
         ));
         let config = repo.get("config.json")?;
         let tokenizer = repo.get("tokenizer.json")?;
-        let model = repo.get("model.safetensors")?;
+        let model = repo.download_with_progress(
+            "model.safetensors",
+            MyProgress {
+                sender: app,
+                total_size: 0,
+                current: 0,
+                fname: "".into(),
+            },
+        )?;
         (config, tokenizer, model)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
@@ -225,11 +262,14 @@ fn whisper_loop(
     app.send(WhisperUpdate::Status(
         "Loading whisper model...".to_string(),
     ))?;
-    let mut ctx: WhisperContext = load_whisper_model(params.model)?;
+    let mut ctx: WhisperContext = load_whisper_model(params.model, app.clone())?;
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
-        let PcmAudio{data: mut aggregated, sample_rate} = match filtered_rx.recv() {
+        let PcmAudio {
+            data: mut aggregated,
+            sample_rate,
+        } = match filtered_rx.recv() {
             Ok(pcm) => pcm,
             Err(_) => {
                 tracing::info!("Filtered stream closed");
@@ -261,7 +301,7 @@ fn whisperize(
     app.send(WhisperUpdate::Status("Levels...".to_string()))?;
 
     let mel_start = std::time::Instant::now();
-app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
+    app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     // the mel pads out to 30s; keep track of how much actual audio we have for initializing the alignment calculation
     let audio_len = resampled.len() as f32 / 16000.0; // Assuming 16kHz sample rate
 

@@ -1168,3 +1168,17 @@ Code modifications are also tracked (I guess the same way inputs are?).
 
 getting ready to call the incremental model
 
+## 2025-06-10
+
+incremental kinda working. now the main model's broken, despite making sure at least three seconds goes into the transcriber.
+
+```log
+Temperature error running at 0: narrow invalid args start + len > dim_len: [9, 750], dim: 1, start: 0, len:1122
+```
+
+Improved the error messages. I think the problem is in real_audio_len being a bit long -- calculating to 795 when model only has 750 audio tokens. Just disable this trim for now.
+
+yep that fixed it. 
+
+ok, now the timestamps are showing up well. i can segment by them.
+

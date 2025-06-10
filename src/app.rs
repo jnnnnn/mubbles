@@ -263,6 +263,7 @@ impl eframe::App for MubblesApp {
                             WhisperParams {
                                 accuracy: *accuracy,
                                 model: WhichModel::from(*selected_model),
+                                partials: *partials,
                             },
                         );
                     }
@@ -278,6 +279,7 @@ impl eframe::App for MubblesApp {
                             WhisperParams {
                                 accuracy: *accuracy,
                                 model: WhichModel::from(*selected_model),
+                                partials: *partials,
                             },
                         );
                     }
@@ -314,6 +316,7 @@ impl eframe::App for MubblesApp {
                             WhisperParams {
                                 accuracy: *accuracy,
                                 model: WhichModel::from(*selected_model),
+                                partials: *partials,
                             },
                         );
                     }
@@ -554,8 +557,10 @@ fn start_listening(
     }
     let (stream, rx, rx_partial) = result.unwrap();
 
-    crate::partial::start_partial_thread(app.clone(), rx_partial);
-
+    if params.partials {
+        crate::partial::start_partial_thread(app.clone(), rx_partial);
+    }
+    
     crate::whisper::start_whisper_thread(
         app.clone(),
         rx,

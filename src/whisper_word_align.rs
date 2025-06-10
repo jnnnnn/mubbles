@@ -141,7 +141,10 @@ pub fn align(
 
     const MAX_TEXT_TOKENS: usize = 50; // more than this means the model has gone crazy repeating; it's slow, so skip.
     if text_tokens.len() > MAX_TEXT_TOKENS {
-        tracing::warn!("Too many text tokens ({}) for alignment, skipping alignment.", text_tokens.len());
+        tracing::warn!(
+            "Too many text tokens ({}) for alignment, skipping alignment.",
+            text_tokens.len()
+        );
     }
 
     // each text token starts at a particular audio frame:
@@ -229,6 +232,8 @@ fn align_text_token_to_audio(
 
     // The slice will panic if there aren't enough text tokens compared to prefix_len, so check.
     let dims = query_key_tensors[0].dims();
+    const TIME_PER_AUDIO_TOKEN: f32 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
+    let real_audio_tokens = (audio_duration / TIME_PER_AUDIO_TOKEN) as usize;
     let (max_layer, max_head) = alignment_heads
         .iter()
         .fold((0, 0), |(max_layer, max_head), head| {
@@ -238,11 +243,12 @@ fn align_text_token_to_audio(
         || query_key_tensors.len() <= max_layer
         || dims[0] <= max_head
         || dims[1] <= prefix_len
+    // audio tokens already trimmed I think.
+    //|| dims[2] <= real_audio_tokens
     {
         return Err(candle_core::Error::Msg(format!(
-            "query_key_tensors shape not good, got shape [{}]{:?}, needed [l][h, i, j] where i >= {}",
+            "query_key_tensors shape not good, got shape [{}]{dims:?}, needed [l][h, i, j] at least [{max_layer}][{max_head}, {prefix_len}, {real_audio_tokens}]",
             query_key_tensors.len(),
-            dims, prefix_len,
         )));
     }
 
@@ -250,8 +256,6 @@ fn align_text_token_to_audio(
     // this also crops off the mel that represents the padding out to 30s
     // py: # heads * tokens * frames
     // py: weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
-    const TIME_PER_AUDIO_TOKEN: f32 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
-    let real_audio_tokens = (audio_duration / TIME_PER_AUDIO_TOKEN) as usize;
     let useful_slices: Vec<Tensor> = alignment_heads
         .iter()
         .map(|head| -> Result<Tensor> {
@@ -267,8 +271,11 @@ fn align_text_token_to_audio(
                 "processing alignment head: layer {layer}, head {head} with dims {:?}",
                 query_key_tensors[layer].dims()
             );
-            // error here: narrow invalid args start + len > dim_len: [4, 53], dim: 1, start: 0, len:525000
-            Ok(query_key_tensors[layer].i((head, prefix_len.., ..real_audio_tokens))?)
+            // error here: DEBUG mubbles::whisper_word_align: processing alignment head: layer 1, head 0 with dims [20, 17, 750]
+            // ERROR mubbles::whisper: Whisper thread failed: narrow invalid args start + len > dim_len: [17, 750], dim: 1, start: 0, len:1414
+            // remove ..real_audio_tokens across j ? 1414 seems like about double 750...
+            // audio tokens is already trimmed I think, no need to slice j dimension
+            Ok(query_key_tensors[layer].i((head, prefix_len.., ../*real_audio_tokens*/))?)
         })
         .collect::<Result<_>>()?;
     // the python shape is now [alignmenthead][i, j]

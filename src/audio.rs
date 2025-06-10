@@ -208,7 +208,8 @@ pub fn start_audio_thread(
         partial_tx
             .send(PcmAudio { data, sample_rate })
             .unwrap_or_else(|_| {
-                tracing::debug!("Partial channel closed, can't send partial audio data");
+                //todo: this is too noisy. 
+                // tracing::debug!("Partial channel closed, can't send partial audio data");
             });
     };
     let config2 = app_device.config.clone();
