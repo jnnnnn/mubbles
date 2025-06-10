@@ -144,6 +144,7 @@ pub fn align(
             "Too many text tokens ({}) for alignment, skipping alignment.",
             text_tokens.len()
         );
+        return Ok(Vec::new());
     }
 
     // each text token starts at a particular audio frame:
