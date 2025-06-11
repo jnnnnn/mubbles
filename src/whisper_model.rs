@@ -208,6 +208,7 @@ impl Decoder {
         })
     }
 
+    #[tracing::instrument(name = "decode", skip(self, prompt_content_tokens))]
     pub fn decode(
         &mut self,
         mel: &Tensor, // dims: [batch, bin, frame]

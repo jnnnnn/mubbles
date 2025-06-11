@@ -128,6 +128,10 @@ struct Word {
     pub tokens: Vec<u32>,
 }
 
+#[tracing::instrument(skip_all, fields(
+    text_tokens = ?text_tokens.len(),
+    real_audio_tokens,
+))]
 pub fn align(
     query_key_tensors: &Vec<Tensor>,
     alignment_heads: &Vec<AlignmentHead>,
@@ -267,14 +271,6 @@ fn align_text_token_to_audio(
                     query_key_tensors.len(), query_key_tensors[layer].dims()
                 )));
             }
-            tracing::debug!(
-                "processing alignment head: layer {layer}, head {head} with dims {:?}",
-                query_key_tensors[layer].dims()
-            );
-            // error here: DEBUG mubbles::whisper_word_align: processing alignment head: layer 1, head 0 with dims [20, 17, 750]
-            // ERROR mubbles::whisper: Whisper thread failed: narrow invalid args start + len > dim_len: [17, 750], dim: 1, start: 0, len:1414
-            // remove ..real_audio_tokens across j ? 1414 seems like about double 750...
-            // audio tokens is already trimmed I think, no need to slice j dimension
             Ok(query_key_tensors[layer].i((head, prefix_len.., ..real_audio_tokens))?)
         })
         .collect::<Result<_>>()?;
@@ -481,7 +477,7 @@ mod tests {
         let query_key_tensors_vec = vec![layer.clone(), layer.clone()];
 
         let result =
-            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len);
+            align_text_token_to_audio(&query_key_tensors_vec, &alignment_heads_vec, prefix_len, 10);
         assert!(
             result.is_ok(),
             "align function returned an error: {:?}",

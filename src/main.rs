@@ -30,8 +30,8 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
         "./mubbles.log",
         rolling_file::RollingConditionBasic::new()
             .daily()
-            .max_size(1024 * 1024),
-        30,
+            .max_size(1024 * 1024 * 10),
+        3,
     )
     .expect("Couldn't open log file");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
@@ -43,8 +43,10 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
     let file_layer = tracing_subscriber::fmt::Layer::new()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .without_time()
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        //.without_time()
         .with_filter(EnvFilter::from_default_env());
+    // use RUST_LOG="warn,mubbles=trace" to see app tracing
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(console_layer)

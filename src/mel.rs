@@ -100,6 +100,7 @@ fn hanning_window() -> Vec<f32> {
 }
 
 // spread the range from 0 to 1. Anything more than 8dB below the maximum is set to 0.
+#[tracing::instrument(skip_all)]
 pub fn normalize(mel: &mut Vec<f32>) {
     let threshold = mel
         .iter()
@@ -125,6 +126,7 @@ fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
 /// The mel filters are used to convert the FFT output to the mel scale.
 /// Each mel frame contains n_mel frequency bins (80 or 128), representing low to high frequencies.
 /// Each mel frame covers a time window of 160 samples (10ms at 16kHz).
+#[tracing::instrument(name = "pcm_to_mel", skip(resampled, mel_filters))]
 pub(crate) fn pcm_to_mel(n_mel: usize, resampled: &[f32], mel_filters: &[f32]) -> Vec<f32> {
     let (n_len, samples) = pad(resampled);
     let mut mel = log_mel_spectrogram_w(&samples, &mel_filters, n_len, n_mel);

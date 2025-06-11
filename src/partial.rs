@@ -38,7 +38,7 @@ fn partial_loop(
     let mut offset: usize = 0;
 
     let mut whisper_context =
-        load_whisper_model(WhichModel::DistilMediumEn, app.clone()).expect("Failed to load whisper model");
+        load_whisper_model(WhichModel::TinyEn, app.clone()).expect("Failed to load whisper model");
 
     let mut last_5s_mel = VecDeque::<[f32; PARTIAL_MEL_BINS]>::new();
     loop {
@@ -55,9 +55,9 @@ fn partial_loop(
         if last_5s_mel.len() == 0 {
             continue;
         }
-        //let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
-        let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
-        let result = perform2(&mel, &mut whisper_context, &app);
+        let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
+        // let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
+        // let result = perform2(&mel, &mut whisper_context, &app);
         if !result.is_ok() {
             tracing::debug!("Failed to perform partial transcription: {:?}", result);
         }
@@ -131,9 +131,10 @@ fn perform_partial_transcription(
     let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None)?;
     let elapsed = start_time.elapsed();
     tracing::debug!(
-        "Partial transcription took {:.2?} for {} mel frames",
+        "Partial transcription took {:.2?} for {} mel frames producing {} tokens",
         elapsed,
-        n_mel_frames
+        n_mel_frames,
+        dr.tokens.len()
     );
 
     app.send(WhisperUpdate::Alignment(dr.alignment.clone()))?;

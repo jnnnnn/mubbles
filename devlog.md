@@ -1190,3 +1190,6 @@ also profile everything.
 
 also need to split segments into phrases and remove the timestamp tokens.
 
+## 2025-06-12
+
+tracing shows DistilWhisperLargeV3 takes about 5ms per token. if looping or something that's bad. Each mel frame takes 

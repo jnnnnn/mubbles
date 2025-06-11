@@ -142,6 +142,12 @@ pub struct WhisperContext {
     pub previous_content_tokens: Vec<u32>, // Added to store context
 }
 
+impl std::fmt::Debug for WhisperContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WhisperContext").finish()
+    }
+}
+
 struct MyProgress {
     sender: Sender<WhisperUpdate>,
     total_size: usize,
@@ -305,6 +311,7 @@ fn whisper_loop(
     }
 }
 
+#[tracing::instrument(skip(state, resampled, app))]
 fn whisperize(
     state: &mut WhisperContext,
     resampled: &[f32],
