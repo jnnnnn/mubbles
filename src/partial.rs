@@ -197,7 +197,7 @@ fn accumulate_audio(
     } = match partial_rx.recv() {
         Ok(pcm) => pcm,
         Err(_) => {
-            tracing::info!("Partial stream closed");
+            tracing::debug!("Partial stream closed");
             return Ok(());
         }
     };

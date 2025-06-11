@@ -57,7 +57,7 @@ impl Model {
 #[derive(Debug, Clone)]
 pub(crate) struct DecodingResult {
     pub tokens: Vec<u32>,
-    pub text: String,
+    pub text: Vec<String>,
     pub avg_logprob: f64,
     pub no_speech_prob: f64,
     pub temperature: f64,
@@ -342,7 +342,9 @@ impl Decoder {
         )?;
 
         tracing::debug!("alignment complete: {:?}", alignment);
-        let text = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
+
+        // split tokens into phrases by removing timestamps
+        let text: Vec<String> = self.phrases(&tokens)?;
 
         let avg_logprob = sum_logprob / tokens.len() as f64;
 
@@ -442,6 +444,11 @@ impl Decoder {
 
     fn model(&mut self) -> &mut Model {
         &mut self.model
+    }
+    
+    fn phrases(&self, tokens: &[u32]) -> Result<Vec<String>, E> {
+        let s = self.tokenizer.decode(tokens, true).map_err(E::msg)?;
+        Ok(vec![s])
     }
 }
 

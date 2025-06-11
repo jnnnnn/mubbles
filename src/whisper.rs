@@ -348,7 +348,9 @@ fn whisperize(
     for segment in segments_results.iter() {
         let text = &segment.dr.text;
         app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
-        app.send(WhisperUpdate::Transcription(text.clone()))?;
+        for phrase in text {
+            app.send(WhisperUpdate::Transcription(phrase.clone()))?;
+        }
         tracing::info!("Whisper segment: {:?}", segment.dr);
     }
 
