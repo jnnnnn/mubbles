@@ -210,16 +210,15 @@ impl Decoder {
 
     fn decode(
         &mut self,
-        mel: &Tensor,
+        mel: &Tensor, // dims: [batch, bin, frame]
         temperature: f64,
         prompt_content_tokens: Option<&[u32]>,
     ) -> Result<DecodingResult> {
         let model = &mut self.model;
         // todo: running the encoder is expensive! Do it once (separately to decode) and reuse the result for each temperature.
         let audio_features = model.encoder_forward(mel, true)?;
-        if self.verbose {
-            tracing::debug!("audio features: {:?}", audio_features.dims());
-        }
+        tracing::debug!("audio features: {:?}", audio_features.dims());
+
         let sample_len = model.config().max_target_positions / 2;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
@@ -331,6 +330,19 @@ impl Decoder {
 
         tracing::debug!("decoded audio to text tokens: {:?}", tokens);
         tracing::debug!("performing alignment...");
+
+        // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
+        let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
+        let mut unpadded_mel_frames = 0;
+        let zero_amp = *amplitudes.last().unwrap_or(&0f32);
+        for (i, &amp) in amplitudes.iter().rev().enumerate() {
+            if amp != zero_amp {
+                unpadded_mel_frames = amplitudes.len() - i;
+                break;
+            }
+        }
+        let real_audio_frames = unpadded_mel_frames / 2;
+
         // map text token index to audio token index
         let alignment = align(
             &query_key_tensors,
@@ -339,6 +351,7 @@ impl Decoder {
             &probs,
             prefix_len,
             &self.tokenizer,
+            real_audio_frames,
         )?;
 
         tracing::debug!("alignment complete: {:?}", alignment);
@@ -445,7 +458,7 @@ impl Decoder {
     fn model(&mut self) -> &mut Model {
         &mut self.model
     }
-    
+
     fn phrases(&self, tokens: &[u32]) -> Result<Vec<String>, E> {
         let s = self.tokenizer.decode(tokens, true).map_err(E::msg)?;
         Ok(vec![s])

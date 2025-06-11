@@ -135,6 +135,7 @@ pub fn align(
     text_token_probs: &[f32],
     prefix_len: usize,
     tokenizer: &Tokenizer,
+    real_audio_tokens: usize,
 ) -> Result<Vec<AlignedWord>> {
     const TIME_PER_AUDIO_FRAME: f64 = 0.02; // 20ms per audio token (2 Mel spectrogram frames)
 
@@ -149,7 +150,7 @@ pub fn align(
 
     // each text token starts at a particular audio frame:
     let text_token_audio_frames =
-        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len)?;
+        align_text_token_to_audio(query_key_tensors, alignment_heads, prefix_len, real_audio_tokens)?;
     // use the tokenizer to go back from u32 text tokens to unicode strings
     let word_token_groups = decode_to_unicode(text_tokens, tokenizer)?;
 
@@ -215,6 +216,7 @@ fn align_text_token_to_audio(
     query_key_tensors: &Vec<Tensor>,
     alignment_heads: &Vec<AlignmentHead>,
     prefix_len: usize,
+    real_audio_tokens: usize,
 ) -> Result<Vec<usize>> {
     // What is qk? Each element `qk[h, i, j]` represents the attention score
     // between the `i`-th query token (from the text token sequence (so far))
@@ -248,6 +250,8 @@ fn align_text_token_to_audio(
         )));
     }
 
+    let real_audio_tokens = real_audio_tokens.min(dims[2]);
+
     // we now squash all this together into a single tensor of only the bits we care about: [usefulhead, i, j]
     // audio_tokens has already pruned the mel that represents the padding out to 30s
     // py: # heads * tokens * frames
@@ -271,7 +275,7 @@ fn align_text_token_to_audio(
             // ERROR mubbles::whisper: Whisper thread failed: narrow invalid args start + len > dim_len: [17, 750], dim: 1, start: 0, len:1414
             // remove ..real_audio_tokens across j ? 1414 seems like about double 750...
             // audio tokens is already trimmed I think, no need to slice j dimension
-            Ok(query_key_tensors[layer].i((head, prefix_len.., ../*real_audio_tokens*/))?)
+            Ok(query_key_tensors[layer].i((head, prefix_len.., ..real_audio_tokens))?)
         })
         .collect::<Result<_>>()?;
     // the python shape is now [alignmenthead][i, j]
