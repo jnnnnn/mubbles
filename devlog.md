@@ -1182,3 +1182,11 @@ yep that fixed it.
 
 ok, now the timestamps are showing up well. i can segment by them.
 
+## 2025-06-11
+
+ok, everything's sort of working now. why is partials so slow ? 
+
+also profile everything.
+
+also need to split segments into phrases and remove the timestamp tokens.
+

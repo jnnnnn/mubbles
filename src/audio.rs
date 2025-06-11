@@ -203,7 +203,8 @@ pub fn start_audio_thread(
                 sample_rate,
             })
             .unwrap_or_else(|_| {
-                tracing::debug!("Audio channel closed, can't send audio data");
+                //todo: this is too noisy. 
+                // tracing::debug!("Audio channel closed, can't send audio data");
             });
         partial_tx
             .send(PcmAudio { data, sample_rate })

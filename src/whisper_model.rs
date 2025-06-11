@@ -208,7 +208,7 @@ impl Decoder {
         })
     }
 
-    fn decode(
+    pub fn decode(
         &mut self,
         mel: &Tensor, // dims: [batch, bin, frame]
         temperature: f64,

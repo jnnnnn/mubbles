@@ -298,7 +298,10 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        whisperize(&mut ctx, &aggregated, &app)?;
+        let result = whisperize(&mut ctx, &aggregated, &app);
+        if !result.is_ok() {
+            tracing::error!("Failed to perform partial transcription: {:?}", result);
+        }
     }
 }
 
