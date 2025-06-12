@@ -15,4 +15,4 @@ This project is a blazingly-fast transcription built using Rust. It leverages th
 
 Write unit tests for new functionality. Add unit tests in the `tests` directory for Rust code.
 
-Use context7 to get API docs instead of hallucinating API methods.
+Use context7 to get lookup up huggingface/candle docs.

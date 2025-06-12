@@ -5,7 +5,7 @@ use eframe::Result;
 use crate::{
     app::WhisperUpdate,
     audio::{PcmAudio, TARGET_SAMPLE_RATE},
-    mel::pcm_to_mel_frame,
+    mel::{pcm_to_mel_frame, unpad_mel},
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
@@ -55,9 +55,9 @@ fn partial_loop(
         if last_5s_mel.len() == 0 {
             continue;
         }
-        let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
-        // let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
-        // let result = perform2(&mel, &mut whisper_context, &app);
+        //let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
+        let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
+        let result = perform2(&mel, &mut whisper_context, &app);
         if !result.is_ok() {
             tracing::debug!("Failed to perform partial transcription: {:?}", result);
         }
@@ -76,7 +76,7 @@ fn perform2(
         (1, whisper_context.config.num_mel_bins, n_mel_frames),
         &whisper_context.device,
     )?;
-    app.send(WhisperUpdate::Mel(mel.to_vec()))?;
+    app.send(WhisperUpdate::Mel(unpad_mel(mel_tensor.clone())?.squeeze(0)?))?;
 
     let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None)?;
     app.send(WhisperUpdate::Alignment(dr.alignment.clone()))?;

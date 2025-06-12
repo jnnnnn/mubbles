@@ -1266,3 +1266,16 @@ looking at profiling tools to find out why each token loop is so slow. https://n
 
 not much for windows. https://github.com/plasma-umass/coz and https://www.intel.com/content/www/us/en/developer/tools/oneapi/vtune-profiler.html#gs.mfqpc6 look interesting.
 
+ok, things are working a lot better now. partials are still failing a fair bit, I suspect the way the mel ends is a bit unfortunate because it works when there's silence at the end. try with full mels for each partial.
+
+Yep that's rock solid. OK, now I just need to figure out why the full mel is different.
+
+Oh I can actually make this much more performant. Each token can be detokenized to string and sent to the app as soon as the inner loop chooses it. And then end-of-segment tokens start new lines. Since I'm not doing beam search or temperature. 
+
+Even with beam search, I could send undo chars to the app, so you could see how the decoding adjusts to later inputs.
+
+It's a shame the audio encoding can't work the same way.... or maybe it can? Audio tokens line up with mel frames, I could just run the audio encoder incrementally as well (and fill the extra space with whatever the equivalent of null is). There are probably some transient effects around the end of the input, I'd have to re-encode the last 10 tokens each time.
+
+So then I have a truly incremental encoder. The decoding.. can't be incremental. Uh, except that each token is the slow bit, and I already have most of the tokens. So if we shift the audio input, and shift any aligned tokens out of the buffer, things should work. Probably only have to re-decode the last two or three tokens each time. Sounds good!
+
+That's a lot of work though. The app is good enough to use the way it is.

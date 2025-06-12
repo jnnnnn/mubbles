@@ -1,3 +1,4 @@
+use candle_core::{Tensor, IndexOp};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 const FFT_SIZE: usize = 400; // 200 real + 200 imaginary
@@ -166,6 +167,21 @@ pub(crate) fn pcm_to_mel_frame(
         mel_frames.push(frame);
     }
     mel_frames
+}
+
+pub fn unpad_mel(mel: Tensor) -> Result<Tensor, candle_core::Error> {
+        // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
+        let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
+        let mut unpadded_mel_frames = 0;
+        let zero_amp = *amplitudes.last().unwrap_or(&0f32);
+        for (i, &amp) in amplitudes.iter().rev().enumerate() {
+            if amp != zero_amp {
+                unpadded_mel_frames = amplitudes.len() - i;
+                break;
+            }
+        }
+
+        mel.i((.., .., 0..unpadded_mel_frames))
 }
 
 #[cfg(test)]

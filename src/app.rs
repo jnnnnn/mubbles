@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use candle_core::Tensor;
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_LEN, PARTIAL_MEL_BINS}, whisper::{
@@ -65,7 +66,10 @@ pub struct MubblesApp {
     level: VecDeque<f32>,
 
     #[serde(skip)]
-    mel: DisplayMel,
+    mel1: DisplayMel,
+    // todo: remove mel2, it is less optimized (but always shows the full mel)
+    #[serde(skip)]
+    mel2: Tensor,
 
     #[serde(skip)]
     aligned_words: Vec<AlignedWord>,
@@ -123,13 +127,14 @@ impl Default for MubblesApp {
             selected_model: 1,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
-            mel: DisplayMel {
+            mel1: DisplayMel {
                 buffer: VecDeque::with_capacity(100),
                 texture: None,
                 image: None,
                 min: -10.0,
                 max: -0.0,
             },
+            mel2: Tensor::zeros((2, 3), candle_core::DType::F32, &candle_core::Device::Cpu).expect("Failed to create mel tensor"),
             aligned_words: vec![],
             autotype: false,
             partials: false,
@@ -167,7 +172,7 @@ pub enum WhisperUpdate {
     Transcription(String),
     Alignment(Vec<AlignedWord>),
     Level(f32),
-    Mel(Vec<f32>),
+    Mel(Tensor), // [f32; (bin, frame)]
     Status(String),
     MelFrame(Vec<f32>),
 }
@@ -190,7 +195,8 @@ impl eframe::App for MubblesApp {
             worker: stream,
             whisper_tx,
             level,
-            mel,
+            mel1,
+            mel2,
             autotype,
             partials,
             accuracy,
@@ -225,10 +231,11 @@ impl eframe::App for MubblesApp {
                     *aligned_words = a;
                 }
                 Ok(WhisperUpdate::MelFrame(frame)) => {
-                    update_mel_buffer(&frame, mel);
+                    //update_mel_buffer(&frame, mel1);
                 }
                 Ok(WhisperUpdate::Mel(m)) => {
-                    overwrite_mel_buffer(mel, m);
+                    *mel2 = m;
+                    tracing::debug!("App received mel spectrogram with shape: {:?}", mel2.shape());
                 }
                 Ok(WhisperUpdate::Status(s)) => {
                     *status = s;
@@ -290,7 +297,9 @@ impl eframe::App for MubblesApp {
                 egui::Layout::left_to_right(egui::Align::LEFT)
                     .with_main_wrap(true)
                     .with_cross_align(egui::Align::TOP), | ui| {
-                        draw_mel(mel, ui);
+                        if let Err(e) = draw_mel2(mel2, mel1, ui) {
+                            tracing::error!("Error drawing mel spectrogram: {}", e);
+                        }
                     }
             );
 
@@ -490,7 +499,7 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     });
 }
 
-fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
+fn draw_mel1(mel: &mut DisplayMel, ui: &mut egui::Ui) {
     let DisplayMel {
         buffer,
         texture,
@@ -537,6 +546,55 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
             .maintain_aspect_ratio(false)
             .fit_to_exact_size(egui::vec2(buffer.len() as f32 * 4.0, PARTIAL_MEL_BINS as f32)),
     );
+}
+
+fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> Result<(), anyhow::Error> {
+    let shape = mel2.shape();
+    if shape.rank() != 2 {
+        anyhow::bail!("unexpected rank, expected: 2, got: {} ({:?})", shape.rank(), shape.dims());
+    }
+
+    let n_frames = shape.dims()[1]; // Access the second dimension
+    if n_frames < 10 {
+        tracing::warn!("Mel spectrogram has too few frames: {}", n_frames);
+        return Ok(());
+    }
+
+    let mut mel_image = egui::ColorImage::new(
+        [n_frames, PARTIAL_MEL_BINS],
+        egui::Color32::from_black_alpha(0),
+    );
+    let mel_min = mel2.min_all()?.to_scalar::<f32>()?;
+    let mel_max = mel2.max_all()?.to_scalar::<f32>()?;
+
+    let mel_data = mel2.to_vec2::<f32>()?; // Adjusted to handle 2D tensors
+    for f in 0..n_frames {
+        for b in 0..PARTIAL_MEL_BINS {
+            let value = mel_data[b][f];
+            let color_value = ((value - mel_min) / (mel_max - mel_min) * 255.0)
+                .clamp(0.0, 255.0) as u8;
+            mel_image.pixels[b * n_frames + f] =
+                egui::Color32::from_rgb(color_value, color_value, color_value);
+        }
+    }
+
+    if display.texture.is_none() {
+        let tex = ui.ctx().load_texture(
+            "mel_spectrogram2",
+            mel_image.clone(),
+            egui::TextureOptions::default(),
+        );
+        display.texture = Some(tex);
+    }
+    let tex = display.texture.as_mut().unwrap();
+    tex.set(mel_image, egui::TextureOptions::default());
+    ui.add(
+        egui::Image::from_texture(&*tex)
+            .corner_radius(10.0)
+            .maintain_aspect_ratio(false),
+    );
+
+    Ok(())
 }
 
 // Needed to hold a handle to keep the audio stream alive
