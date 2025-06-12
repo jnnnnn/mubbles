@@ -1262,3 +1262,7 @@ oh wow. it was the model, the test was using Tiny which works bu the normal buil
 
 The Tiny model bad output is `<|0.00|> . . . ` when partials don't work so I will suppress timestamps when transcribing partials.
 
+looking at profiling tools to find out why each token loop is so slow. https://nnethercote.github.io/perf-book/profiling.html
+
+not much for windows. https://github.com/plasma-umass/coz and https://www.intel.com/content/www/us/en/developer/tools/oneapi/vtune-profiler.html#gs.mfqpc6 look interesting.
+
