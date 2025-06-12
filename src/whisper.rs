@@ -121,6 +121,8 @@ impl WhichModel {
     }
 }
 
+const FIRST_TIMESTAMP_TOKEN: usize = 50364; // <|0.00|>
+
 #[derive(Default)]
 pub struct DisplayMel {
     pub mel: Arc<Vec<f32>>,
@@ -230,7 +232,18 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
 
     let heads = crate::whisper_model::get_alignment_heads(model, &config);
     let tokenizer1 = tokenizer.clone();
-    let mut decoder = Decoder::new(mdl, tokenizer1, 0, &device, None, None, true, false, heads)?;
+    let timestamps = match model {
+        WhichModel::Tiny
+        | WhichModel::TinyEn
+        | WhichModel::Base
+        | WhichModel::BaseEn
+        | WhichModel::Small
+        | WhichModel::SmallEn
+        | WhichModel::Medium
+        | WhichModel::MediumEn => false,
+        _ => true,
+    };
+    let mut decoder = Decoder::new(mdl, tokenizer1, 0, &device, None, None, timestamps, false, heads)?;
 
     decoder.set_language_token(if model.is_multilingual() {
         Some(token_id(&tokenizer, "<|en|>")?)
@@ -444,7 +457,7 @@ mod tests {
 
         Ok(())
     }
-    
+
     #[test]
     fn test_com_mel_file_decoding() -> Result<(), anyhow::Error> {
         // load mel from test_20250612074049.mel using bitcode
@@ -461,7 +474,10 @@ mod tests {
         let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
 
         let (segments, _) = state.decoder.run(&mel_tensor, None, None)?;
-        assert_eq!(segments.first().unwrap().dr.text, vec!["This is a test transcription for .com"]);
+        assert_eq!(
+            segments.first().unwrap().dr.text,
+            vec!["This is a test transcription for .com"]
+        );
 
         Ok(())
     }

@@ -48,6 +48,7 @@ fn log_mel_spectrogram_w(
         for bin in 0..n_mel {
             let mut sum = zero;
             let mut fbin = 0;
+            // todo: we might as well just do this with tensors on GPU.
             // Unroll loop
             while fbin < n_fft.saturating_sub(3) {
                 sum += fft_out[fbin].re * filters[bin * n_fft + fbin]
@@ -73,13 +74,13 @@ fn pad(samples: &[f32]) -> (usize, Vec<f32>) {
     // todo: this seems like half the padding we need?
     const CHUNK_LENGTH: usize = 30;
     let pad = 100 * CHUNK_LENGTH / 2; // 1500
-    let n_len = samples.len() / FFT_STEP; // 3000;
+    let n_len = samples.len() / FFT_STEP; // 3000 | 500;
     let n_len = if n_len % pad != 0 {
-        (n_len / pad + 1) * pad // 3001 -> 4500
+        (n_len / pad + 1) * pad // 3001 -> 4500; 500 -> 1500
     } else {
         n_len
     };
-    let n_len = n_len + pad;
+    let n_len = n_len + pad; // 3000 -> 4500; 1500 -> 3000
     let samples = {
         let mut samples_padded = samples.to_vec();
         let to_add = n_len * FFT_STEP - samples.len();
