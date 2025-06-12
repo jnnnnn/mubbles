@@ -1251,3 +1251,14 @@ huh, the test actually works fine. running a fresh tiny model doesn't result in 
 what on earth is going on? The function produces bad data and logs its input, then when the test runs the same function with the same input, it is fine.
 
 Try release mode? nup, fine.
+
+ok, I guess the next thing is to try saving the spectrogram.
+
+## 2025-06-13
+
+same result, saving the mel means the test transcribes fine.
+
+oh wow. it was the model, the test was using Tiny which works bu the normal build was using tinyEn which doesn't. yikes.
+
+The Tiny model bad output is `<|0.00|> . . . ` when partials don't work so I will suppress timestamps when transcribing partials.
+

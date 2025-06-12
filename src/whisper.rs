@@ -382,6 +382,13 @@ fn whisperize(
                     wav_file.write_sample(*sample)?;
                 }
                 wav_file.finalize()?;
+
+                // save the mel as well, using bitcode
+                let mel_path = std::path::PathBuf::from(format!("test_{}.mel", timestamp));
+                tracing::info!("Writing mel spectrogram to: {}", mel_path.display());
+                let mut mel_file = std::fs::File::create(mel_path)?;
+                let encoded = bitcode::encode(arcmel.as_slice());
+                std::io::Write::write_all(&mut mel_file, &encoded)?;
             }
         }
     }
@@ -404,7 +411,7 @@ mod tests {
     #[test]
     fn test_com_hound_file_decoding() -> Result<(), anyhow::Error> {
         // load pcm from test_20250612074049.wav using hound
-        let wav_path = std::path::PathBuf::from("test_20250612074049.wav");
+        let wav_path = std::path::PathBuf::from("test_20250612110040.wav");
         let mut wav_reader = hound::WavReader::open(wav_path).expect("Failed to open wav file");
         let mut pcm_audio = PcmAudio {
             data: Vec::new(),
@@ -419,10 +426,9 @@ mod tests {
         tracing::info!("Loaded {} samples from wav file", pcm_audio.data.len());
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let model = WhichModel::Tiny;
-        let mut ctx = load_whisper_model(model, tx.clone()).expect("Failed to load model");
+        let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
 
-        whisperize(&mut ctx, &pcm_audio.data, &tx)?;
+        whisperize(&mut state, &pcm_audio.data, &tx)?;
 
         loop {
             match rx.try_recv() {
@@ -435,6 +441,27 @@ mod tests {
                 Err(_) => break,
             }
         }
+
+        Ok(())
+    }
+    
+    #[test]
+    fn test_com_mel_file_decoding() -> Result<(), anyhow::Error> {
+        // load mel from test_20250612074049.mel using bitcode
+        let mel_path = std::path::PathBuf::from("test_20250612110040.mel");
+        let mel_bytes = std::fs::read(mel_path)?;
+        let mel_data: Vec<f32> = bitcode::decode(&mel_bytes)?;
+        let mel_tensor = Tensor::from_slice(
+            mel_data.as_slice(),
+            (1, 80, mel_data.len() / 80),
+            &candle_core::Device::new_cuda(0)?,
+        )?;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
+
+        let (segments, _) = state.decoder.run(&mel_tensor, None, None)?;
+        assert_eq!(segments.first().unwrap().dr.text, vec!["This is a test transcription for .com"]);
 
         Ok(())
     }

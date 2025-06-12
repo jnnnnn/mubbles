@@ -38,7 +38,7 @@ fn partial_loop(
     let mut offset: usize = 0;
 
     let mut whisper_context =
-        load_whisper_model(WhichModel::TinyEn, app.clone()).expect("Failed to load whisper model");
+        load_whisper_model(WhichModel::Tiny, app.clone()).expect("Failed to load whisper model");
 
     let mut last_5s_mel = VecDeque::<[f32; PARTIAL_MEL_BINS]>::new();
     loop {
