@@ -554,9 +554,8 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
         anyhow::bail!("unexpected rank, expected: 2, got: {} ({:?})", shape.rank(), shape.dims());
     }
 
-    let n_frames = shape.dims()[1]; // Access the second dimension
+    let n_frames = shape.dims()[1];
     if n_frames < 10 {
-        tracing::warn!("Mel spectrogram has too few frames: {}", n_frames);
         return Ok(());
     }
 
@@ -567,7 +566,7 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
     let mel_min = mel2.min_all()?.to_scalar::<f32>()?;
     let mel_max = mel2.max_all()?.to_scalar::<f32>()?;
 
-    let mel_data = mel2.to_vec2::<f32>()?; // Adjusted to handle 2D tensors
+    let mel_data = mel2.to_vec2::<f32>()?;
     for f in 0..n_frames {
         for b in 0..PARTIAL_MEL_BINS {
             let value = mel_data[b][f];
@@ -613,15 +612,15 @@ fn start_listening(
         tracing::error!("Failed to start audio thread");
         return None;
     }
-    let (stream, rx, rx_partial) = result.unwrap();
+    let (stream, filtered_rx, rx_partial) = result.unwrap();
 
     if params.partials {
         crate::partial::start_partial_thread(app.clone(), rx_partial);
     }
     
-    crate::whisper::start_whisper_thread(
+    let joinHandle = crate::whisper::start_whisper_thread(
         app.clone(),
-        rx,
+        filtered_rx,
         params,
     );
     Some(Worker{audio: stream})

@@ -1279,3 +1279,18 @@ It's a shame the audio encoding can't work the same way.... or maybe it can? Aud
 So then I have a truly incremental encoder. The decoding.. can't be incremental. Uh, except that each token is the slow bit, and I already have most of the tokens. So if we shift the audio input, and shift any aligned tokens out of the buffer, things should work. Probably only have to re-decode the last two or three tokens each time. Sounds good!
 
 That's a lot of work though. The app is good enough to use the way it is.
+
+Partials are working well now (still with full mel, that's a todo) but now long inputs without breaks makes a mess of the transcript thread.
+
+```log
+
+2025-06-12T22:35:42.694242Z DEBUG whisperize:decode{mel=Tensor[dims 1, 80, 1500; f32, cuda:0] temperature=0.0}: mubbles::whisper_model: performing alignment...
+2025-06-12T22:35:42.694659Z  INFO whisperize:decode{mel=Tensor[dims 1, 80, 1500; f32, cuda:0] temperature=0.0}:align{text_tokens=6}: mubbles::whisper_word_align: close time.busy=236µs time.idle=6.40µs
+```
+
+weird that there's no error in the log. the audio thread is definitely dying, because levels updates stop.
+
+ah, the whisper loop must be panicking.
+
+
+

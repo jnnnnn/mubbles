@@ -70,6 +70,7 @@ web-sys = "0.3.77"              # to access the DOM (to hide the loading text)
 
 [profile.release]
 opt-level = 2 # fast and small wasm
+panic = 'abort' # make sure a thread failing badly gets noticed
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
@@ -82,3 +83,5 @@ candle-core = { path = "candle/candle-core" }
 candle-nn = { path = "candle/candle-nn" }
 candle-transformers = { path = "candle/candle-transformers" }
 
+[profile.dev]
+panic = 'abort'
