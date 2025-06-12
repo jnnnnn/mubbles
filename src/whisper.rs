@@ -362,6 +362,28 @@ fn whisperize(
             app.send(WhisperUpdate::Transcription(phrase.clone()))?;
         }
         tracing::info!("Whisper segment: {:?}", segment.dr);
+
+        if let Some(t) = segment.dr.text.first() {
+            if t == ".com" {
+                // write out wav file for testing. use timestamp to avoid overwriting
+                let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+                let wav_path = std::path::PathBuf::from(format!("test_{}.wav", timestamp));
+                tracing::info!("Writing test audio to: {}", wav_path.display());
+                let mut wav_file = hound::WavWriter::create(
+                    wav_path,
+                    hound::WavSpec {
+                        channels: 1,
+                        sample_rate: 16000,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
+                    },
+                )?;
+                for sample in resampled.iter() {
+                    wav_file.write_sample(*sample)?;
+                }
+                wav_file.finalize()?;
+            }
+        }
     }
 
     app.send(WhisperUpdate::Transcribing(false))?;
@@ -374,4 +396,46 @@ fn whisperize(
         duration_secs / input_duration_secs
     );
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_com_hound_file_decoding() -> Result<(), anyhow::Error> {
+        // load pcm from test_20250612074049.wav using hound
+        let wav_path = std::path::PathBuf::from("test_20250612074049.wav");
+        let mut wav_reader = hound::WavReader::open(wav_path).expect("Failed to open wav file");
+        let mut pcm_audio = PcmAudio {
+            data: Vec::new(),
+            sample_rate: wav_reader.spec().sample_rate as usize,
+        };
+        for sample in wav_reader.samples::<f32>() {
+            match sample {
+                Ok(s) => pcm_audio.data.push(s),
+                Err(e) => panic!("Failed to read sample: {:?}", e),
+            }
+        }
+        tracing::info!("Loaded {} samples from wav file", pcm_audio.data.len());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let model = WhichModel::Tiny;
+        let mut ctx = load_whisper_model(model, tx.clone()).expect("Failed to load model");
+
+        whisperize(&mut ctx, &pcm_audio.data, &tx)?;
+
+        loop {
+            match rx.try_recv() {
+                Ok(update) => match update {
+                    WhisperUpdate::Transcription(text) => {
+                        assert_eq!(text, "This is a test transcription for .com");
+                    }
+                    _ => {}
+                },
+                Err(_) => break,
+            }
+        }
+
+        Ok(())
+    }
 }

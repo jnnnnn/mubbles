@@ -101,6 +101,7 @@ fn fade_factor(frame: usize, n_frames: usize) -> f32 {
     }
 }
 
+#[tracing::instrument(skip_all)]
 fn perform_partial_transcription(
     last_5s_mel: &VecDeque<[f32; 80]>,
     whisper_context: &mut WhisperContext,

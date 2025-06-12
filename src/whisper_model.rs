@@ -25,6 +25,7 @@ impl Model {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn encoder_forward(&mut self, x: &Tensor, flush: bool) -> candle_core::Result<Tensor> {
         match self {
             Self::Normal(m) => m.encoder.forward(x, flush),
@@ -32,6 +33,7 @@ impl Model {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn decoder_forward(
         &mut self,
         x: &Tensor,
@@ -256,6 +258,8 @@ impl Decoder {
 
         // Iteratively produce text tokens from encoded audio tokens. Stop when the model generates EOT.
         for i in 0..sample_len {
+            let span = tracing::trace_span!("token", i);
+            let _ = span.enter();
             let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
 
             // The model expects a batch dim but this inference loop does not handle
@@ -275,58 +279,74 @@ impl Decoder {
             };
             query_key_tensors = qk_receiver.into_iter().collect();
 
-            // Extract the no speech probability on the first iteration by looking at the first
-            // token logits and the probability for the according token.
-            if i == 0 {
-                let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-                no_speech_prob = softmax(&logits, 0)?
-                    .i(self.no_speech_token as usize)?
+            {
+                let span = tracing::trace_span!("no_speech");
+                let _ = span.enter();
+                // Extract the no speech probability on the first iteration by looking at the first
+                // token logits and the probability for the according token.
+                if i == 0 {
+                    let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
+                    no_speech_prob = softmax(&logits, 0)?
+                        .i(self.no_speech_token as usize)?
+                        .to_scalar::<f32>()? as f64;
+                }
+            }
+
+            {
+                let span = tracing::trace_span!("final_compute");
+                let _ = span.enter();
+
+                let (_, seq_len, _) = ys.dims3()?;
+                let logits = model
+                    .decoder_final_linear(&ys.i((..1, seq_len - 1..))?)?
+                    .i(0)?
+                    .i(0)?;
+                // TODO: Besides suppress tokens, we should apply the heuristics from
+                // ApplyTimestampRules, i.e.:
+                // - Timestamps come in pairs, except before EOT.
+                // - Timestamps should be non-decreasing.
+                // - If the sum of the probabilities of timestamps is higher than any other tokens,
+                //   only consider timestamps when sampling.
+                // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L439
+                let logits = logits.broadcast_add(&self.suppress_tokens)?;
+                let next_token = if temperature > 0f64 {
+                    let prs = softmax(&(&logits / temperature)?, 0)?;
+                    let logits_v: Vec<f32> = prs.to_vec1()?;
+                    let distr = rand::distr::weighted::WeightedIndex::new(&logits_v)?;
+                    distr.sample(&mut self.rng) as u32
+                } else {
+                    let logits_v: Vec<f32> = logits.to_vec1()?;
+                    logits_v
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, u), (_, v)| u.total_cmp(v))
+                        .map(|(i, _)| i as u32)
+                        .unwrap()
+                };
+                let prob = softmax(&logits, candle_core::D::Minus1)?
+                    .i(next_token as usize)?
                     .to_scalar::<f32>()? as f64;
+
+                probs.push(prob as f32);
+                tokens.push(next_token);
+
+                // if we're in a repetition loop, abort. check for 1,2,3, or 4 token sequences.
+                // todo: it would be better to delete all copies of the repetition and then pick the second-highest-probability token on the next iteration.
+                if let Some(len) = repeating_any(&tokens, 20) {
+                    return Err(E::msg(format!(
+                        "repeating sequence of {len} tokens: {:?} which spells {}",
+                        &tokens,
+                        self.tokenizer.decode(&tokens, true).unwrap_or_default()
+                    )));
+                }
+
+                if next_token == self.eot_token
+                    || tokens.len() > model.config().max_target_positions
+                {
+                    break;
+                }
+                sum_logprob += prob.ln();
             }
-
-            let (_, seq_len, _) = ys.dims3()?;
-            let logits = model
-                .decoder_final_linear(&ys.i((..1, seq_len - 1..))?)?
-                .i(0)?
-                .i(0)?;
-            // TODO: Besides suppress tokens, we should apply the heuristics from
-            // ApplyTimestampRules, i.e.:
-            // - Timestamps come in pairs, except before EOT.
-            // - Timestamps should be non-decreasing.
-            // - If the sum of the probabilities of timestamps is higher than any other tokens,
-            //   only consider timestamps when sampling.
-            // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L439
-            let logits = logits.broadcast_add(&self.suppress_tokens)?;
-            let next_token = if temperature > 0f64 {
-                let prs = softmax(&(&logits / temperature)?, 0)?;
-                let logits_v: Vec<f32> = prs.to_vec1()?;
-                let distr = rand::distr::weighted::WeightedIndex::new(&logits_v)?;
-                distr.sample(&mut self.rng) as u32
-            } else {
-                let logits_v: Vec<f32> = logits.to_vec1()?;
-                logits_v
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, u), (_, v)| u.total_cmp(v))
-                    .map(|(i, _)| i as u32)
-                    .unwrap()
-            };
-            let prob = softmax(&logits, candle_core::D::Minus1)?
-                .i(next_token as usize)?
-                .to_scalar::<f32>()? as f64;
-
-            probs.push(prob as f32);
-            tokens.push(next_token);
-
-            // if we're in a repetition loop, abort. check for 1,2,3, or 4 token sequences.
-            if repeating_any(&tokens, 20) {
-                return Err(E::msg("repetition detected, breaking decoding loop"));
-            }
-
-            if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
-                break;
-            }
-            sum_logprob += prob.ln();
         }
 
         tracing::debug!("decoded audio to text tokens: {:?}", tokens);
@@ -461,18 +481,26 @@ impl Decoder {
     }
 
     fn phrases(&self, tokens: &[u32]) -> Result<Vec<String>, E> {
-        let s = self.tokenizer.decode(tokens, true).map_err(E::msg)?;
-        Ok(vec![s])
+        Ok(tokens
+            .split(|&t| t > 50000)
+            .map(|chunk| {
+                self.tokenizer
+                    .decode(chunk, true)
+                    .map_err(E::msg)
+                    .unwrap_or_else(|_| String::new())
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>())
     }
 }
 
-fn repeating_any(tokens: &Vec<u32>, max_len: usize) -> bool {
+fn repeating_any(tokens: &Vec<u32>, max_len: usize) -> Option<usize> {
     for len in 1..=max_len {
         if repeating_len(tokens, len) {
-            return true;
+            return Some(len);
         }
     }
-    false
+    None
 }
 
 fn repeating_len(tokens: &[u32], len: usize) -> bool {
@@ -516,21 +544,21 @@ mod tests {
     fn test_repeating() {
         let tokens = &vec![1, 2, 3, 1, 2, 3];
         assert_eq!(
-            true,
+            Some(3),
             repeating_any(tokens, 10),
             "three tokens repeating twice"
         );
 
         let tokens = &vec![1, 2, 3, 4, 5, 6];
         assert_eq!(
-            false,
+            None,
             repeating_any(tokens, 10),
             "three tokens not repeating"
         );
 
         let tokens = &vec![1, 2, 1, 2, 1, 2];
         assert_eq!(
-            true,
+            Some(2),
             repeating_any(tokens, 10),
             "two tokens repeating three times"
         );

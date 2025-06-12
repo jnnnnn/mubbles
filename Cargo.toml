@@ -55,6 +55,7 @@ rand = "0.9.1"
 tokenizers = "0.21.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "std"] }
 rustfft = "6.3.0"
+hound = "3.4.0"
 
 
 # native:
