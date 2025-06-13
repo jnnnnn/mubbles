@@ -337,7 +337,6 @@ fn whisperize(
         tracing::warn!("Received empty audio data, skipping transcription");
         return Ok(());
     }
-    let start = std::time::Instant::now();
 
     app.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
@@ -373,6 +372,8 @@ fn whisperize(
     app.send(WhisperUpdate::Status(
         "Running Whisper decoder...".to_string(),
     ))?;
+
+    let decode_start = std::time::Instant::now();
 
     let (segments_results, last_segment_content_tokens) =
         state.decoder.run(&mel_tensor, None, None)?;
@@ -415,7 +416,7 @@ fn whisperize(
             }
         }
 
-        let elapsed = start.elapsed().as_secs_f64();
+        let elapsed = decode_start.elapsed().as_secs_f64();
         let n_tokens = segment.dr.tokens.len();
         app.send(WhisperUpdate::Status(format!(
             "Transcription complete in {:.2}s. Audio duration: {:.2}s. Tokens: {}. Time per token: {:.2}ms. Realtime factor: {:.2}",
