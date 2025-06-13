@@ -30,18 +30,18 @@ log = "0.4.27"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 
-cpal = "0.15.3"
+cpal = "0.16.0"
 rubato = "0.16.2"
 dirs = "6.0.0"
 winput = "0.2.5"
-wasapi = "0.17.0"
+wasapi = "0.18.0"
 rolling-file = "0.2.0"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 chrono = "0.4.41"
 egui_plot = "0.32.1"
 open = "5.3.2"
-reqwest = { version = "0.12.15", features = ["json", "blocking"] }
+reqwest = { version = "0.12.20", features = ["json", "blocking"] }
 anyhow = "1.0.98"
 byteorder = "1.5.0"
 candle-core = { version = "0.9.1", features = ["cuda"] }
@@ -54,8 +54,8 @@ hf-hub = { version = "0.4.2", default-features = false, features = [
 rand = "0.9.1"
 tokenizers = "0.21.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "std"] }
-rustfft = "6.3.0"
-hound = "3.4.0"
+rustfft = "6.4.0"
+hound = "3.5.1"
 bitcode = "0.6.6"
 
 
