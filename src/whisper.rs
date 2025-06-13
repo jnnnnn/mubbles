@@ -325,6 +325,10 @@ fn whisperize(
     resampled: &[f32],
     app: &Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
+    if resampled.is_empty() {
+        tracing::warn!("Received empty audio data, skipping transcription");
+        return Ok(());
+    }
     let start = std::time::Instant::now();
 
     app.send(WhisperUpdate::Transcribing(true))

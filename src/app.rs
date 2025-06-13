@@ -416,15 +416,20 @@ impl eframe::App for MubblesApp {
     }
 }
 
-fn check_thread_error(whisper_thread: &mut Option<JoinHandle<()>>) {
-    if let Some(thread) = whisper_thread.take() {
+fn check_thread_error(join: &mut Option<JoinHandle<()>>) {
+    if let Some(thread) = join.take() {
         if thread.is_finished() {
             if let Err(e) = thread.join() {
-                tracing::error!("Thread panicked: {:?}", e);
+                if let Some(es) = (&e).downcast_ref::<&'static str>() {
+                    tracing::error!("Thread panicked with error: {}", es);
+                } else if let Some(es) = (&e).downcast_ref::<String>() {
+                    tracing::error!("Thread panicked with error: {}", es);
+                } else {
+                    tracing::error!("Thread panicked with unknown error: {:?}", e);
+                }
             }
         } else {
-            // If the thread is not finished, put it back
-            *whisper_thread = Some(thread);
+            *join = Some(thread);
         }
     }
 }
@@ -461,7 +466,7 @@ fn update_mel_buffer(
     mel: &mut DisplayMel,
 ) {
     mel.min = mel.min.min(frame.iter().cloned().fold(f32::INFINITY, f32::min));
-    mel.max = mel.max.max(frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+    mel.max = mel.max.max(frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max))+0.01;;
     
     let bytes: Vec<u8> = frame
         .iter()
@@ -582,7 +587,7 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
         egui::Color32::from_black_alpha(0),
     );
     let mel_min = mel2.min_all()?.to_scalar::<f32>()?;
-    let mel_max = mel2.max_all()?.to_scalar::<f32>()?;
+    let mel_max = mel2.max_all()?.to_scalar::<f32>()? + 0.01;
 
     let mel_data = mel2.to_vec2::<f32>()?;
     for f in 0..n_frames {

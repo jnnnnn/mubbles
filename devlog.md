@@ -1292,5 +1292,13 @@ weird that there's no error in the log. the audio thread is definitely dying, be
 
 ah, the whisper loop must be panicking.
 
+yep, stack overflow. lol, can rust do that?! lol.
+
+
+```log
+error: process didn't exit successfully: `target\release\mubbles.exe` (exit code: 0xc0000409, STATUS_STACK_BUFFER_OVERRUN)
+```
+
+and the last line of log was `aligning`.
 
 

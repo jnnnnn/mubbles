@@ -380,7 +380,11 @@ impl Decoder {
         // split tokens into phrases by removing timestamps
         let text: Vec<String> = self.phrases(&tokens)?;
 
-        let avg_logprob = sum_logprob / tokens.len() as f64;
+        let avg_logprob = if tokens.len() > 0 {
+            sum_logprob / tokens.len() as f64
+        } else {
+            0f64
+        };
 
         // drop prefix tokens from start of vec
         let tokens = tokens
