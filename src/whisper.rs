@@ -1,7 +1,7 @@
-use std::sync::{
+use std::{sync::{
     mpsc::{Receiver, Sender},
     Arc,
-};
+}, thread::JoinHandle};
 
 use anyhow::{Error as E, Result};
 use candle_core::Tensor;
@@ -12,9 +12,7 @@ use tokenizers::Tokenizer;
 use candle_transformers::models::whisper::{self as m, Config};
 
 use crate::{
-    app::WhisperUpdate,
-    audio::PcmAudio,
-    whisper_model::{token_id, Decoder, Model},
+    app::WhisperUpdate, audio::PcmAudio, mel::unpad_mel, whisper_model::{token_id, Decoder, Model}
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -274,17 +272,14 @@ pub fn start_whisper_thread(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
-) {
+) -> Result<JoinHandle<()>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("whisper".to_string())
         .spawn(move || match whisper_loop(app, filtered_rx, params) {
             Ok(_) => tracing::info!("Whisper thread finished successfully"),
             Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
         });
-    match result {
-        Ok(_) => tracing::info!("Whisper thread started"),
-        Err(e) => tracing::error!("Failed to start whisper thread: {:?}", e),
-    }
+    Ok(result?)
 }
 
 fn whisper_loop(
@@ -359,6 +354,7 @@ fn whisperize(
         (1, num_bins, num_mel_frames),
         &state.device,
     )?;
+    app.send(WhisperUpdate::Mel(unpad_mel(mel_tensor.clone())?.squeeze(0)?))?;
 
     app.send(WhisperUpdate::Status(
         "Running Whisper decoder...".to_string(),

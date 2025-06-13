@@ -1,6 +1,4 @@
-use std::collections::VecDeque;
-
-use eframe::Result;
+use std::{collections::VecDeque, thread::JoinHandle};
 
 use crate::{
     app::WhisperUpdate,
@@ -12,17 +10,14 @@ use crate::{
 pub(crate) fn start_partial_thread(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
     partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
-) {
+) -> Result<JoinHandle<()>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("partials".to_string())
         .spawn(move || match partial_loop(app, partial_rx) {
             Ok(_) => tracing::info!("Partials thread finished successfully"),
             Err(e) => tracing::error!("Partials thread failed: {:?}", e),
         });
-    match result {
-        Ok(_) => tracing::info!("Partials thread started"),
-        Err(e) => tracing::error!("Failed to start partials thread: {:?}", e),
-    }
+    Ok(result?)
 }
 
 struct PartialAudio {

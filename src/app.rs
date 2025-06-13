@@ -1,7 +1,5 @@
 use std::{
-    collections::VecDeque,
-    sync::mpsc::{self, Sender, TryRecvError},
-    time::Duration,
+    collections::VecDeque, sync::mpsc::{self, Sender, TryRecvError}, thread::JoinHandle, time::Duration
 };
 
 use candle_core::Tensor;
@@ -210,6 +208,11 @@ impl eframe::App for MubblesApp {
         // it would be better for the channel to call this when it has posted data.
         ctx.request_repaint_after(Duration::from_millis(100));
 
+        // check for thread panics
+        if let Some(worker) = stream {
+            check_thread_error(&mut worker.whisper_thread);
+        }
+
         // drain from_whisper channel
         loop {
             let whisper_update_result = from_whisper.try_recv();
@@ -245,6 +248,30 @@ impl eframe::App for MubblesApp {
             }
         }
 
+        let ldevice = &devices[*selected_device];
+        let lmodel = WhichModel::from(*selected_model);
+        let laccuracy = *accuracy;
+        let lpartials = *partials;
+        let restart = || {
+            match start_listening(
+                whisper_tx,
+                ldevice,
+                WhisperParams {
+                    accuracy: laccuracy,
+                    model: lmodel,
+                    partials: lpartials,
+                },
+            ) {
+                Ok(new_stream) => {
+                    Some(new_stream)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start listening: {}", e);
+                    None
+                }
+            }
+        };
+        
 
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -263,16 +290,7 @@ impl eframe::App for MubblesApp {
                         |i| devices[i].name.clone(),
                     );
                     if source.changed() {
-                        let device = &devices[*selected_device];
-                        *stream = start_listening(
-                            whisper_tx,
-                            device,
-                            WhisperParams {
-                                accuracy: *accuracy,
-                                model: WhichModel::from(*selected_model),
-                                partials: *partials,
-                            },
-                        );
+                        *stream = restart();
                     }
                     let model = egui::ComboBox::from_label("Model")
                         .selected_text(WhichModel::from(*selected_model).to_string())
@@ -280,15 +298,7 @@ impl eframe::App for MubblesApp {
                             WhichModel::from(i).to_string()
                         });
                     if model.changed() {
-                        *stream = start_listening(
-                            whisper_tx,
-                            &devices[*selected_device],
-                            WhisperParams {
-                                accuracy: *accuracy,
-                                model: WhichModel::from(*selected_model),
-                                partials: *partials,
-                            },
-                        );
+                        *stream = restart();
                     }
                 },
             );
@@ -319,15 +329,7 @@ impl eframe::App for MubblesApp {
                         .add(egui::Slider::new(accuracy, 1..=8).text("Accuracy"))
                         .changed()
                     {
-                        *stream = start_listening(
-                            whisper_tx,
-                            &devices[*selected_device],
-                            WhisperParams {
-                                accuracy: *accuracy,
-                                model: WhichModel::from(*selected_model),
-                                partials: *partials,
-                            },
-                        );
+                        *stream = restart();
                     }
                 },
             );
@@ -339,9 +341,12 @@ impl eframe::App for MubblesApp {
                     ui.checkbox(autotype, "Autotype").on_hover_text(
                         "Type whatever is said into other applications on this computer",
                     );
-                    ui.checkbox(partials, "Partials").on_hover_text(
+                    let p = ui.checkbox(partials, "Partials").on_hover_text(
                         "Show partials as a block is dictated, erasing with the full model once it is done",
                     );
+                    if p.changed() {
+                        *stream = restart();
+                    }
                     if ui.button("Clear").clicked() {
                         text.clear();
                         // log the time as well as a message
@@ -408,6 +413,19 @@ impl eframe::App for MubblesApp {
                 );
             });
         });
+    }
+}
+
+fn check_thread_error(whisper_thread: &mut Option<JoinHandle<()>>) {
+    if let Some(thread) = whisper_thread.take() {
+        if thread.is_finished() {
+            if let Err(e) = thread.join() {
+                tracing::error!("Thread panicked: {:?}", e);
+            }
+        } else {
+            // If the thread is not finished, put it back
+            *whisper_thread = Some(thread);
+        }
     }
 }
 
@@ -599,29 +617,27 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
 // Needed to hold a handle to keep the audio stream alive
 struct Worker {
     audio: StreamState,
+    // Keeping thread handles allows us to look for panics in the threads
+    partial_thread: Option<JoinHandle<()>>,
+    whisper_thread: Option<JoinHandle<()>>,
 }
 
 fn start_listening(
     app: &Sender<WhisperUpdate>,
     app_device: &AppDevice,
     params: WhisperParams,
-) -> Option<Worker> {
-    let result = crate::audio::start_audio_thread(app.clone(), app_device);
-    
-    if result.is_err() {
-        tracing::error!("Failed to start audio thread");
-        return None;
-    }
-    let (stream, filtered_rx, rx_partial) = result.unwrap();
+) -> Result<Worker, anyhow::Error> {
+    let (stream, filtered_rx, rx_partial) = crate::audio::start_audio_thread(app.clone(), app_device)?;
 
-    if params.partials {
-        crate::partial::start_partial_thread(app.clone(), rx_partial);
-    }
-    
-    let joinHandle = crate::whisper::start_whisper_thread(
-        app.clone(),
-        filtered_rx,
-        params,
-    );
-    Some(Worker{audio: stream})
+    let partial = if params.partials {
+            Some(crate::partial::start_partial_thread(app.clone(), rx_partial)?)
+        } else {
+            None    
+        };
+    let whisper = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params)?;
+
+    Ok(Worker{audio: stream,
+        partial_thread: partial,
+        whisper_thread: Some(whisper),
+    })
 }
