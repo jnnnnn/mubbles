@@ -73,7 +73,8 @@ fn perform2(
     )?;
     app.send(WhisperUpdate::Mel(unpad_mel(mel_tensor.clone())?.squeeze(0)?))?;
 
-    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None)?;
+    let token_callback = Some(|_: String| { });
+    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None, &token_callback)?;
     app.send(WhisperUpdate::Alignment(dr.alignment.clone()))?;
     Ok(())
 }
@@ -124,7 +125,8 @@ fn perform_partial_transcription(
         &whisper_context.device,
     )?;
     let start_time = std::time::Instant::now();
-    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None)?;
+    let token_callback = Some(|_: String| { });
+    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None, &token_callback)?;
     let elapsed = start_time.elapsed();
     tracing::debug!(
         "Partial transcription took {:.2?} for {} mel frames producing {} tokens",

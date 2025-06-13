@@ -375,8 +375,12 @@ fn whisperize(
 
     let decode_start = std::time::Instant::now();
 
+    let per_token_callback = Some(|text: String| {
+        app.send(WhisperUpdate::Status(text.clone())).unwrap_or_default();
+    });
+
     let (segments_results, last_segment_content_tokens) =
-        state.decoder.run(&mel_tensor, None, None)?;
+        state.decoder.run(&mel_tensor, None, None, &per_token_callback)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments_results.iter() {
@@ -495,7 +499,8 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
 
-        let (segments, _) = state.decoder.run(&mel_tensor, None, None)?;
+        let token_callback = Some(|_: String| { });
+        let (segments, _) = state.decoder.run(&mel_tensor, None, None, &token_callback)?;
         assert_eq!(
             segments.first().unwrap().dr.text,
             vec!["This is a test transcription for .com"]

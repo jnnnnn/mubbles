@@ -1304,3 +1304,6 @@ and the last line of log was `aligning`.
 fix some division by zero possibilities.
 
 
+todo: more things to fix:
+ - cpal no longer closes threads; so changing models I need to close the threads myself. Previously I relied on the audio thread closing.
+ - 

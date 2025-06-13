@@ -161,7 +161,7 @@ pub fn get_devices() -> Vec<AppDevice> {
 pub struct StreamState {
     // the app holds this handle to keep the stream open (and the thread alive)
     #[allow(dead_code)]
-    stream: cpal::Stream,
+    pub stream: cpal::Stream,
 }
 
 pub struct AppDevice {

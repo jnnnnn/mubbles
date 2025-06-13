@@ -4,7 +4,6 @@ use std::{
 
 use candle_core::Tensor;
 use cpal::traits::{DeviceTrait, HostTrait};
-
 use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_LEN, PARTIAL_MEL_BINS}, whisper::{
     WhichModel, WhisperParams,
 }, whisper_word_align::AlignedWord};
@@ -351,6 +350,11 @@ impl eframe::App for MubblesApp {
                         text.clear();
                         // log the time as well as a message
                         tracing::info!("Cleared text, time: {}", chrono::Local::now());
+                        *mel2 = Tensor::zeros(
+                            (2, 3),
+                            candle_core::DType::F32,
+                            &candle_core::Device::Cpu,
+                        ).expect("Failed to create mel tensor");
                     }
                     if ui.button("Open Log").clicked() {
                         let logpath = // current exe directory + "mubbles.log":

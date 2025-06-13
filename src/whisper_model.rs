@@ -210,12 +210,13 @@ impl Decoder {
         })
     }
 
-    #[tracing::instrument(name = "decode", skip(self, prompt_content_tokens))]
-    pub fn decode(
+    #[tracing::instrument(name = "decode", skip(self, prompt_content_tokens, token_callback))]
+    pub fn decode<'b>(
         &mut self,
         mel: &Tensor, // dims: [batch, bin, frame]
         temperature: f64,
         prompt_content_tokens: Option<&[u32]>,
+        token_callback: &Option<impl Fn(String)>,
     ) -> Result<DecodingResult> {
         let model = &mut self.model;
         // todo: running the encoder is expensive! Do it once (separately to decode) and reuse the result for each temperature.
@@ -330,6 +331,10 @@ impl Decoder {
                 probs.push(prob as f32);
                 tokens.push(next_token);
 
+                if let Some(cb) = token_callback {
+                    cb(self.tokenizer.decode(&tokens, true).unwrap_or_default());
+                }
+
                 // if we're in a repetition loop, abort. check for 1,2,3, or 4 token sequences.
                 // todo: it would be better to delete all copies of the repetition and then pick the second-highest-probability token on the next iteration.
                 if let Some(len) = repeating_any(&tokens, 20) {
@@ -415,9 +420,11 @@ impl Decoder {
         &mut self,
         segment: &Tensor,
         prompt_content_tokens: Option<&[u32]>,
+        token_callback: &Option<impl Fn(String)>,
     ) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t, prompt_content_tokens);
+            let dr: Result<DecodingResult> =
+                self.decode(segment, t, prompt_content_tokens, token_callback);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
@@ -446,6 +453,7 @@ impl Decoder {
         mel: &Tensor,
         _times: Option<(f64, f64)>,
         prompt_content_tokens: Option<&[u32]>,
+        token_callback: &Option<impl Fn(String)>,
     ) -> Result<(Vec<Segment>, Vec<u32>)> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
@@ -457,7 +465,8 @@ impl Decoder {
             let mel_segment = mel.narrow(2, seek, segment_size)?;
             let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
 
-            let dr = self.decode_with_fallback(&mel_segment, prompt_content_tokens)?;
+            let dr =
+                self.decode_with_fallback(&mel_segment, prompt_content_tokens, token_callback)?;
 
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
