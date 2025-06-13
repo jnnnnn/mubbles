@@ -1,7 +1,10 @@
-use std::{sync::{
-    mpsc::{Receiver, Sender},
-    Arc,
-}, thread::JoinHandle};
+use std::{
+    sync::{
+        mpsc::{Receiver, Sender},
+        Arc,
+    },
+    thread::JoinHandle,
+};
 
 use anyhow::{Error as E, Result};
 use candle_core::Tensor;
@@ -12,7 +15,10 @@ use tokenizers::Tokenizer;
 use candle_transformers::models::whisper::{self as m, Config};
 
 use crate::{
-    app::WhisperUpdate, audio::PcmAudio, mel::unpad_mel, whisper_model::{token_id, Decoder, Model}
+    app::WhisperUpdate,
+    audio::PcmAudio,
+    mel::unpad_mel,
+    whisper_model::{token_id, Decoder, Model},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -241,7 +247,9 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
         | WhichModel::MediumEn => false,
         _ => true,
     };
-    let mut decoder = Decoder::new(mdl, tokenizer1, 0, &device, None, None, timestamps, false, heads)?;
+    let mut decoder = Decoder::new(
+        mdl, tokenizer1, 0, &device, None, None, timestamps, false, heads,
+    )?;
 
     decoder.set_language_token(if model.is_multilingual() {
         Some(token_id(&tokenizer, "<|en|>")?)
@@ -358,7 +366,9 @@ fn whisperize(
         (1, num_bins, num_mel_frames),
         &state.device,
     )?;
-    app.send(WhisperUpdate::Mel(unpad_mel(mel_tensor.clone())?.squeeze(0)?))?;
+    app.send(WhisperUpdate::Mel(
+        unpad_mel(mel_tensor.clone())?.squeeze(0)?,
+    ))?;
 
     app.send(WhisperUpdate::Status(
         "Running Whisper decoder...".to_string(),
@@ -404,17 +414,28 @@ fn whisperize(
                 std::io::Write::write_all(&mut mel_file, &encoded)?;
             }
         }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let n_tokens = segment.dr.tokens.len();
+        app.send(WhisperUpdate::Status(format!(
+            "Transcription complete in {:.2}s. Audio duration: {:.2}s. Tokens: {}. Time per token: {:.2}ms. Realtime factor: {:.2}",
+            elapsed,
+            resampled.len() / 16000,
+            n_tokens,
+            if n_tokens > 0 {
+                elapsed * 1000.0 / n_tokens as f64
+            } else {
+                0.0
+            },
+            if resampled.len() > 0 {
+                resampled.len() as f64 / 16000.0 / elapsed
+            } else {
+                0.0
+            }
+        )))?;
     }
 
     app.send(WhisperUpdate::Transcribing(false))?;
-    let duration_secs = start.elapsed().as_secs_f64();
-    let input_duration_secs = resampled.len() as f64 / 16000.0; // Assuming 16kHz
-    tracing::info!(
-        "Whisper processing took {:.2}s for {:.2}s audio (RTF: {:.2}x)",
-        duration_secs,
-        input_duration_secs,
-        duration_secs / input_duration_secs
-    );
     Ok(())
 }
 #[cfg(test)]
