@@ -1301,4 +1301,6 @@ error: process didn't exit successfully: `target\release\mubbles.exe` (exit code
 
 and the last line of log was `aligning`.
 
+fix some division by zero possibilities.
+
 

@@ -246,6 +246,7 @@ fn align_text_token_to_audio(
         || dims[0] <= max_head
         || dims[1] <= prefix_len
         || dims[2] < 10
+        || real_audio_tokens < 10
     // model really doesn't work at all with less than 200ms of audio
     {
         return Err(candle_core::Error::Msg(format!(
@@ -281,6 +282,7 @@ fn align_text_token_to_audio(
     // py: weights = weights[:, :, : num_frames // 2]
     // py: weights = (weights * qk_scale).softmax(dim=-1)
     // qk_scale always 1
+    tracing::debug!("Softmax of {:?} attention heads", weights.dims());
     let weights = candle_nn::ops::softmax_last_dim(&weights)?;
     // py: std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     // this is a mean across dim `i`, the text query tokens

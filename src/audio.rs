@@ -47,8 +47,7 @@ fn filter_audio_loop(
     let mut recording_buffer: Vec<f32> = Vec::new();
 
     // a dynamic threshold (or something like silero-vad) would be better
-    let threshold = 0.00f32; // was 0.05
-    // todo: set threshold lower to trigger long running bug
+    let threshold = 0.0f32;
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {

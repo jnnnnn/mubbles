@@ -466,7 +466,7 @@ fn update_mel_buffer(
     mel: &mut DisplayMel,
 ) {
     mel.min = mel.min.min(frame.iter().cloned().fold(f32::INFINITY, f32::min));
-    mel.max = mel.max.max(frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max))+0.01;;
+    mel.max = mel.max.max(frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max))+0.01;
     
     let bytes: Vec<u8> = frame
         .iter()

@@ -373,7 +373,14 @@ impl Decoder {
             prefix_len,
             &self.tokenizer,
             real_audio_frames,
-        )?;
+        );
+        let alignment = match alignment {
+            Ok(alignment) => alignment,
+            Err(err) => {
+                tracing::error!("alignment error: {err}");
+                vec![]
+            }
+        };
 
         tracing::debug!("alignment complete: {:?}", alignment);
 
