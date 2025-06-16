@@ -636,6 +636,7 @@ fn start_listening(
     app_device: &AppDevice,
     params: WhisperParams,
 ) -> Result<Worker, anyhow::Error> {
+    // cleanup: when the StreamState is dropped, the audio thread will stop, closing its sender, which will close the receiver in the chained threads.
     let (stream, filtered_rx, rx_partial) = crate::audio::start_audio_thread(app.clone(), app_device)?;
 
     let partial = if params.partials {

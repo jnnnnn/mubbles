@@ -888,7 +888,7 @@ Started writing an incremental Mel class but I think the best thing is probably 
 
 ## 2025-05-05
 
-looks like the range isn't quite right. Mapping the mel from -1..1 to 0..255 grayscale makes the black parts of the image gray. Maybe candle's implementation has a bug? Or maybe that's what openai spectra look like as well and they just didn't get the normalization right. todo: check openai spectra.
+looks like the range isn't quite right. Mapping the mel from -1..1 to 0..255 grayscale makes the black parts of the image gray. Maybe candle's implementation has a bug? Or maybe that's what openai spectra look like as well and they just didn't get the normalization right. done: check openai spectra.
 
 Next steps: 0. just for fun, overlay previous transcript on mel
 
@@ -1304,6 +1304,14 @@ and the last line of log was `aligning`.
 fix some division by zero possibilities.
 
 
-todo: more things to fix:
+done: more things to fix:
  - cpal no longer closes threads; so changing models I need to close the threads myself. Previously I relied on the audio thread closing.
- - 
+
+## 2025-06-15
+
+nah that's actually fine. but I do need to fix:
+
+todo: faster_whisper accuracy is higher with the same model; I think I need to implement beamsearch (or something custom/similar)
+
+-- low-confidence tokens should explore a short tree of *n* alternatives.
+

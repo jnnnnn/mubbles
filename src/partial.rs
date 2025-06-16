@@ -37,7 +37,10 @@ fn partial_loop(
 
     let mut last_5s_mel = VecDeque::<[f32; PARTIAL_MEL_BINS]>::new();
     loop {
-        accumulate_audio(&mut recent_samples, &mut offset, &partial_rx)?;
+        if let Err(e) = accumulate_audio(&mut recent_samples, &mut offset, &partial_rx) {
+            tracing::debug!("Accumulate ended: {:?}", e);
+            break Ok(())
+        }
         let filters = whisper_context.mel_filters.as_slice();
         generate_new_mel_frames(
             &mut recent_samples,
@@ -51,7 +54,8 @@ fn partial_loop(
             continue;
         }
         //let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
-        let mel = crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
+        let mel =
+            crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
         let result = perform2(&mel, &mut whisper_context, &app);
         if !result.is_ok() {
             tracing::debug!("Failed to perform partial transcription: {:?}", result);
@@ -59,7 +63,7 @@ fn partial_loop(
     }
 }
 
-// for debugging, use the standard mel encoding 
+// for debugging, use the standard mel encoding
 fn perform2(
     mel: &[f32],
     whisper_context: &mut WhisperContext,
@@ -71,10 +75,14 @@ fn perform2(
         (1, whisper_context.config.num_mel_bins, n_mel_frames),
         &whisper_context.device,
     )?;
-    app.send(WhisperUpdate::Mel(unpad_mel(mel_tensor.clone())?.squeeze(0)?))?;
+    app.send(WhisperUpdate::Mel(
+        unpad_mel(mel_tensor.clone())?.squeeze(0)?,
+    ))?;
 
-    let token_callback = Some(|_: String| { });
-    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None, &token_callback)?;
+    let token_callback = Some(|_: String| {});
+    let dr = whisper_context
+        .decoder
+        .decode(&mel_tensor, 0.0, None, &token_callback)?;
     app.send(WhisperUpdate::Alignment(dr.alignment.clone()))?;
     Ok(())
 }
@@ -125,8 +133,10 @@ fn perform_partial_transcription(
         &whisper_context.device,
     )?;
     let start_time = std::time::Instant::now();
-    let token_callback = Some(|_: String| { });
-    let dr = whisper_context.decoder.decode(&mel_tensor, 0.0, None, &token_callback)?;
+    let token_callback = Some(|_: String| {});
+    let dr = whisper_context
+        .decoder
+        .decode(&mel_tensor, 0.0, None, &token_callback)?;
     let elapsed = start_time.elapsed();
     tracing::debug!(
         "Partial transcription took {:.2?} for {} mel frames producing {} tokens",
@@ -186,8 +196,8 @@ fn accumulate_audio(
     } = match partial_rx.recv() {
         Ok(pcm) => pcm,
         Err(_) => {
-            tracing::debug!("Partial stream closed");
-            return Ok(());
+            // end thread because the sender is closed; no more audio will be sent
+            anyhow::bail!("Partial stream closed");
         }
     };
     // consume any other messages in the queue

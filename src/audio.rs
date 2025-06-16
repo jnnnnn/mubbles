@@ -55,6 +55,8 @@ fn filter_audio_loop(
             Ok(pcmaudio) => pcmaudio,
             Err(_) => {
                 tracing::info!("Audio stream closed");
+                // end thread because there's no more work to do
+                app.send(WhisperUpdate::Recording(false))?;
                 return Ok(());
             }
         };

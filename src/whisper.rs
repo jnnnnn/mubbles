@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn test_com_hound_file_decoding() -> Result<(), anyhow::Error> {
         // load pcm from test_20250612074049.wav using hound
-        let wav_path = std::path::PathBuf::from("test_20250612110040.wav");
+        let wav_path = std::path::PathBuf::from("test_20250612074049.wav");
         let mut wav_reader = hound::WavReader::open(wav_path).expect("Failed to open wav file");
         let mut pcm_audio = PcmAudio {
             data: Vec::new(),
@@ -467,6 +467,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
 
+        whisperize(&mut state, &pcm_audio.data, &tx)?;
+        whisperize(&mut state, &pcm_audio.data, &tx)?;
         whisperize(&mut state, &pcm_audio.data, &tx)?;
 
         loop {
