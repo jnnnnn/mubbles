@@ -4,3 +4,6 @@
 [submodule "candle"]
 	path = candle
 	url = https://github.com/huggingface/candle.git
+[submodule "CTranslate2"]
+	path = CTranslate2
+	url = git@github.com:OpenNMT/CTranslate2.git
