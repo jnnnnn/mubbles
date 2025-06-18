@@ -247,31 +247,6 @@ impl eframe::App for MubblesApp {
             }
         }
 
-        let ldevice = &devices[*selected_device];
-        let lmodel = WhichModel::from(*selected_model);
-        let laccuracy = *accuracy;
-        let lpartials = *partials;
-        let restart = || {
-            match start_listening(
-                whisper_tx,
-                ldevice,
-                WhisperParams {
-                    accuracy: laccuracy,
-                    model: lmodel,
-                    partials: lpartials,
-                },
-            ) {
-                Ok(new_stream) => {
-                    Some(new_stream)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start listening: {}", e);
-                    None
-                }
-            }
-        };
-        
-
         // Draw the UI
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.with_layout(
@@ -281,6 +256,32 @@ impl eframe::App for MubblesApp {
                 |ui| {
                     plot_level(level, ui);
                     
+                    let started = stream.is_some();
+                    let buttontext = if started { "Stop" } else { "Start" };
+                    if ui.add(egui::Button::new(buttontext)).clicked() {
+                        if started {
+                            // stop the stream
+                            *stream = None;
+                        } else {
+                            match start_listening(
+                        whisper_tx,
+                        &devices[*selected_device],
+                        WhisperParams {
+                            accuracy: *accuracy,
+                            model: WhichModel::from(*selected_model),
+                            partials: *partials,
+                        },
+                    ) {
+                        Ok(new_stream) => {
+                            *stream = Some(new_stream);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to start listening: {}", e);
+                            *stream = None
+                        }
+                    }
+                        }
+                    }
 
                     let source = egui::ComboBox::from_label("Sound device").show_index(
                         ui,
@@ -289,7 +290,7 @@ impl eframe::App for MubblesApp {
                         |i| devices[i].name.clone(),
                     );
                     if source.changed() {
-                        *stream = restart();
+                        *stream = None;
                     }
                     let model = egui::ComboBox::from_label("Model")
                         .selected_text(WhichModel::from(*selected_model).to_string())
@@ -297,7 +298,7 @@ impl eframe::App for MubblesApp {
                             WhichModel::from(i).to_string()
                         });
                     if model.changed() {
-                        *stream = restart();
+                        *stream = None;
                     }
                 },
             );
@@ -328,7 +329,7 @@ impl eframe::App for MubblesApp {
                         .add(egui::Slider::new(accuracy, 1..=8).text("Accuracy"))
                         .changed()
                     {
-                        *stream = restart();
+                        *stream = None;
                     }
                 },
             );
@@ -344,7 +345,7 @@ impl eframe::App for MubblesApp {
                         "Show partials as a block is dictated, erasing with the full model once it is done",
                     );
                     if p.changed() {
-                        *stream = restart();
+                        *stream = None;
                     }
                     if ui.button("Clear").clicked() {
                         text.clear();
@@ -441,10 +442,11 @@ fn check_thread_error(join: &mut Option<JoinHandle<()>>) {
 const MEL_SECONDS: usize = PARTIAL_LEN;
 
 fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>) {
+    const ALIGNED_ROWS: usize = 6; // spread words over n rows so that they don't overlap too much
     let rx = mel.response.rect;
     for (i, word) in aligned_words.iter().enumerate() {
-        let row = (i%10) as f32 * 12.0;
-        let word_pixels = (10 * word.word.len()) as f32;
+        let row = (i%ALIGNED_ROWS) as f32 * 12.0;
+        let word_pixels = (7 * word.word.len()) as f32;
         let seconds_to_pixels = rx.width() / MEL_SECONDS as f32;
         let rect = egui::Rect::from_min_max(
             egui::pos2(rx.left() + seconds_to_pixels * word.start as f32 , rx.top()+row),
