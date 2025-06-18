@@ -423,10 +423,7 @@ fn whisperize(
         let elapsed = decode_start.elapsed().as_secs_f64();
         let n_tokens = segment.dr.tokens.len();
         app.send(WhisperUpdate::Status(format!(
-            "Transcription complete in {:.2}s. Audio duration: {:.2}s. Tokens: {}. Time per token: {:.2}ms. Realtime factor: {:.2}",
-            elapsed,
-            resampled.len() / 16000,
-            n_tokens,
+            "Time per token: {:.2}ms. Realtime factor: {:.2}",
             if n_tokens > 0 {
                 elapsed * 1000.0 / n_tokens as f64
             } else {

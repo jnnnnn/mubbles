@@ -1281,5 +1281,49 @@ todo: faster_whisper accuracy is higher with the same model; I think I need to i
 
 ## 2025-06-18
 
+
+Looked at CTranslate2's beam-search decoder. It's pretty complex, several hundred lines of c++. The simplest python looks like this according to gemini:
+
+```py
+def simple_beam_search(model, start_ids, end_id, beam_size=5, max_length=50):
+    """This code does not implement penalties, patience, or attention tracking.
+    `model()` returns [(token, logprob)]
+    logprob maps 0..1 to -∞..0, making all scores negative, with each additional token reducing the score.
+    Logprob is good because unlikely tokens rule out a sequence.
+    It's bad because it requires some sort of short sequence penalty.
+    """
+    import heapq
+
+    # Each beam is (score, sequence)
+    beams = [(0.0, start_ids[:])]
+    completed = []
+
+    for step in range(max_length):
+        all_candidates = []
+        for score, seq in beams:
+            if seq and seq[-1] == end_id:
+                completed.append((score, seq))
+                continue
+            log_probs = model(seq)
+            top_tokens = sorted(enumerate(log_probs), key=lambda x: -x[1])[:beam_size]
+            for token_id, log_prob in top_tokens:
+                candidate = (score + log_prob, seq + [token_id])
+                all_candidates.append(candidate)
+        # Select top beams for next step. 
+        # In CTranslate2, this includes rearranging the kv cache
+        beams = heapq.nlargest(beam_size, all_candidates, key=lambda x: x[0])
+        if not beams:
+            break
+        if all(seq[-1] == end_id for _, seq in beams):
+            completed.extend(beams)
+            break
+    if completed:
+        return max(completed, key=lambda x: x[0])[1]
+    else:
+        return max(beams, key=lambda x: x[0])[1]
+```
+
 `LargeV3` (greedy) is better than `DistilLargeV3` with beam search 5. I might just use that.
+
+LargeV3 also very slow, about 1x real-time. Much faster with faster-whisper, about 10x real-time.
 
