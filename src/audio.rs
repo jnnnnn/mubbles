@@ -11,7 +11,7 @@ pub struct AudioChunk {
 
 use crate::app::WhisperUpdate;
 // whisper is trained on 16kHz audio
-pub(crate) const TARGET_SAMPLE_RATE: usize = 16000;
+pub(crate) const TARGET_SAMPLE_RATE: usize = crate::mel::SAMPLE_RATE;
 const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
 
 pub(crate) fn convert_sample_rate(
@@ -69,8 +69,6 @@ fn filter_audio_loop(
         }
         app.send(WhisperUpdate::Level(max))?;
 
-        let full_whisper_buffer = 30/*seconds*/ * sample_rate /*samples per second*/;
-
         if max > threshold {
             if under_threshold_count > 100 {
                 // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
@@ -97,14 +95,30 @@ fn filter_audio_loop(
             }
         }
 
-        // Whisper is trained to process 30 seconds at a time. So if we've got that much, send it now.
-        if recording_buffer.len() >= full_whisper_buffer {
-            let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+        // if we've got more than 15 seconds of audio, find the lowest-energy point and send everything up to that point
+        let full_whisper_buffer = 15/*seconds*/ * sample_rate /*samples per second*/;
+        if recording_buffer.len() > full_whisper_buffer {
+            let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE; // 160 resamples per chunk (1 mel frame)
+
+            let energies = recording_buffer
+                .chunks(chunk_size)
+                .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
+                .collect::<Vec<f32>>();
+            let low_energy_index = energies
+                .iter()
+                .enumerate()
+                .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
+                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let start_index = low_energy_index * chunk_size;
+            let resampled =
+                convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
             filtered_tx.send(PcmAudio {
                 data: resampled,
                 sample_rate: TARGET_SAMPLE_RATE,
             })?;
-            recording_buffer.clear();
+            recording_buffer = recording_buffer[start_index..].to_vec();
         }
     }
 }
@@ -205,13 +219,13 @@ pub fn start_audio_thread(
                 sample_rate,
             })
             .unwrap_or_else(|_| {
-                //todo: this is too noisy. 
+                //todo: this is too noisy.
                 // tracing::debug!("Audio channel closed, can't send audio data");
             });
         partial_tx
             .send(PcmAudio { data, sample_rate })
             .unwrap_or_else(|_| {
-                //todo: this is too noisy. 
+                //todo: this is too noisy.
                 // tracing::debug!("Partial channel closed, can't send partial audio data");
             });
     };

@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque, sync::mpsc::{self, Sender, TryRecvError}, thread::JoinHandle, time::Duration
 };
 
-use candle_core::Tensor;
+use candle_core::{display, Tensor};
 use cpal::traits::{DeviceTrait, HostTrait};
 use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_LEN, PARTIAL_MEL_BINS}, whisper::{
     WhichModel, WhisperParams,
@@ -163,6 +163,7 @@ impl MubblesApp {
 
 
 
+#[derive(Debug, Clone)]
 pub enum WhisperUpdate {
     Recording(bool),
     Transcribing(bool),
@@ -173,7 +174,6 @@ pub enum WhisperUpdate {
     Status(String),
     MelFrame(Vec<f32>),
 }
-
 
 impl eframe::App for MubblesApp {
     /// Called by the frame work to save state before shutdown.
@@ -215,6 +215,8 @@ impl eframe::App for MubblesApp {
         // drain from_whisper channel
         loop {
             let whisper_update_result = from_whisper.try_recv();
+            let span = tracing::span!(tracing::Level::TRACE, "whisper_update", ?whisper_update_result);
+            let _enter = span.enter();
             match whisper_update_result {
                 Ok(WhisperUpdate::Transcription(t)) => {
                     text.push_str(t.trim());
@@ -236,7 +238,7 @@ impl eframe::App for MubblesApp {
                     //update_mel_buffer(&frame, mel1);
                 }
                 Ok(WhisperUpdate::Mel(m)) => {
-                    *mel2 = m;
+                    //*mel2 = m;
                     tracing::debug!("App received mel spectrogram with shape: {:?}", mel2.shape());
                 }
                 Ok(WhisperUpdate::Status(s)) => {
@@ -313,7 +315,7 @@ impl eframe::App for MubblesApp {
                     }
             );
 
-            draw_aligned_words(ctx, aligned_words, ui, mel);
+            draw_aligned_words(ctx, aligned_words, ui, mel, mel1);
 
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::LEFT)
@@ -439,15 +441,21 @@ fn check_thread_error(join: &mut Option<JoinHandle<()>>) {
     }
 }
 
-const MEL_SECONDS: usize = PARTIAL_LEN;
+fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>, display: &DisplayMel) {
+    let mel_seconds = match &display.texture {
+        Some(tex) => tex.size()[0] as f32 / 100.0, // mel is 100Hz (100 pixels per second)
+        None => 0.0,
+    };
+    if mel_seconds < 0.1 {
+        return;
+    }
 
-fn draw_aligned_words(ctx: &egui::Context, aligned_words: &mut Vec<AlignedWord>, ui: &mut egui::Ui, mel: egui::InnerResponse<()>) {
     const ALIGNED_ROWS: usize = 6; // spread words over n rows so that they don't overlap too much
     let rx = mel.response.rect;
     for (i, word) in aligned_words.iter().enumerate() {
         let row = (i%ALIGNED_ROWS) as f32 * 12.0;
         let word_pixels = (7 * word.word.len()) as f32;
-        let seconds_to_pixels = rx.width() / MEL_SECONDS as f32;
+        let seconds_to_pixels = rx.width() / mel_seconds;
         let rect = egui::Rect::from_min_max(
             egui::pos2(rx.left() + seconds_to_pixels * word.start as f32 , rx.top()+row),
             egui::pos2(rx.left() + seconds_to_pixels * word.end as f32 + word_pixels, rx.top() + 12.0 + row),
@@ -487,7 +495,7 @@ fn update_mel_buffer(
     let len = bytes.len().min(PARTIAL_MEL_BINS);
     arr[..len].copy_from_slice(&bytes[..len]);
 
-    if mel.buffer.len() >= MEL_SECONDS * 100 {
+    if mel.buffer.len() >= 5 * 100 {
         mel.buffer.pop_front();
     }
     mel.buffer.push_back(arr);

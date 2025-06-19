@@ -1327,3 +1327,9 @@ def simple_beam_search(model, start_ids, end_id, beam_size=5, max_length=50):
 
 LargeV3 also very slow, about 1x real-time. Much faster with faster-whisper, about 10x real-time.
 
+## 2025-06-19
+
+trying to find ui latency.
+
+set RUST_LOG=warn,mubbles=trace
+

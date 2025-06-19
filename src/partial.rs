@@ -3,7 +3,7 @@ use std::{collections::VecDeque, thread::JoinHandle};
 use crate::{
     app::WhisperUpdate,
     audio::{PcmAudio, TARGET_SAMPLE_RATE},
-    mel::{pcm_to_mel_frame, unpad_mel},
+    mel::{pcm_to_mel_frame, unpad_mel, FFT_SIZE, FFT_STEP},
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
@@ -157,10 +157,11 @@ fn generate_new_mel_frames(
     app: &std::sync::mpsc::Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
     // mel frames are generated with a bit of lookahead -- 160 samples plus lookahead of 240 goes into the fft.
-    if *offset + 400 < recent_samples.len() {
-        let frames = (recent_samples.len() - *offset - 240) / 160;
+    const LOOKAHEAD: usize = FFT_SIZE-FFT_STEP; // 15ms at 16kHz
+    if *offset + FFT_SIZE < recent_samples.len() {
+        let frames = (recent_samples.len() - *offset - LOOKAHEAD) / FFT_STEP;
         let _pcm = recent_samples
-            .range(*offset..*offset + frames * 160 + 240)
+            .range(*offset..*offset + frames * FFT_STEP + LOOKAHEAD)
             .cloned()
             .collect::<Vec<f32>>();
         tracing::debug!(
@@ -168,7 +169,7 @@ fn generate_new_mel_frames(
             frames,
             _pcm.len()
         );
-        *offset += frames * 160;
+        *offset += frames * FFT_STEP;
         let mels = pcm_to_mel_frame(PARTIAL_MEL_BINS, &_pcm, &mel_filters);
         let mut frame_count = 0;
 

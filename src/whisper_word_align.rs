@@ -2,12 +2,11 @@ use candle_core::{IndexOp, Result, Tensor};
 
 use candle_transformers::models::whisper as m;
 
-use crate::whisper_model::AlignmentHead;
+use crate::{mel::{FFT_STEP, SAMPLE_RATE}, whisper_model::AlignmentHead};
 
 use tokenizers::Tokenizer;
 
-const HOP_LENGTH: usize = 160;
-const SAMPLE_RATE: usize = 16000;
+const HOP_LENGTH: usize = FFT_STEP;
 // Time per audio frame fed to the decoder, after encoder's downsampling by 2
 const TIME_PER_AUDIO_FRAME: f64 = (2.0 * HOP_LENGTH as f64) / SAMPLE_RATE as f64;
 

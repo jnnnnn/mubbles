@@ -22,6 +22,11 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+use std::time::Instant;
+use tracing::span::{Attributes, Id};
+use tracing::Subscriber;
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 fn set_up_tracing() -> Box<dyn std::any::Any> {
@@ -45,14 +50,45 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
         .with_ansi(false)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         //.without_time()
-        .with_filter(EnvFilter::from_default_env());
+        .with_filter(EnvFilter::from_default_env())
+        ;
+
     // use RUST_LOG="warn,mubbles=trace" to see app tracing
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
+            .with(SpanTimingLayer)
             .with(console_layer)
-            .with(file_layer),
+            .with(file_layer)
     )
     .expect("Couldn't set up tracing");
 
     Box::new(_guard)
+}
+
+
+
+struct SpanTiming {
+    started_at: Instant,
+}
+
+pub struct SpanTimingLayer;
+
+impl<S> Layer<S> for SpanTimingLayer
+where
+    S: Subscriber,
+    S: for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_new_span(&self, _attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let span = ctx.span(id).unwrap();
+
+        span.extensions_mut().insert(SpanTiming {
+            started_at: Instant::now(),
+        });
+    }
+
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        let span = ctx.span(&id).unwrap();
+        let started_at = span.extensions().get::<SpanTiming>().unwrap().started_at;
+        let elapsed = (Instant::now() - started_at).as_millis();
+    }
 }

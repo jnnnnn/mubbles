@@ -401,7 +401,7 @@ fn whisperize(
                     wav_path,
                     hound::WavSpec {
                         channels: 1,
-                        sample_rate: 16000,
+                        sample_rate: crate::mel::SAMPLE_RATE as u32,
                         bits_per_sample: 32,
                         sample_format: hound::SampleFormat::Float,
                     },
@@ -430,7 +430,7 @@ fn whisperize(
                 0.0
             },
             if resampled.len() > 0 {
-                resampled.len() as f64 / 16000.0 / elapsed
+                resampled.len() as f64 / crate::mel::SAMPLE_RATE as f64 / elapsed
             } else {
                 0.0
             }

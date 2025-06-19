@@ -1,8 +1,9 @@
 use candle_core::{Tensor, IndexOp};
 use rustfft::{num_complex::Complex, FftPlanner};
 
-const FFT_SIZE: usize = 400; // 200 real + 200 imaginary
-const FFT_STEP: usize = 160; // 10ms at 16kHz
+pub const FFT_SIZE: usize = 400; // 200 real + 200 imaginary
+pub const FFT_STEP: usize = 160; // 10ms at 16kHz
+pub const SAMPLE_RATE: usize = 16000;
 
 #[allow(clippy::too_many_arguments)]
 fn log_mel_spectrogram_w(
@@ -190,7 +191,7 @@ mod tests {
 
     #[test]
     fn mel_zero() {
-        let samples = &vec![0.0f32; 16000 * 30]; // 30 seconds of silence at 16kHz
+        let samples = &vec![0.0f32; SAMPLE_RATE * 30]; // 30 seconds of silence at 16kHz
 
         let (tx, _rx) = std::sync::mpsc::channel();
         // load model to get filters
@@ -207,7 +208,7 @@ mod tests {
 
     #[test]
     fn mel_incremental_zero() {
-        let samples = &vec![0.0f32; 16000 * 1]; // 1 seconds of silence at 16kHz
+        let samples = &vec![0.0f32; SAMPLE_RATE * 1]; // 1 seconds of silence at 16kHz
 
         // load model to get filters
         let (tx, _rx) = std::sync::mpsc::channel();
