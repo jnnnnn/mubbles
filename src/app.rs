@@ -2,9 +2,9 @@ use std::{
     collections::VecDeque, sync::mpsc::{self, Sender, TryRecvError}, thread::JoinHandle, time::Duration
 };
 
-use candle_core::{display, Tensor};
+use candle_core::{Tensor};
 use cpal::traits::{DeviceTrait, HostTrait};
-use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_LEN, PARTIAL_MEL_BINS}, whisper::{
+use crate::{audio::{get_devices, AppDevice, StreamState}, partial::{PARTIAL_MEL_BINS}, whisper::{
     WhichModel, WhisperParams,
 }, whisper_word_align::AlignedWord};
 
@@ -51,7 +51,8 @@ pub struct MubblesApp {
     devices: Vec<AppDevice>,
 
     #[serde(skip)]
-    selected_device: usize,
+    selected_device1: usize,
+    selected_device2: usize,
 
     #[serde(skip)]
     selected_model: usize,
@@ -120,7 +121,8 @@ impl Default for MubblesApp {
             from_whisper: rx,
             worker: None,
             devices: devices,
-            selected_device: selected_device,
+            selected_device1: selected_device,
+            selected_device2: selected_device,
             selected_model: 1,
             whisper_tx: tx,
             level: VecDeque::with_capacity(100),
@@ -187,7 +189,8 @@ impl eframe::App for MubblesApp {
             transcribing,
             from_whisper,
             devices,
-            selected_device,
+            selected_device1,
+            selected_device2,
             selected_model,
             worker: stream,
             whisper_tx,
@@ -267,7 +270,8 @@ impl eframe::App for MubblesApp {
                         } else {
                             match start_listening(
                         whisper_tx,
-                        &devices[*selected_device],
+                        &devices[*selected_device1],
+                        &devices[*selected_device2],
                         WhisperParams {
                             accuracy: *accuracy,
                             model: WhichModel::from(*selected_model),
@@ -285,13 +289,22 @@ impl eframe::App for MubblesApp {
                         }
                     }
 
-                    let source = egui::ComboBox::from_label("Sound device").show_index(
+                    let source1 = egui::ComboBox::from_label("Sound device").show_index(
                         ui,
-                        selected_device,
+                        selected_device1,
                         devices.len(),
                         |i| devices[i].name.clone(),
                     );
-                    if source.changed() {
+                    if source1.changed() {
+                        *stream = None;
+                    }
+                    let source2 = egui::ComboBox::from_label("Sound device 2").show_index(
+                        ui,
+                        selected_device2,
+                        devices.len(),
+                        |i| devices[i].name.clone(),
+                    );
+                    if source2.changed() {
                         *stream = None;
                     }
                     let model = egui::ComboBox::from_label("Model")
@@ -501,23 +514,6 @@ fn update_mel_buffer(
     mel.buffer.push_back(arr);
 }
 
-fn overwrite_mel_buffer(
-    display: &mut DisplayMel,
-    mel: Vec<f32>,
-) {
-    tracing::debug!("Overwrite mel buffer with {} frames", mel.len() / PARTIAL_MEL_BINS);
-    display.min = f32::INFINITY;
-    display.max = f32::NEG_INFINITY;
-    let n_frames = mel.len() / PARTIAL_MEL_BINS;
-    let mut frame = vec![0f32; PARTIAL_MEL_BINS];
-    for f in 0..n_frames {
-        for b in 0..PARTIAL_MEL_BINS {
-            frame[b] = mel[b * n_frames + f];
-        }
-        update_mel_buffer(&frame, display);
-    }
-}
-
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     let pairs: PlotPoints<'_> = level
         .iter()
@@ -636,6 +632,7 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
 // Needed to hold a handle to keep the audio stream alive
 struct Worker {
     audio: StreamState,
+    audio2: Option<StreamState>, // for the second device, if used
     // Keeping thread handles allows us to look for panics in the threads
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
@@ -644,19 +641,30 @@ struct Worker {
 fn start_listening(
     app: &Sender<WhisperUpdate>,
     app_device: &AppDevice,
+    app_device2: &AppDevice,
     params: WhisperParams,
 ) -> Result<Worker, anyhow::Error> {
     // cleanup: when the StreamState is dropped, the audio thread will stop, closing its sender, which will close the receiver in the chained threads.
-    let (stream, filtered_rx, rx_partial) = crate::audio::start_audio_thread(app.clone(), app_device)?;
+    let (partial, partial_tx) = if params.partials {
+        let (partial_tx, partial_rx) = mpsc::channel();
+        (Some(crate::partial::start_partial_thread(app.clone(), partial_rx)?), Some(partial_tx))
+    } else {
+        (None, None)
+    };
 
-    let partial = if params.partials {
-            Some(crate::partial::start_partial_thread(app.clone(), rx_partial)?)
-        } else {
-            None    
-        };
+    let (filtered_tx, filtered_rx) = mpsc::channel();
+        
+    let stream = crate::audio::start_audio_thread(app.clone(), app_device, filtered_tx.clone(), partial_tx)?;
+
+    let audio2 = if app_device2.name != app_device.name {
+        Some(crate::audio::start_audio_thread(app.clone(), app_device2, filtered_tx, None)?)
+    } else {
+        None
+    };
+
     let whisper = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params)?;
 
-    Ok(Worker{audio: stream,
+    Ok(Worker{audio: stream, audio2: audio2, 
         partial_thread: partial,
         whisper_thread: Some(whisper),
     })

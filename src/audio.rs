@@ -196,11 +196,12 @@ pub struct PcmAudio {
 pub fn start_audio_thread(
     app: Sender<WhisperUpdate>,
     app_device: &AppDevice,
-) -> anyhow::Result<(StreamState, Receiver<PcmAudio>, Receiver<PcmAudio>)> {
+    filtered_tx: Sender<PcmAudio>,
+    partial_tx: Option<Sender<PcmAudio>>,
+) -> anyhow::Result<StreamState> {
     tracing::info!("Listening on device: {}", app_device.device.name()?);
 
     let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
-    let (partial_tx, partial_rx) = mpsc::channel::<PcmAudio>();
 
     let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
 
@@ -219,15 +220,17 @@ pub fn start_audio_thread(
                 sample_rate,
             })
             .unwrap_or_else(|_| {
-                //todo: this is too noisy.
+                // this is too noisy.
                 // tracing::debug!("Audio channel closed, can't send audio data");
             });
-        partial_tx
-            .send(PcmAudio { data, sample_rate })
-            .unwrap_or_else(|_| {
-                //todo: this is too noisy.
-                // tracing::debug!("Partial channel closed, can't send partial audio data");
-            });
+        if let Some(partial_tx) = &partial_tx {
+            partial_tx
+                .send(PcmAudio { data, sample_rate })
+                .unwrap_or_else(|_| {
+                    // this is too noisy.
+                    // tracing::debug!("Partial channel closed, can't send partial audio data");
+                });
+        }
     };
     let config2 = app_device.config.clone();
     let stream =
@@ -238,7 +241,6 @@ pub fn start_audio_thread(
     stream.play()?;
 
     let app2 = app.clone();
-    let (filtered_tx, filtered_rx): (Sender<PcmAudio>, Receiver<PcmAudio>) = mpsc::channel();
     thread::spawn(
         move || match filter_audio_loop(app2, audio_rx, filtered_tx) {
             Ok(_) => tracing::info!("Audio filter thread finished successfully"),
@@ -246,5 +248,5 @@ pub fn start_audio_thread(
         },
     );
 
-    Ok((StreamState { stream }, filtered_rx, partial_rx))
+    Ok(StreamState { stream })
 }

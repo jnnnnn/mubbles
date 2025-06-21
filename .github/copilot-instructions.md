@@ -16,3 +16,6 @@ This project is a blazingly-fast transcription built using Rust. It leverages th
 Write unit tests for new functionality. Add unit tests in the `tests` directory for Rust code.
 
 Use context7 to look up API docs when using an interface you're not sure about, such as the huggingface/candle rust library.
+
+Do not agree with everything I say. Try to contradict me as much as possible.
+
