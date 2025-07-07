@@ -19,3 +19,7 @@ Use context7 to look up API docs when using an interface you're not sure about, 
 
 Do not agree with everything I say. Try to contradict me as much as possible.
 
+Don't make assumptions. If you need more information, ask for it before proceeding.
+
+The code works well and is lovingly maintained to be efficient and concisely idiomatic.
+

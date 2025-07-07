@@ -1,9 +1,9 @@
 [submodule "whisper"]
 	path = whisper
 	url = https://github.com/openai/whisper.git
-[submodule "candle"]
-	path = candle
-	url = https://github.com/huggingface/candle.git
 [submodule "CTranslate2"]
 	path = CTranslate2
 	url = git@github.com:OpenNMT/CTranslate2.git
+[submodule "candle"]
+	path = candle
+	url = https://github.com/jnnnnn/candle.git

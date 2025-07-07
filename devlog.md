@@ -1244,7 +1244,7 @@ So then I have a truly incremental encoder. The decoding.. can't be incremental.
 
 That's a lot of work though. The app is good enough to use the way it is.
 
-Partials are working well now (still with full mel, that's a todo) but now long inputs without breaks makes a mess of the transcript thread.
+Partials are working well now (still with full mel, that's for later) but now long inputs without breaks makes a mess of the transcript thread.
 
 ```log
 
@@ -1275,7 +1275,7 @@ done: more things to fix:
 
 nah that's actually fine. but I do need to fix:
 
-todo: faster_whisper accuracy is higher with the same model; I think I need to implement beamsearch (or something custom/similar)
+notdone: faster_whisper accuracy is higher with the same model; I think I need to implement beamsearch (or something custom/similar)
 
 -- low-confidence tokens should explore a short tree of *n* alternatives.
 
@@ -1332,4 +1332,14 @@ LargeV3 also very slow, about 1x real-time. Much faster with faster-whisper, abo
 trying to find ui latency.
 
 set RUST_LOG=warn,mubbles=trace
+
+## 2025-06-23
+
+Ok, I have several problems.
+
+1. low accuracy: no beam search; no compression repetition and feeding in previous transcript
+2. low performance: no cleanup memory after stop (should unload model?); much slower than faster-whisper
+3. poor UI -- can't replay a line; can't see words appear in the text body; can't see mel without ~1s UI lag
+
+I think I will give up on things for now.
 
