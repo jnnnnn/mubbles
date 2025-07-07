@@ -237,11 +237,12 @@ impl eframe::App for MubblesApp {
                 Ok(WhisperUpdate::Alignment(a)) => {
                     *aligned_words = a;
                 }
-                Ok(WhisperUpdate::MelFrame(frame)) => {
+                Ok(WhisperUpdate::MelFrame(_frame)) => {
                     //update_mel_buffer(&frame, mel1);
                 }
-                Ok(WhisperUpdate::Mel(m)) => {
+                Ok(WhisperUpdate::Mel(_m)) => {
                     //*mel2 = m;
+                    // disabled because its very slow, up to 1s somehow
                     tracing::debug!("App received mel spectrogram with shape: {:?}", mel2.shape());
                 }
                 Ok(WhisperUpdate::Status(s)) => {

@@ -211,9 +211,13 @@ fn get_with_progress(
     Ok(path)
 }
 
+fn get_device() -> Result<candle_core::Device> {
+    Ok(candle_core::Device::cuda_if_available(0)?)
+}
+
 pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Result<WhisperContext> {
     tracing::info!("Loading whisper model: {:?}", model);
-    let device = candle_core::Device::new_cuda(0)?;
+    let device = get_device()?;
     let (model_id, revision) = model.model_and_revision();
     let (config_filename, tokenizer_filename, weights_filename) = {
         let api = Api::new()?;
@@ -469,7 +473,8 @@ mod tests {
         whisperize(&mut state, &pcm_audio.data, &tx)?;
 
         loop {
-            match rx.try_recv() {
+            // blocks until a message is received
+            match rx.recv() {
                 Ok(update) => match update {
                     WhisperUpdate::Transcription(text) => {
                         assert_eq!(text, "This is a test transcription for .com");
@@ -492,7 +497,7 @@ mod tests {
         let mel_tensor = Tensor::from_slice(
             mel_data.as_slice(),
             (1, 80, mel_data.len() / 80),
-            &candle_core::Device::new_cuda(0)?,
+            &candle_core::Device::cuda_if_available(0)?,
         )?;
 
         let (tx, _rx) = std::sync::mpsc::channel();
