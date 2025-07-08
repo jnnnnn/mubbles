@@ -252,9 +252,6 @@ impl Decoder {
             tokens.push(self.no_timestamps_token);
         }
 
-        // for aligning text tokens with audio tokens
-        let mut query_key_tensors: Vec<Tensor> = vec![];
-
         let mut probs = vec![0f32; prefix_len];
 
         // Iteratively produce text tokens from encoded audio tokens. Stop when the model generates EOT.
@@ -266,19 +263,7 @@ impl Decoder {
             // The model expects a batch dim but this inference loop does not handle
             // it so we add it at this point.
             let tokens_t = tokens_t.unsqueeze(0)?;
-            let qk_receiver = match model {
-                Model::Normal(m) => set_attention_hooks(&mut m.decoder)?,
-                Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
-            };
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
-
-            // collect qks for later alignment. clear hooks to close all
-            // senders, so the receiver closes and we can iterate to the end.
-            match model {
-                Model::Normal(m) => clear_attention_hooks(&mut m.decoder),
-                Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
-            };
-            query_key_tensors = qk_receiver.into_iter().collect();
 
             {
                 let span = tracing::trace_span!("no_speech");
@@ -355,39 +340,13 @@ impl Decoder {
         }
 
         tracing::debug!("decoded audio to text tokens: {:?}", tokens);
-        tracing::debug!("performing alignment...");
 
-        // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
-        let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
-        let mut unpadded_mel_frames = 0;
-        let zero_amp = *amplitudes.last().unwrap_or(&0f32);
-        for (i, &amp) in amplitudes.iter().rev().enumerate() {
-            if amp != zero_amp {
-                unpadded_mel_frames = amplitudes.len() - i;
-                break;
-            }
-        }
-        let real_audio_frames = unpadded_mel_frames / 2;
-
-        // map text token index to audio token index
-        let alignment = align(
-            &query_key_tensors,
-            &self.alignment_heads,
-            &tokens,
-            &probs,
-            prefix_len,
-            &self.tokenizer,
-            real_audio_frames,
-        );
-        let alignment = match alignment {
-            Ok(alignment) => alignment,
-            Err(err) => {
-                tracing::error!("alignment error: {err}");
-                vec![]
-            }
+        let align_enabled = false;
+        let alignment = if align_enabled {
+            self.perform_alignment(mel, &audio_features, &tokens, &probs, prefix_len).unwrap_or(vec![])
+        } else {
+            vec![]
         };
-
-        tracing::debug!("alignment complete: {:?}", alignment);
 
         // split tokens into phrases by removing timestamps
         let text: Vec<String> = self.phrases(&tokens)?;
@@ -414,6 +373,66 @@ impl Decoder {
             compression_ratio: f64::NAN,
             alignment,
         })
+    }
+
+    #[tracing::instrument(name = "align", skip_all)]
+    fn perform_alignment(
+        &mut self,
+        mel: &Tensor, // dims: [batch, bin, frame]
+        audio_features: &Tensor,
+        text_tokens: &[u32],
+        probs: &[f32],
+        prefix_len: usize,
+    ) -> Result<Vec<AlignedWord>> {
+        let model = &mut self.model;
+        let tokens_t = Tensor::new(text_tokens, mel.device())?.unsqueeze(0)?;
+
+        let qk_receiver = match model {
+            Model::Normal(m) => set_attention_hooks(&mut m.decoder)?,
+            Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
+        };
+        let _ys = model.decoder_forward(&tokens_t, &audio_features, false)?;
+
+        // clear hooks to close all senders, so the receiver closes and we can
+        // iterate to the end.
+        match model {
+            Model::Normal(m) => clear_attention_hooks(&mut m.decoder),
+            Model::Quantized(_) => anyhow::bail!("Quantized timestamping not implemented"),
+        };
+        let query_key_tensors = qk_receiver.into_iter().collect();
+
+        // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
+        let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
+        let mut unpadded_mel_frames = 0;
+        let zero_amp = *amplitudes.last().unwrap_or(&0f32);
+        for (i, &amp) in amplitudes.iter().rev().enumerate() {
+            if amp != zero_amp {
+                unpadded_mel_frames = amplitudes.len() - i;
+                break;
+            }
+        }
+        let real_audio_frames = unpadded_mel_frames / 2;
+
+        // map text token index to audio token index
+        let alignment = align(
+            &query_key_tensors,
+            &self.alignment_heads,
+            text_tokens,
+            &probs,
+            prefix_len,
+            &self.tokenizer,
+            real_audio_frames,
+        );
+        let alignment = match alignment {
+            Ok(alignment) => alignment,
+            Err(err) => {
+                tracing::error!("alignment error: {err}");
+                vec![]
+            }
+        };
+
+        tracing::debug!("alignment complete: {:?}", alignment);
+        Ok(alignment)
     }
 
     pub fn decode_with_fallback(

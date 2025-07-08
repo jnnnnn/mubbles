@@ -1343,3 +1343,15 @@ Ok, I have several problems.
 
 I think I will give up on things for now.
 
+## 2025-07-07
+
+my laptop doesn't have nvidia. so I need to get this working after all, because faster-whisper requires cublas.
+
+Major problem at the moment: unloading models doesn't free GPU memory.
+
+largev3 is very slow because we're using too much memory. 6.7GB.
+
+faster-whisper uses 1.7GB (up to 2.1GB when transcribing) for large-v3.
+
+So different. No wonder it's faster.
+
