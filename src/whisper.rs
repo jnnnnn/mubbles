@@ -219,6 +219,8 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
     tracing::info!("Loading whisper model: {:?}", model);
     let device = get_device()?;
     let (model_id, revision) = model.model_and_revision();
+    //quantized let (model_id, revision) = ("lmz/candle-whisper", "main");
+    // todo: find quantized models for not just tiny ? or quantize them ourselves? implement the script that does quantization ?
     let (config_filename, tokenizer_filename, weights_filename) = {
         let api = Api::new()?;
         let inner_repo =
@@ -236,6 +238,8 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
         Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
+        //quantized    unsafe { candle_transformers::models::whisper::VarBuilder::from_gguf(&[weights_filename], m::DTYPE, &device)? };
+        //quantized Model::Quantized(m::quantized_model::Whisper::load(&vb, config.clone())?)
     };
 
     let heads = crate::whisper_model::get_alignment_heads(model, &config);
