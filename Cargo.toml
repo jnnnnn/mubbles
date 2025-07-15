@@ -57,6 +57,7 @@ rand = "0.9.1"
 tokenizers = "0.21.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "std"] }
 rustfft = "6.4.0"
+ort = { version = "2.0.0-rc.2", features = ["load-dynamic", "ndarray"] }
 hound = "3.5.1"
 bitcode = "0.6.6"
 
