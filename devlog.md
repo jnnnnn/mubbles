@@ -1355,3 +1355,20 @@ faster-whisper uses 1.7GB (up to 2.1GB when transcribing) for large-v3.
 
 So different. No wonder it's faster.
 
+## 2025-07-09
+
+PyTorch added support for intel arc gpus like what my laptop has.
+
+Onnx also supports intel arc gpus.
+
+Onnx models are about three times larger on disk than the originals. 
+
+It would be so nice to have onnx run efficiently on any platform.
+
+## 2025-07-15
+
+Looking again at ways of running models efficiently on non-Cuda platforms.
+
+CubeCL is a Burn framework project. I thought about using that a couple of years ago but it was too early. I wonder if Burn has a whisper model now. Google gives https://github.com/Gadersd/whisper-burn .
+
+
