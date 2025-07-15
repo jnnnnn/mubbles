@@ -1355,6 +1355,12 @@ faster-whisper uses 1.7GB (up to 2.1GB when transcribing) for large-v3.
 
 So different. No wonder it's faster.
 
+oh I had told my faster-whisper to use int8. setting it to float16 doesn't work, ctranslate2 refuses to run. float32 is as slow as Candle, rtf ~1. so it's ok.
+
+alright, if I get quantization working it should be pretty good ?
+
+nah just use large-v3-turbo unquantized. I think quality better than large-v3 quantized, and it still runs at ~5x realtime on my GTX1080.
+
 ## 2025-07-09
 
 PyTorch added support for intel arc gpus like what my laptop has.
@@ -1364,6 +1370,26 @@ Onnx also supports intel arc gpus.
 Onnx models are about three times larger on disk than the originals. 
 
 It would be so nice to have onnx run efficiently on any platform.
+
+## 2025-07-10
+
+would like to use gpu for fourier transform. work out where the slow part still is. 
+
+### cubecl
+
+discovered cubecl
+
+https://www.reddit.com/r/rust/comments/1e75n89/announcing_cubecl_multiplatform_gpu_computing_in/
+
+from https://github.com/eugenehp/gpu-fft/blob/master/src/fft.rs
+
+when looking for a rust fft library
+
+it would be great to generate the Mel entirely on the GPU and not have to move it into main ram / cpu for the filters and then back to GPU for the encoder / decoder. I think the copies are killing the initial warm-up time. It'd be great if I could do partials really properly fast
+
+### ui improvements
+
+get openai summary working again. allow specify endpoint so that local or other provider can be used.
 
 ## 2025-07-15
 
