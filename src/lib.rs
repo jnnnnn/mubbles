@@ -14,3 +14,5 @@ mod whisper_word_align;
 mod summary;
 mod audio;
 mod partial;
+
+mod voice_detect;

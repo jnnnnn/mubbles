@@ -1,33 +1,20 @@
-mod silero;
-mod utils;
-mod vad_iter;
+
+pub(crate) struct Silero {
+
+}
 
 fn main() {
+    // pull from huggingface cache https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx
+    // or compile into binary ? it's only 2MB
+
     let model_path = std::env::var("SILERO_MODEL_PATH")
         .unwrap_or_else(|_| String::from("../../files/silero_vad.onnx"));
     let audio_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| String::from("recorder.wav"));
-    let mut wav_reader = hound::WavReader::open(audio_path).unwrap();
-    let sample_rate = match wav_reader.spec().sample_rate {
-        8000 => utils::SampleRate::EightkHz,
-        16000 => utils::SampleRate::SixteenkHz,
-        _ => panic!("Unsupported sample rate. Expect 8 kHz or 16 kHz."),
-    };
-    if wav_reader.spec().sample_format != hound::SampleFormat::Int {
-        panic!("Unsupported sample format. Expect Int.");
-    }
-    let content = wav_reader
-        .samples()
-        .filter_map(|x| x.ok())
-        .collect::<Vec<i16>>();
     assert!(!content.is_empty());
-    let silero = silero::Silero::new(sample_rate, model_path).unwrap();
-    let vad_params = utils::VadParams {
-        sample_rate: sample_rate.into(),
-        ..Default::default()
-    };
-    let mut vad_iterator = vad_iter::VadIter::new(silero, vad_params);
+    let silero = new(sample_rate, model_path).unwrap();
+    let mut vad_iterator = VadIter::new(silero, vad_params);
     vad_iterator.process(&content).unwrap();
     for timestamp in vad_iterator.speeches() {
         println!("{}", timestamp);
@@ -35,20 +22,17 @@ fn main() {
     println!("Finished.");
 }
 
-use crate::utils;
 use ndarray::{s, Array, Array2, ArrayBase, ArrayD, Dim, IxDynImpl, OwnedRepr};
 use std::path::Path;
 
 #[derive(Debug)]
 pub struct Silero {
     session: ort::Session,
-    sample_rate: ArrayBase<OwnedRepr<i64>, Dim<[usize; 1]>>,
     state: ArrayBase<OwnedRepr<f32>, Dim<IxDynImpl>>,
 }
 
 impl Silero {
     pub fn new(
-        sample_rate: utils::SampleRate,
         model_path: impl AsRef<Path>,
     ) -> Result<Self, ort::Error> {
         let session = ort::Session::builder()?.commit_from_file(model_path)?;
@@ -75,7 +59,7 @@ impl Silero {
         let inps = ort::inputs![
             frame,
             std::mem::take(&mut self.state),
-            self.sample_rate.clone(),
+            16000,
         ]?;
         let res = self
             .session
@@ -90,30 +74,6 @@ impl Silero {
     }
 }
 
-
-#[derive(Debug, Clone, Copy)]
-pub enum SampleRate {
-    EightkHz,
-    SixteenkHz,
-}
-
-impl From<SampleRate> for i64 {
-    fn from(value: SampleRate) -> Self {
-        match value {
-            SampleRate::EightkHz => 8000,
-            SampleRate::SixteenkHz => 16000,
-        }
-    }
-}
-
-impl From<SampleRate> for usize {
-    fn from(value: SampleRate) -> Self {
-        match value {
-            SampleRate::EightkHz => 8000,
-            SampleRate::SixteenkHz => 16000,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct VadParams {
@@ -153,18 +113,16 @@ impl std::fmt::Display for TimeStamp {
 }
 
 
-use crate::{silero, utils};
-
 const DEBUG_SPEECH_PROB: bool = true;
 #[derive(Debug)]
 pub struct VadIter {
-    silero: silero::Silero,
+    silero: Silero,
     params: Params,
     state: State,
 }
 
 impl VadIter {
-    pub fn new(silero: silero::Silero, params: utils::VadParams) -> Self {
+    pub fn new(silero: Silero, params: VadParams) -> Self {
         Self {
             silero,
             params: Params::from(params),
@@ -182,7 +140,7 @@ impl VadIter {
         Ok(())
     }
 
-    pub fn speeches(&self) -> &[utils::TimeStamp] {
+    pub fn speeches(&self) -> &[TimeStamp] {
         &self.state.speeches
     }
 }
@@ -213,8 +171,8 @@ struct Params {
     min_silence_samples_at_max_speech: usize,
 }
 
-impl From<utils::VadParams> for Params {
-    fn from(value: utils::VadParams) -> Self {
+impl From<VadParams> for Params {
+    fn from(value: VadParams) -> Self {
         let frame_size = value.frame_size;
         let threshold = value.threshold;
         let min_silence_duration_ms = value.min_silence_duration_ms;
@@ -257,8 +215,8 @@ struct State {
     next_start: usize,
     prev_end: usize,
     triggered: bool,
-    current_speech: utils::TimeStamp,
-    speeches: Vec<utils::TimeStamp>,
+    current_speech: TimeStamp,
+    speeches: Vec<TimeStamp>,
 }
 
 impl State {

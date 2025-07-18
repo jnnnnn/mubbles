@@ -1397,4 +1397,8 @@ Looking again at ways of running models efficiently on non-Cuda platforms.
 
 CubeCL is a Burn framework project. I thought about using that a couple of years ago but it was too early. I wonder if Burn has a whisper model now. Google gives https://github.com/Gadersd/whisper-burn .
 
+## 2025-07-15
+
+VAD so I can start using this all the time.
+
 

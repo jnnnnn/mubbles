@@ -47,7 +47,9 @@ fn filter_audio_loop(
     let mut recording_buffer: Vec<f32> = Vec::new();
 
     // a dynamic threshold (or something like silero-vad) would be better
-    let threshold = 0.05f32;
+    let threshold = 0.005f32;
+
+    let silero = crate::voice_detect::Silero::new();
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
@@ -61,6 +63,7 @@ fn filter_audio_loop(
             }
         };
 
+        let voice_probability = silero.process(&data);
         let mut max = 0.0;
         for sample in data.iter() {
             if *sample > max {
@@ -68,6 +71,7 @@ fn filter_audio_loop(
             }
         }
         app.send(WhisperUpdate::Level(max))?;
+        app.send(WhisperUpdate::VoiceLevel(voice_probability))?;
 
         if max > threshold {
             if under_threshold_count > 100 {
