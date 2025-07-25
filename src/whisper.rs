@@ -154,73 +154,18 @@ impl std::fmt::Debug for WhisperContext {
     }
 }
 
-struct MyProgress {
-    sender: Sender<WhisperUpdate>,
-    total_size: usize,
-    current: usize,
-    fname: String,
-}
-impl MyProgress {
-    fn new(sender: Sender<WhisperUpdate>) -> Self {
-        MyProgress {
-            sender,
-            total_size: 0,
-            current: 0,
-            fname: String::new(),
-        }
-    }
-}
-impl hf_hub::api::Progress for MyProgress {
-    fn init(&mut self, size: usize, filename: &str) {
-        self.total_size = size;
-        self.fname = filename.to_string();
-    }
-    fn update(&mut self, size: usize) {
-        self.current += size;
-        let percentage = (self.current as f64 / self.total_size as f64) * 100.0;
-
-        self.sender
-            .send(WhisperUpdate::Status(format!(
-                "Downloading {}: {} MiB ({percentage:.1}%)",
-                self.fname,
-                self.current / (1024 * 1024)
-            )))
-            .unwrap_or_default();
-    }
-    fn finish(&mut self) {}
-}
-
-fn get_with_progress(
-    repo: hf_hub::Repo,
-    app: Sender<WhisperUpdate>,
-    filename: &str,
-) -> Result<std::path::PathBuf, E> {
-    // unfortunately, api::download_with_progress does not check cache first, so we do it manually
-    // this is made harder by ApiRepo not exposing the cache, so we have to use the Cache directly
-    let cache = hf_hub::Cache::default();
-    let cached = cache.repo(repo.clone()).get(filename);
-    let path = if let Some(path) = cached {
-        tracing::info!("Using cached file: {}", path.display());
-        path
-    } else {
-        tracing::info!("Downloading file: {}", filename);
-        Api::new()?
-            .repo(repo)
-            .download_with_progress(filename, MyProgress::new(app))?
-    };
-    Ok(path)
-}
 
 fn get_device() -> Result<candle_core::Device> {
     Ok(candle_core::Device::cuda_if_available(0)?)
 }
 
-pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Result<WhisperContext> {
+pub fn load_whisper_model(model: WhichModel, appchannel: Sender<WhisperUpdate>) -> Result<WhisperContext> {
     tracing::info!("Loading whisper model: {:?}", model);
     let device = get_device()?;
     let (model_id, revision) = model.model_and_revision();
     //quantized let (model_id, revision) = ("lmz/candle-whisper", "main");
-    // todo: find quantized models for not just tiny ? or quantize them ourselves? implement the script that does quantization ?
+    // oneday: find quantized models for not just tiny ? or quantize them ourselves? implement the script that does quantization ?
+    // for now, just use unquantized; I suspect they are slightly more accurate and large-v3-turbo runs at ~4× on my gtx1080
     let (config_filename, tokenizer_filename, weights_filename) = {
         let api = Api::new()?;
         let inner_repo =
@@ -228,7 +173,7 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
         let repo_with_api = api.repo(inner_repo.clone());
         let config = repo_with_api.get("config.json")?;
         let tokenizer = repo_with_api.get("tokenizer.json")?;
-        let model = get_with_progress(inner_repo, app.clone(), "model.safetensors")?;
+        let model = crate::huggingface::get_with_progress(inner_repo, appchannel.clone(), "model.safetensors")?;
         (config, tokenizer, model)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
@@ -285,13 +230,13 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
 
 // thread closes when the receiver is closed
 pub fn start_whisper_thread(
-    app: Sender<WhisperUpdate>,
+    appchannel: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
 ) -> Result<JoinHandle<()>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("whisper".to_string())
-        .spawn(move || match whisper_loop(app, filtered_rx, params) {
+        .spawn(move || match whisper_loop(appchannel, filtered_rx, params) {
             Ok(_) => tracing::info!("Whisper thread finished successfully"),
             Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
         });
@@ -299,15 +244,15 @@ pub fn start_whisper_thread(
 }
 
 fn whisper_loop(
-    app: Sender<WhisperUpdate>,
+    appchannel: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
 ) -> Result<(), anyhow::Error> {
-    app.send(WhisperUpdate::Status(
+    appchannel.send(WhisperUpdate::Status(
         "Loading whisper model...".to_string(),
     ))?;
-    let mut ctx: WhisperContext = load_whisper_model(params.model, app.clone())?;
-    app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
+    let mut ctx: WhisperContext = load_whisper_model(params.model, appchannel.clone())?;
+    appchannel.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
         let PcmAudio {
@@ -328,31 +273,31 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        let result = whisperize(&mut ctx, &aggregated, &app);
+        let result = whisperize(&mut ctx, &aggregated, &appchannel);
         if !result.is_ok() {
             tracing::error!("Failed to perform partial transcription: {:?}", result);
         }
     }
 }
 
-#[tracing::instrument(skip(state, resampled, app))]
+#[tracing::instrument(skip(state, resampled, appchannel))]
 fn whisperize(
     state: &mut WhisperContext,
     resampled: &[f32],
-    app: &Sender<WhisperUpdate>,
+    appchannel: &Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
     if resampled.is_empty() {
         tracing::warn!("Received empty audio data, skipping transcription");
         return Ok(());
     }
 
-    app.send(WhisperUpdate::Transcribing(true))
+    appchannel.send(WhisperUpdate::Transcribing(true))
         .expect("Failed to send transcribing update");
 
-    app.send(WhisperUpdate::Status("Levels...".to_string()))?;
+    appchannel.send(WhisperUpdate::Status("Levels...".to_string()))?;
 
     let mel_start = std::time::Instant::now();
-    app.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
+    appchannel.send(WhisperUpdate::Status("Mel spectrogram...".to_string()))?;
     // the mel pads out to 30s; keep track of how much actual audio we have for initializing the alignment calculation
 
     let mel_raw = crate::mel::pcm_to_mel(state.config.num_mel_bins, &resampled, &state.mel_filters);
@@ -373,18 +318,18 @@ fn whisperize(
         (1, num_bins, num_mel_frames),
         &state.device,
     )?;
-    app.send(WhisperUpdate::Mel(
+    appchannel.send(WhisperUpdate::Mel(
         unpad_mel(mel_tensor.clone())?.squeeze(0)?,
     ))?;
 
-    app.send(WhisperUpdate::Status(
+    appchannel.send(WhisperUpdate::Status(
         "Running Whisper decoder...".to_string(),
     ))?;
 
     let decode_start = std::time::Instant::now();
 
     let per_token_callback = Some(|text: String| {
-        app.send(WhisperUpdate::Status(text.clone())).unwrap_or_default();
+        appchannel.send(WhisperUpdate::Status(text.clone())).unwrap_or_default();
     });
 
     let (segments_results, last_segment_content_tokens) =
@@ -393,9 +338,9 @@ fn whisperize(
 
     for segment in segments_results.iter() {
         let text = &segment.dr.text;
-        app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
+        appchannel.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
         for phrase in text {
-            app.send(WhisperUpdate::Transcription(phrase.clone()))?;
+            appchannel.send(WhisperUpdate::Transcription(phrase.clone()))?;
         }
         tracing::info!("Whisper segment: {:?}", segment.dr);
 
@@ -430,7 +375,7 @@ fn whisperize(
 
         let elapsed = decode_start.elapsed().as_secs_f64();
         let n_tokens = segment.dr.tokens.len();
-        app.send(WhisperUpdate::Status(format!(
+        appchannel.send(WhisperUpdate::Status(format!(
             "Time per token: {:.2}ms. Realtime factor: {:.2}",
             if n_tokens > 0 {
                 elapsed * 1000.0 / n_tokens as f64
@@ -445,7 +390,7 @@ fn whisperize(
         )))?;
     }
 
-    app.send(WhisperUpdate::Transcribing(false))?;
+    appchannel.send(WhisperUpdate::Transcribing(false))?;
     Ok(())
 }
 #[cfg(test)]

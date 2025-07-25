@@ -3,7 +3,7 @@ pub(crate) struct Silero {
 
 }
 
-fn main() {
+pub(crate) fn detect(content: &[f32]) {
     // pull from huggingface cache https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx
     // or compile into binary ? it's only 2MB
 

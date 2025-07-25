@@ -16,3 +16,4 @@ mod audio;
 mod partial;
 
 mod voice_detect;
+mod huggingface;
