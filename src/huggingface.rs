@@ -1,3 +1,6 @@
+use std::sync::mpsc::Sender;
+use crate::app::WhisperUpdate;
+use anyhow::{Error as E, Result};
 
 struct MyProgress {
     sender: Sender<WhisperUpdate>,
@@ -49,7 +52,7 @@ pub(crate) fn get_with_progress(
         path
     } else {
         tracing::info!("Downloading file: {}", filename);
-        Api::new()?
+        hf_hub::api::sync::Api::new()?
             .repo(repo)
             .download_with_progress(filename, MyProgress::new(app))?
     };
