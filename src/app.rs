@@ -54,7 +54,6 @@ pub struct MubblesApp {
     selected_device1: usize,
     selected_device2: usize,
 
-    #[serde(skip)]
     selected_model: usize,
 
     #[serde(skip)]
