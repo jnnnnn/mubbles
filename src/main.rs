@@ -89,6 +89,6 @@ where
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let span = ctx.span(&id).unwrap();
         let started_at = span.extensions().get::<SpanTiming>().unwrap().started_at;
-        let elapsed = (Instant::now() - started_at).as_millis();
+        let _elapsed = (Instant::now() - started_at).as_millis();
     }
 }

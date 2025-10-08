@@ -544,7 +544,7 @@ fn draw_mel1(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         image
     } else {
         let black = egui::Color32::from_black_alpha(0);
-        let img = egui::ColorImage::new( [PARTIAL_MEL_BINS, 100], black);
+        let img = egui::ColorImage::filled( [PARTIAL_MEL_BINS, 100], black);
         *image = Some(img);
         image.as_mut().unwrap()
     };
@@ -592,7 +592,7 @@ fn draw_mel2(mel2: &mut Tensor, display: &mut DisplayMel, ui: &mut egui::Ui) -> 
         return Ok(());
     }
 
-    let mut mel_image = egui::ColorImage::new(
+    let mut mel_image = egui::ColorImage::filled(
         [n_frames, PARTIAL_MEL_BINS],
         egui::Color32::from_black_alpha(0),
     );
