@@ -28,7 +28,9 @@ You may need to remove the `cuda` feature from the `whisper-rs` dependency if yo
 
 Install the app into the default cargo bin directory (probably `~/.cargo/bin`):
 
-    cargo install --path .
+    cargo install --path . --features cuda
+
+Depending on the accelerator you have available, choose which feature -- `mkl` for intel CPUs or `cuda` for Nvidia cards with CudaNN installed in the system.
 
 ## Screenshot
 
