@@ -11,6 +11,7 @@ use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::{
     audio::{get_devices, AppDevice, StreamState},
+    file_transcription::transcribe_file,
     partial::PARTIAL_MEL_BINS,
     summary,
     whisper::{WhichModel, WhisperParams},
@@ -34,8 +35,7 @@ enum AppTab {
     Transcript,
     StatisticalSummary,
     AISummary,
-    AIUserPrompt,
-    AISystemPrompt,
+    Settings,
 }
 
 /// Mel spectrogram display state
@@ -146,6 +146,12 @@ pub struct MubblesApp {
     // Summary state
     statistical_summary: summary::SummaryState,
     ai_summary: summary::SummaryState,
+
+    // File transcription state
+    #[serde(skip)]
+    file_transcription_running: bool,
+    #[serde(skip)]
+    file_transcription_thread: Option<JoinHandle<()>>,
 }
 
 impl Default for MubblesApp {
@@ -196,6 +202,10 @@ impl Default for MubblesApp {
             // Summary state
             statistical_summary: summary::SummaryState::default(),
             ai_summary: summary::SummaryState::default(),
+
+            // File transcription state
+            file_transcription_running: false,
+            file_transcription_thread: None,
         }
     }
 }
@@ -271,6 +281,10 @@ impl MubblesApp {
                 }
                 WhisperUpdate::Status(s) => {
                     self.status = s;
+                }
+                WhisperUpdate::FileTranscriptionComplete => {
+                    self.file_transcription_running = false;
+                    self.status = "File transcription complete".to_string();
                 }
             }
         }
@@ -463,6 +477,30 @@ impl MubblesApp {
         }
     }
 
+    /// Start file transcription
+    fn start_file_transcription(&mut self) {
+        // Open file dialog
+        let file_dialog = rfd::FileDialog::new()
+            .add_filter("Audio Files", &["wav", "mp3", "flac", "ogg", "m4a"])
+            .set_title("Select Audio File to Transcribe");
+        
+        if let Some(path) = file_dialog.pick_file() {
+            let tx = self.whisper_tx.clone();
+            let model = WhichModel::from(self.selected_model);
+            let accuracy = self.accuracy;
+            
+            self.file_transcription_running = true;
+            
+            let thread = std::thread::spawn(move || {
+                if let Err(e) = transcribe_file(path, model, accuracy, tx) {
+                    tracing::error!("File transcription failed: {}", e);
+                }
+            });
+            
+            self.file_transcription_thread = Some(thread);
+        }
+    }
+
     /// Render the central panel with tabs and text editor
     fn render_central_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -477,8 +515,7 @@ impl MubblesApp {
             ui.selectable_value(&mut self.tab, AppTab::Transcript, "Transcript");
             ui.selectable_value(&mut self.tab, AppTab::StatisticalSummary, "Statistical Summary");
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
-            ui.selectable_value(&mut self.tab, AppTab::AIUserPrompt, "AI User Prompt");
-            ui.selectable_value(&mut self.tab, AppTab::AISystemPrompt, "AI System Prompt");
+            ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
         });
 
         // Tab-specific UI
@@ -487,6 +524,9 @@ impl MubblesApp {
                 summary::statistical_ui(&mut self.statistical_summary, ui, &mut self.text)
             }
             AppTab::AISummary => summary::ai_ui(&mut self.ai_summary, ui, &mut self.text),
+            AppTab::Settings => {
+                // Settings UI will be rendered in render_text_editor
+            }
             _ => {}
         }
     }
@@ -502,18 +542,72 @@ impl MubblesApp {
         };
 
         scroll_area.show(ui, |ui| {
-            let text = match self.tab {
-                AppTab::Transcript => &mut self.text,
-                AppTab::StatisticalSummary => &mut self.statistical_summary.text,
-                AppTab::AISummary => &mut self.ai_summary.text,
-                AppTab::AIUserPrompt => &mut self.ai_summary.user_prompt,
-                AppTab::AISystemPrompt => &mut self.ai_summary.system_prompt,
-            };
-
-            ui.add_sized(
-                ui.available_size(),
-                egui::TextEdit::multiline(text),
-            );
+            match self.tab {
+                AppTab::Transcript => {
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(&mut self.text),
+                    );
+                }
+                AppTab::StatisticalSummary => {
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(&mut self.statistical_summary.text),
+                    );
+                }
+                AppTab::AISummary => {
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(&mut self.ai_summary.text),
+                    );
+                }
+                AppTab::Settings => {
+                    ui.heading("AI Prompts");
+                    ui.add_space(10.0);
+                    
+                    ui.label("User Prompt:");
+                    ui.add_sized(
+                        egui::vec2(ui.available_width(), 150.0),
+                        egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
+                    );
+                    
+                    ui.add_space(10.0);
+                    
+                    ui.label("System Prompt:");
+                    ui.add_sized(
+                        egui::vec2(ui.available_width(), 150.0),
+                        egui::TextEdit::multiline(&mut self.ai_summary.system_prompt),
+                    );
+                    
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    
+                    ui.heading("File Transcription");
+                    ui.add_space(10.0);
+                    
+                    ui.horizontal(|ui| {
+                        let button_text = if self.file_transcription_running {
+                            "Transcribing..."
+                        } else {
+                            "Transcribe Audio File..."
+                        };
+                        
+                        if ui.add_enabled(!self.file_transcription_running, 
+                            egui::Button::new(button_text))
+                            .clicked() 
+                        {
+                            self.start_file_transcription();
+                        }
+                        
+                        if self.file_transcription_running {
+                            ui.spinner();
+                        }
+                    });
+                    
+                    ui.label("Select a WAV audio file to transcribe using the current model settings.");
+                }
+            }
         });
     }
 }
@@ -529,6 +623,7 @@ pub enum WhisperUpdate {
     Mel(Tensor),
     Status(String),
     MelFrame(Vec<f32>),
+    FileTranscriptionComplete,
 }
 
 impl eframe::App for MubblesApp {
@@ -545,6 +640,7 @@ impl eframe::App for MubblesApp {
         if let Some(worker) = &mut self.worker {
             check_thread_error(&mut worker.whisper_thread);
         }
+        check_thread_error(&mut self.file_transcription_thread);
 
         // Process updates from Whisper thread
         self.process_whisper_updates();

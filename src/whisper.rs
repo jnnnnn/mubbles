@@ -336,7 +336,7 @@ fn whisper_loop(
 }
 
 #[tracing::instrument(skip(state, resampled, app))]
-fn whisperize(
+pub fn whisperize(
     state: &mut WhisperContext,
     resampled: &[f32],
     app: &Sender<WhisperUpdate>,
