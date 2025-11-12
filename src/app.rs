@@ -59,8 +59,13 @@ impl DisplayMel {
     }
 
     fn update_range(&mut self, frame: &[f32]) {
-        self.min = self.min.min(frame.iter().copied().fold(f32::INFINITY, f32::min));
-        self.max = self.max.max(frame.iter().copied().fold(f32::NEG_INFINITY, f32::max)) + 0.01;
+        self.min = self
+            .min
+            .min(frame.iter().copied().fold(f32::INFINITY, f32::min));
+        self.max = self
+            .max
+            .max(frame.iter().copied().fold(f32::NEG_INFINITY, f32::max))
+            + 0.01;
     }
 
     fn push_frame(&mut self, frame: &[f32]) {
@@ -86,7 +91,7 @@ impl DisplayMel {
 }
 
 /// Main application state
-/// 
+///
 /// Deserialize/Serialize enables persistence on shutdown
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -158,7 +163,7 @@ impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         let devices = get_devices();
-        
+
         let selected_device = Self::find_default_device(&devices);
 
         Self {
@@ -277,7 +282,10 @@ impl MubblesApp {
                 }
                 WhisperUpdate::Mel(_m) => {
                     // Disabled: slow (up to 1s)
-                    tracing::debug!("App received mel spectrogram with shape: {:?}", self.mel2.shape());
+                    tracing::debug!(
+                        "App received mel spectrogram with shape: {:?}",
+                        self.mel2.shape()
+                    );
                 }
                 WhisperUpdate::Status(s) => {
                     self.status = s;
@@ -337,7 +345,12 @@ impl MubblesApp {
                 if source2.changed() {
                     self.worker = None;
                 }
+            },
+        );
 
+        ui.with_layout(
+            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP),
+            |ui| {
                 // Model selector
                 let model = egui::ComboBox::from_label("Model")
                     .selected_text(WhichModel::from(self.selected_model).to_string())
@@ -483,20 +496,20 @@ impl MubblesApp {
         let file_dialog = rfd::FileDialog::new()
             .add_filter("Audio Files", &["wav", "mp3", "flac", "ogg", "m4a"])
             .set_title("Select Audio File to Transcribe");
-        
+
         if let Some(path) = file_dialog.pick_file() {
             let tx = self.whisper_tx.clone();
             let model = WhichModel::from(self.selected_model);
             let accuracy = self.accuracy;
-            
+
             self.file_transcription_running = true;
-            
+
             let thread = std::thread::spawn(move || {
                 if let Err(e) = transcribe_file(path, model, accuracy, tx) {
                     tracing::error!("File transcription failed: {}", e);
                 }
             });
-            
+
             self.file_transcription_thread = Some(thread);
         }
     }
@@ -513,7 +526,11 @@ impl MubblesApp {
     fn render_tabs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.tab, AppTab::Transcript, "Transcript");
-            ui.selectable_value(&mut self.tab, AppTab::StatisticalSummary, "Statistical Summary");
+            ui.selectable_value(
+                &mut self.tab,
+                AppTab::StatisticalSummary,
+                "Statistical Summary",
+            );
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
             ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
         });
@@ -541,72 +558,73 @@ impl MubblesApp {
             scroll_area
         };
 
-        scroll_area.show(ui, |ui| {
-            match self.tab {
-                AppTab::Transcript => {
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut self.text),
-                    );
-                }
-                AppTab::StatisticalSummary => {
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut self.statistical_summary.text),
-                    );
-                }
-                AppTab::AISummary => {
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut self.ai_summary.text),
-                    );
-                }
-                AppTab::Settings => {
-                    ui.heading("AI Prompts");
-                    ui.add_space(10.0);
-                    
-                    ui.label("User Prompt:");
-                    ui.add_sized(
-                        egui::vec2(ui.available_width(), 150.0),
-                        egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
-                    );
-                    
-                    ui.add_space(10.0);
-                    
-                    ui.label("System Prompt:");
-                    ui.add_sized(
-                        egui::vec2(ui.available_width(), 150.0),
-                        egui::TextEdit::multiline(&mut self.ai_summary.system_prompt),
-                    );
-                    
-                    ui.add_space(20.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    
-                    ui.heading("File Transcription");
-                    ui.add_space(10.0);
-                    
-                    ui.horizontal(|ui| {
-                        let button_text = if self.file_transcription_running {
-                            "Transcribing..."
-                        } else {
-                            "Transcribe Audio File..."
-                        };
-                        
-                        if ui.add_enabled(!self.file_transcription_running, 
-                            egui::Button::new(button_text))
-                            .clicked() 
-                        {
-                            self.start_file_transcription();
-                        }
-                        
-                        if self.file_transcription_running {
-                            ui.spinner();
-                        }
-                    });
-                    
-                    ui.label("Select a WAV audio file to transcribe using the current model settings.");
-                }
+        scroll_area.show(ui, |ui| match self.tab {
+            AppTab::Transcript => {
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.text),
+                );
+            }
+            AppTab::StatisticalSummary => {
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.statistical_summary.text),
+                );
+            }
+            AppTab::AISummary => {
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.ai_summary.text),
+                );
+            }
+            AppTab::Settings => {
+                ui.heading("AI Prompts");
+                ui.add_space(10.0);
+
+                ui.label("User Prompt:");
+                ui.add_sized(
+                    egui::vec2(ui.available_width(), 150.0),
+                    egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
+                );
+
+                ui.add_space(10.0);
+
+                ui.label("System Prompt:");
+                ui.add_sized(
+                    egui::vec2(ui.available_width(), 150.0),
+                    egui::TextEdit::multiline(&mut self.ai_summary.system_prompt),
+                );
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("File Transcription");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    let button_text = if self.file_transcription_running {
+                        "Transcribing..."
+                    } else {
+                        "Transcribe Audio File..."
+                    };
+
+                    if ui
+                        .add_enabled(
+                            !self.file_transcription_running,
+                            egui::Button::new(button_text),
+                        )
+                        .clicked()
+                    {
+                        self.start_file_transcription();
+                    }
+
+                    if self.file_transcription_running {
+                        ui.spinner();
+                    }
+                });
+
+                ui.label("Select a WAV audio file to transcribe using the current model settings.");
             }
         });
     }
@@ -776,13 +794,15 @@ fn draw_mel1(mel: &mut DisplayMel, ui: &mut egui::Ui) {
 
     // Initialize texture if needed
     let texture = texture.get_or_insert_with(|| {
-        ui.ctx()
-            .load_texture("mel_spectrogram", image.clone(), egui::TextureOptions::default())
+        ui.ctx().load_texture(
+            "mel_spectrogram",
+            image.clone(),
+            egui::TextureOptions::default(),
+        )
     });
 
     let xmax = buffer.len();
-    let mut pixels: Vec<egui::Color32> =
-        vec![egui::Color32::from_gray(0); PARTIAL_MEL_BINS * xmax];
+    let mut pixels: Vec<egui::Color32> = vec![egui::Color32::from_gray(0); PARTIAL_MEL_BINS * xmax];
 
     // Convert buffer to pixels
     for (x, frame) in buffer.iter().enumerate() {
@@ -900,12 +920,8 @@ fn start_listening(
     let (filtered_tx, filtered_rx) = mpsc::channel();
 
     // Start primary audio stream
-    let stream = crate::audio::start_audio_thread(
-        app.clone(),
-        app_device,
-        filtered_tx.clone(),
-        partial_tx,
-    )?;
+    let stream =
+        crate::audio::start_audio_thread(app.clone(), app_device, filtered_tx.clone(), partial_tx)?;
 
     // Start secondary audio stream if different device selected
     let audio2 = if app_device2.name != app_device.name {

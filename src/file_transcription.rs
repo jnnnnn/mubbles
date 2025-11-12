@@ -22,7 +22,7 @@ pub fn transcribe_file(
         path.display()
     )))?;
 
-    // Read the audio file using hound
+    // we need to get the file from disk
     let mut reader = hound::WavReader::open(&path)?;
     let spec = reader.spec();
     
@@ -31,7 +31,7 @@ pub fn transcribe_file(
         spec.sample_rate, spec.channels, spec.bits_per_sample
     )))?;
 
-    // Convert samples to f32
+    // whisper requires samples as f32
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => {
             reader.samples::<f32>()
@@ -45,7 +45,7 @@ pub fn transcribe_file(
         }
     };
 
-    // Convert to mono if stereo
+    // whisper model expects mono audio, so convert if necessary
     let mono_samples: Vec<f32> = if spec.channels == 1 {
         samples
     } else {
@@ -60,7 +60,7 @@ pub fn transcribe_file(
         mono_samples.len() as f32 / spec.sample_rate as f32
     )))?;
 
-    // Resample to 16kHz if needed
+    // whisper requires 16kHz sample rate, so resample if necessary
     let resampled = if spec.sample_rate != 16000 {
         app.send(WhisperUpdate::Status(format!(
             "Resampling from {} Hz to 16000 Hz",
@@ -72,11 +72,11 @@ pub fn transcribe_file(
         mono_samples
     };
 
-    // Load the model
+    // We need a whisper model in memory to run transcriptions
     app.send(WhisperUpdate::Status("Loading Whisper model...".to_string()))?;
     let mut ctx: WhisperContext = load_whisper_model(model, app.clone())?;
     
-    // Process audio in chunks (30 seconds at a time)
+    // whisper processes audio in 30s chunks, so we will do that here
     const CHUNK_SIZE: usize = 16000 * 30; // 30 seconds at 16kHz
     let total_chunks = (resampled.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
     
