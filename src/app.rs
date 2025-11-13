@@ -36,6 +36,7 @@ enum AppTab {
     StatisticalSummary,
     AISummary,
     Settings,
+    Log,
 }
 
 /// Mel spectrogram display state
@@ -157,6 +158,11 @@ pub struct MubblesApp {
     file_transcription_running: bool,
     #[serde(skip)]
     file_transcription_thread: Option<JoinHandle<()>>,
+
+    // Logging state
+    #[serde(skip)]
+    log_buffer: crate::log_capture::LogBuffer,
+    log_level: usize, // 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR
 }
 
 impl Default for MubblesApp {
@@ -211,6 +217,10 @@ impl Default for MubblesApp {
             // File transcription state
             file_transcription_running: false,
             file_transcription_thread: None,
+
+            // Logging state
+            log_buffer: crate::log_capture::LogBuffer::new(),
+            log_level: 2, // Default to INFO
         }
     }
 }
@@ -244,6 +254,11 @@ impl MubblesApp {
         cc.storage
             .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
             .unwrap_or_default()
+    }
+
+    /// Get a clone of the log buffer for passing to the tracing setup
+    pub fn get_log_buffer(&self) -> crate::log_capture::LogBuffer {
+        self.log_buffer.clone()
     }
 
     /// Process updates from the Whisper thread
@@ -533,6 +548,7 @@ impl MubblesApp {
             );
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
             ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
+            ui.selectable_value(&mut self.tab, AppTab::Log, "Log");
         });
 
         // Tab-specific UI
@@ -625,6 +641,41 @@ impl MubblesApp {
                 });
 
                 ui.label("Select a WAV audio file to transcribe using the current model settings.");
+            }
+            AppTab::Log => {
+                ui.heading("Application Logs");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Log Level:");
+                    let level_names = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+                    egui::ComboBox::from_id_salt("log_level")
+                        .selected_text(level_names[self.log_level])
+                        .show_index(ui, &mut self.log_level, 5, |i| level_names[i]);
+
+                    if ui.button("Clear Logs").clicked() {
+                        self.log_buffer.clear();
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(5.0);
+
+                // Display logs with monospace font
+                let logs = self.log_buffer.get_all();
+                let log_text = logs
+                    .iter()
+                    .map(|entry| entry.format())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut log_text.as_str())
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
             }
         });
     }

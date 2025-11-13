@@ -1,0 +1,132 @@
+//! In-memory log capture for UI display
+//!
+//! Provides a tracing layer that captures log events in a circular buffer
+//! for real-time display in the application UI.
+
+use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
+use tracing::{Event, Subscriber};
+use tracing::span::Attributes;
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::registry::LookupSpan;
+
+/// Maximum number of log entries to keep in memory
+const MAX_LOG_ENTRIES: usize = 1000;
+
+/// A single log entry
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub timestamp: chrono::DateTime<chrono::Local>,
+    pub level: tracing::Level,
+    pub target: String,
+    pub message: String,
+}
+
+impl LogEntry {
+    /// Format the log entry for display
+    pub fn format(&self) -> String {
+        format!(
+            "[{}] {:5} {}: {}",
+            self.timestamp.format("%H:%M:%S%.3f"),
+            self.level.to_string(),
+            self.target,
+            self.message
+        )
+    }
+}
+
+/// Thread-safe log buffer
+#[derive(Clone)]
+pub struct LogBuffer {
+    entries: Arc<Mutex<VecDeque<LogEntry>>>,
+}
+
+impl LogBuffer {
+    /// Create a new log buffer
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_LOG_ENTRIES))),
+        }
+    }
+
+    /// Add a log entry to the buffer
+    fn push(&self, entry: LogEntry) {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= MAX_LOG_ENTRIES {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+    }
+
+    /// Get all log entries
+    pub fn get_all(&self) -> Vec<LogEntry> {
+        self.entries.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// Clear all log entries
+    pub fn clear(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+}
+
+impl Default for LogBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Tracing layer that captures events to memory
+pub struct LogCaptureLayer {
+    buffer: LogBuffer,
+}
+
+impl LogCaptureLayer {
+    /// Create a new log capture layer
+    pub fn new(buffer: LogBuffer) -> Self {
+        Self { buffer }
+    }
+}
+
+impl<S> Layer<S> for LogCaptureLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let metadata = event.metadata();
+        
+        // Create a visitor to extract the message
+        struct MessageVisitor(String);
+        
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{:?}", value);
+                    // Remove surrounding quotes from debug format
+                    if self.0.starts_with('"') && self.0.ends_with('"') {
+                        self.0 = self.0[1..self.0.len()-1].to_string();
+                    }
+                } else if !self.0.is_empty() {
+                    self.0.push_str(&format!(", {}={:?}", field.name(), value));
+                } else {
+                    self.0 = format!("{}={:?}", field.name(), value);
+                }
+            }
+        }
+        
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+        
+        let entry = LogEntry {
+            timestamp: chrono::Local::now(),
+            level: *metadata.level(),
+            target: metadata.target().to_string(),
+            message: visitor.0,
+        };
+        
+        self.buffer.push(entry);
+    }
+
+    fn on_new_span(&self, _attrs: &Attributes<'_>, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
+        // We don't need to track spans for the log display
+    }
+}

@@ -2,8 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 fn main() -> eframe::Result<()> {
-    let _trace_state = set_up_tracing();
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([320.0, 240.0])
@@ -18,7 +16,14 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "mubbles",
         native_options,
-        Box::new(|cc| Ok(Box::new(mubbles::MubblesApp::new(cc)))),
+        Box::new(|cc| {
+            let app = mubbles::MubblesApp::new(cc);
+            // Set up tracing with the app's log buffer
+            let _trace_state = set_up_tracing(app.get_log_buffer());
+            // Store the guard to keep tracing alive
+            std::mem::forget(_trace_state);
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -29,7 +34,7 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{prelude::*, EnvFilter};
 
-fn set_up_tracing() -> Box<dyn std::any::Any> {
+fn set_up_tracing(log_buffer: mubbles::log_capture::LogBuffer) -> Box<dyn std::any::Any> {
     // keep ten days of logs in daily files up to 1MB
     let file_appender = rolling_file::BasicRollingFileAppender::new(
         "./mubbles.log",
@@ -52,6 +57,9 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
         //.without_time()
         .with_filter(EnvFilter::from_default_env())
         ;
+    
+    // Add log capture layer for UI display
+    let capture_layer = mubbles::log_capture::LogCaptureLayer::new(log_buffer);
 
     // use RUST_LOG="warn,mubbles=trace" to see app tracing
     tracing::subscriber::set_global_default(
@@ -59,6 +67,7 @@ fn set_up_tracing() -> Box<dyn std::any::Any> {
             .with(SpanTimingLayer)
             .with(console_layer)
             .with(file_layer)
+            .with(capture_layer)
     )
     .expect("Couldn't set up tracing");
 

@@ -15,3 +15,4 @@ mod summary;
 mod audio;
 mod partial;
 mod file_transcription;
+pub mod log_capture;
