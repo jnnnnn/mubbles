@@ -16,8 +16,8 @@ all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
-egui = "0.32.3"
-eframe = { version = "0.32.3", default-features = false, features = [
+egui = "0.33.2"
+eframe = { version = "0.33.2", default-features = false, features = [
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
     "persistence",   # Enable restoring app state when restarting the app.
@@ -34,14 +34,14 @@ cpal = "0.16.0"
 rubato = "0.16.2"
 dirs = "6.0.0"
 winput = "0.2.5"
-wasapi = "0.19.0"
+wasapi = "0.21.0"
 rolling-file = "0.2.0"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 chrono = "0.4.42"
-egui_plot = "0.33.0"
+egui_plot = "0.34.0"
 open = "5.3.2"
-reqwest = { version = "0.12.23", features = ["json", "blocking"] }
+reqwest = { version = "0.12.24", features = ["json", "blocking"] }
 anyhow = "1.0.100"
 byteorder = "1.5.0"
 
@@ -60,7 +60,7 @@ rustfft = "6.4.1"
 ort = { version = "1.16.3", features = [] }
 hound = "3.5.1"
 bitcode = "0.6.7"
-rfd = "0.15"
+rfd = "0.15.4"
 
 [features]
 default = [
@@ -86,11 +86,12 @@ env_logger = "0.11.8"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4.54"
-web-sys = "0.3.81"              # to access the DOM (to hide the loading text)
+wasm-bindgen-futures = "0.4.55"
+web-sys = "0.3.82"              # to access the DOM (to hide the loading text)
 
 [profile.release]
 opt-level = 2 # fast and small wasm
+debug = false # faster, smaller builds
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
