@@ -33,8 +33,6 @@ serde_json = "1.0.145"
 cpal = "0.16.0"
 rubato = "0.16.2"
 dirs = "6.0.0"
-winput = "0.2.5"
-wasapi = "0.21.0"
 rolling-file = "0.2.0"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
@@ -57,32 +55,29 @@ rand = "0.9.2"
 tokenizers = "0.22.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "std"] }
 rustfft = "6.4.1"
-ort = { version = "1.16.3", features = [] }
+#ort = { version = "1.16.3", features = [] }
 hound = "3.5.1"
 bitcode = "0.6.7"
 rfd = "0.15.4"
 
 [features]
-default = [
-    "candle-core",
-    "candle-transformers",
-    "candle-nn",
-]
+default = ["candle-core", "candle-transformers", "candle-nn"]
 cuda = [
     "candle-core/cuda",
     "candle-transformers/cuda",
     "candle-nn/cuda",
-    "ort/cuda"
+    #    "ort/cuda"
 ]
-mkl = [
-    "candle-core/mkl",
-    "candle-transformers/mkl",
-    "candle-nn/mkl"
-]
+mkl = ["candle-core/mkl", "candle-transformers/mkl", "candle-nn/mkl"]
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
+
+# windows:
+[target.'cfg(windows)'.dependencies]
+winput = "0.2.5"
+wasapi = "0.19.0"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
