@@ -1410,3 +1410,4 @@ there's a bunch of PRs in cpal for this but it doesn't just work.
 
 try installing `pipewire-alsa`.
 
+give up. go straight for pipewire-rs when building for linux.

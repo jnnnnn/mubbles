@@ -1,23 +1,29 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use rubato::Resampler;
-use std::{
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
-};
+// Module declarations - Linux uses PipeWire directly
+#[cfg(target_os = "linux")]
+pub use crate::audio_pipewire::*;
 
-pub struct AudioChunk {
-    data: Vec<f32>,
-}
+#[cfg(not(target_os = "linux"))]
+mod audio_cpal {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use rubato::Resampler;
+    use std::{
+        sync::mpsc::{self, Receiver, Sender},
+        thread,
+    };
 
-use crate::app::WhisperUpdate;
-// whisper is trained on 16kHz audio
-pub(crate) const TARGET_SAMPLE_RATE: usize = crate::mel::SAMPLE_RATE;
-const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
+    pub struct AudioChunk {
+        data: Vec<f32>,
+    }
 
-pub(crate) fn convert_sample_rate(
-    audio: &[f32],
-    original_sample_rate: usize,
-) -> Result<Vec<f32>, &'static str> {
+    use crate::app::WhisperUpdate;
+    // whisper is trained on 16kHz audio
+    pub(crate) const TARGET_SAMPLE_RATE: usize = crate::mel::SAMPLE_RATE;
+    const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
+
+    pub(crate) fn convert_sample_rate(
+        audio: &[f32],
+        original_sample_rate: usize,
+    ) -> Result<Vec<f32>, &'static str> {
     let params = rubato::SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
@@ -34,12 +40,12 @@ pub(crate) fn convert_sample_rate(
     Ok(waves_out[0].to_vec())
 }
 
-// a thread that collects non-silent audio samples and sends them on
-fn filter_audio_loop(
-    app: Sender<WhisperUpdate>,
-    audio_rx: Receiver<PcmAudio>,
-    filtered_tx: Sender<PcmAudio>,
-) -> Result<(), anyhow::Error> {
+    // a thread that collects non-silent audio samples and sends them on
+    fn filter_audio_loop(
+        app: Sender<WhisperUpdate>,
+        audio_rx: Receiver<PcmAudio>,
+        filtered_tx: Sender<PcmAudio>,
+    ) -> Result<(), anyhow::Error> {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
     // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
@@ -124,7 +130,7 @@ fn filter_audio_loop(
     }
 }
 
-pub fn get_devices() -> Vec<AppDevice> {
+    pub fn get_devices() -> Vec<AppDevice> {
     let host = cpal::default_host();
     let mut all = Vec::new();
     let input_devices = match host.input_devices() {
@@ -175,26 +181,26 @@ pub fn get_devices() -> Vec<AppDevice> {
     all
 }
 
-pub struct StreamState {
-    // the app holds this handle to keep the stream open (and the thread alive)
-    #[allow(dead_code)]
-    pub stream: cpal::Stream,
-}
+    pub struct StreamState {
+        // the app holds this handle to keep the stream open (and the thread alive)
+        #[allow(dead_code)]
+        pub stream: cpal::Stream,
+    }
 
-pub struct AppDevice {
-    pub name: String,
-    pub device: cpal::Device,
-    pub config: cpal::SupportedStreamConfig,
-}
+    pub struct AppDevice {
+        pub name: String,
+        pub device: cpal::Device,
+        pub config: cpal::SupportedStreamConfig,
+    }
 
-pub struct PcmAudio {
-    pub data: Vec<f32>,
-    pub sample_rate: usize,
-}
+    pub struct PcmAudio {
+        pub data: Vec<f32>,
+        pub sample_rate: usize,
+    }
 
-// once the return value is dropped, listening stops
-// and the sender is closed
-pub fn start_audio_thread(
+    // once the return value is dropped, listening stops
+    // and the sender is closed
+    pub fn start_audio_thread(
     app: Sender<WhisperUpdate>,
     app_device: &AppDevice,
     filtered_tx: Sender<PcmAudio>,
@@ -250,4 +256,8 @@ pub fn start_audio_thread(
     );
 
     Ok(StreamState { stream })
+    }
 }
+
+#[cfg(not(target_os = "linux"))]
+pub use audio_cpal::*;
