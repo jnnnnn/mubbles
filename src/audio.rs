@@ -24,21 +24,21 @@ mod audio_cpal {
         audio: &[f32],
         original_sample_rate: usize,
     ) -> Result<Vec<f32>, &'static str> {
-    let params = rubato::SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: rubato::SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: rubato::WindowFunction::BlackmanHarris2,
-    };
-    let ratio = TARGET_SAMPLE_RATE as f64 / original_sample_rate as f64;
-    let mut resampler =
-        rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
+        let params = rubato::SincInterpolationParameters {
+            sinc_len: 256,
+            f_cutoff: 0.95,
+            interpolation: rubato::SincInterpolationType::Linear,
+            oversampling_factor: 256,
+            window: rubato::WindowFunction::BlackmanHarris2,
+        };
+        let ratio = TARGET_SAMPLE_RATE as f64 / original_sample_rate as f64;
+        let mut resampler =
+            rubato::SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1).unwrap();
 
-    let waves_in = vec![audio; 1];
-    let waves_out = resampler.process(&waves_in, None).unwrap();
-    Ok(waves_out[0].to_vec())
-}
+        let waves_in = vec![audio; 1];
+        let waves_out = resampler.process(&waves_in, None).unwrap();
+        Ok(waves_out[0].to_vec())
+    }
 
     // a thread that collects non-silent audio samples and sends them on
     fn filter_audio_loop(
@@ -46,140 +46,140 @@ mod audio_cpal {
         audio_rx: Receiver<PcmAudio>,
         filtered_tx: Sender<PcmAudio>,
     ) -> Result<(), anyhow::Error> {
-    // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
-    // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
-    // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
-    let mut under_threshold_count = 101;
-    let mut recording_buffer: Vec<f32> = Vec::new();
+        // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
+        // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
+        // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
+        let mut under_threshold_count = 101;
+        let mut recording_buffer: Vec<f32> = Vec::new();
 
-    // a dynamic threshold (or something like silero-vad) would be better
-    // something like, threshold = 2 * lowest-level-in-last-ten-seconds
-    let threshold = 0.05f32;
+        // a dynamic threshold (or something like silero-vad) would be better
+        // something like, threshold = 2 * lowest-level-in-last-ten-seconds
+        let threshold = 0.05f32;
 
-    // accumulate data until we've been under the threshold for 100 samples
-    loop {
-        let PcmAudio { data, sample_rate } = match audio_rx.recv() {
-            Ok(pcmaudio) => pcmaudio,
-            Err(_) => {
-                tracing::info!("Audio stream closed");
-                // end thread because there's no more work to do
-                app.send(WhisperUpdate::Recording(false))?;
-                return Ok(());
+        // accumulate data until we've been under the threshold for 100 samples
+        loop {
+            let PcmAudio { data, sample_rate } = match audio_rx.recv() {
+                Ok(pcmaudio) => pcmaudio,
+                Err(_) => {
+                    tracing::info!("Audio stream closed");
+                    // end thread because there's no more work to do
+                    app.send(WhisperUpdate::Recording(false))?;
+                    return Ok(());
+                }
+            };
+
+            let mut max = 0.0;
+            for sample in data.iter() {
+                if *sample > max {
+                    max = *sample;
+                }
             }
-        };
+            app.send(WhisperUpdate::Level(max))?;
 
-        let mut max = 0.0;
-        for sample in data.iter() {
-            if *sample > max {
-                max = *sample;
-            }
-        }
-        app.send(WhisperUpdate::Level(max))?;
-
-        if max > threshold {
-            if under_threshold_count > 100 {
-                // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
-                app.send(WhisperUpdate::Recording(true))?;
-            }
-            recording_buffer.extend_from_slice(&data);
-            under_threshold_count = 0;
-        } else if recording_buffer.len() > 0 {
-            // the incoming audio is back under the threshold. Check how long it's been silent for.
-            under_threshold_count += 1;
-            if under_threshold_count < 50
-                || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate
-            {
-                // not long enough, keep listening
+            if max > threshold {
+                if under_threshold_count > 100 {
+                    // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
+                    app.send(WhisperUpdate::Recording(true))?;
+                }
                 recording_buffer.extend_from_slice(&data);
-            } else {
-                app.send(WhisperUpdate::Recording(false))?;
-                let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                under_threshold_count = 0;
+            } else if recording_buffer.len() > 0 {
+                // the incoming audio is back under the threshold. Check how long it's been silent for.
+                under_threshold_count += 1;
+                if under_threshold_count < 50
+                    || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate
+                {
+                    // not long enough, keep listening
+                    recording_buffer.extend_from_slice(&data);
+                } else {
+                    app.send(WhisperUpdate::Recording(false))?;
+                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                    filtered_tx.send(PcmAudio {
+                        data: resampled,
+                        sample_rate: TARGET_SAMPLE_RATE,
+                    })?;
+                    recording_buffer.clear();
+                }
+            }
+
+            // if we've got more than 15 seconds of audio, find the lowest-energy point and send everything up to that point
+            let full_whisper_buffer = 15/*seconds*/ * sample_rate /*samples per second*/;
+            if recording_buffer.len() > full_whisper_buffer {
+                let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE; // 160 resamples per chunk (1 mel frame)
+
+                let energies = recording_buffer
+                    .chunks(chunk_size)
+                    .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
+                    .collect::<Vec<f32>>();
+                let low_energy_index = energies
+                    .iter()
+                    .enumerate()
+                    .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
+                    .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let start_index = low_energy_index * chunk_size;
+                let resampled =
+                    convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
                 filtered_tx.send(PcmAudio {
                     data: resampled,
                     sample_rate: TARGET_SAMPLE_RATE,
                 })?;
-                recording_buffer.clear();
+                recording_buffer = recording_buffer[start_index..].to_vec();
             }
         }
-
-        // if we've got more than 15 seconds of audio, find the lowest-energy point and send everything up to that point
-        let full_whisper_buffer = 15/*seconds*/ * sample_rate /*samples per second*/;
-        if recording_buffer.len() > full_whisper_buffer {
-            let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE; // 160 resamples per chunk (1 mel frame)
-
-            let energies = recording_buffer
-                .chunks(chunk_size)
-                .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
-                .collect::<Vec<f32>>();
-            let low_energy_index = energies
-                .iter()
-                .enumerate()
-                .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
-                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let start_index = low_energy_index * chunk_size;
-            let resampled =
-                convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
-            filtered_tx.send(PcmAudio {
-                data: resampled,
-                sample_rate: TARGET_SAMPLE_RATE,
-            })?;
-            recording_buffer = recording_buffer[start_index..].to_vec();
-        }
     }
-}
 
     pub fn get_devices() -> Vec<AppDevice> {
-    let host = cpal::default_host();
-    let mut all = Vec::new();
-    let input_devices = match host.input_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get input devices: {}", whatever);
-            Vec::new()
-        }
-    };
-    for device in input_devices {
-        let config = match device.default_input_config() {
-            Ok(config) => config,
+        let host = cpal::default_host();
+        let mut all = Vec::new();
+        let input_devices = match host.input_devices() {
+            Ok(devices) => devices.collect(),
             Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
+                tracing::warn!("Failed to get input devices: {}", whatever);
+                Vec::new()
             }
         };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
-    }
-    let output_devices = match host.output_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get output devices: {}", whatever);
-            Vec::new()
+        for device in input_devices {
+            let config = match device.default_input_config() {
+                Ok(config) => config,
+                Err(whatever) => {
+                    tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
+                    continue;
+                }
+            };
+            let name = device.name().unwrap_or("Unknown".to_string());
+            all.push(AppDevice {
+                name,
+                device,
+                config,
+            });
         }
-    };
-    for device in output_devices {
-        let config = match device.default_output_config() {
-            Ok(config) => config,
+        let output_devices = match host.output_devices() {
+            Ok(devices) => devices.collect(),
             Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
+                tracing::warn!("Failed to get output devices: {}", whatever);
+                Vec::new()
             }
         };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
-    }
+        for device in output_devices {
+            let config = match device.default_output_config() {
+                Ok(config) => config,
+                Err(whatever) => {
+                    tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
+                    continue;
+                }
+            };
+            let name = device.name().unwrap_or("Unknown".to_string());
+            all.push(AppDevice {
+                name,
+                device,
+                config,
+            });
+        }
 
-    all
-}
+        all
+    }
 
     pub struct StreamState {
         // the app holds this handle to keep the stream open (and the thread alive)
@@ -201,61 +201,61 @@ mod audio_cpal {
     // once the return value is dropped, listening stops
     // and the sender is closed
     pub fn start_audio_thread(
-    app: Sender<WhisperUpdate>,
-    app_device: &AppDevice,
-    filtered_tx: Sender<PcmAudio>,
-    partial_tx: Option<Sender<PcmAudio>>,
-) -> anyhow::Result<StreamState> {
-    tracing::info!("Listening on device: {}", app_device.device.name()?);
+        app: Sender<WhisperUpdate>,
+        app_device: &AppDevice,
+        filtered_tx: Sender<PcmAudio>,
+        partial_tx: Option<Sender<PcmAudio>>,
+    ) -> anyhow::Result<StreamState> {
+        tracing::info!("Listening on device: {}", app_device.device.name()?);
 
-    let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
+        let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
 
-    let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
+        let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
 
-    let audio_config = &app_device.config;
-    let channel_count = audio_config.channels() as usize;
-    let sample_rate = audio_config.sample_rate().0 as usize;
-    let data_callback = move |raw: &[f32], _: &_| {
-        let data = raw
-            .iter()
-            .step_by(channel_count)
-            .copied()
-            .collect::<Vec<f32>>();
-        audio_tx
-            .send(PcmAudio {
-                data: data.clone(),
-                sample_rate,
-            })
-            .unwrap_or_else(|_| {
-                // this is too noisy.
-                // tracing::debug!("Audio channel closed, can't send audio data");
-            });
-        if let Some(partial_tx) = &partial_tx {
-            partial_tx
-                .send(PcmAudio { data, sample_rate })
+        let audio_config = &app_device.config;
+        let channel_count = audio_config.channels() as usize;
+        let sample_rate = audio_config.sample_rate().0 as usize;
+        let data_callback = move |raw: &[f32], _: &_| {
+            let data = raw
+                .iter()
+                .step_by(channel_count)
+                .copied()
+                .collect::<Vec<f32>>();
+            audio_tx
+                .send(PcmAudio {
+                    data: data.clone(),
+                    sample_rate,
+                })
                 .unwrap_or_else(|_| {
                     // this is too noisy.
-                    // tracing::debug!("Partial channel closed, can't send partial audio data");
+                    // tracing::debug!("Audio channel closed, can't send audio data");
                 });
-        }
-    };
-    let config2 = app_device.config.clone();
-    let stream =
-        app_device
-            .device
-            .build_input_stream(&config2.into(), data_callback, err_fn, None)?;
+            if let Some(partial_tx) = &partial_tx {
+                partial_tx
+                    .send(PcmAudio { data, sample_rate })
+                    .unwrap_or_else(|_| {
+                        // this is too noisy.
+                        // tracing::debug!("Partial channel closed, can't send partial audio data");
+                    });
+            }
+        };
+        let config2 = app_device.config.clone();
+        let stream =
+            app_device
+                .device
+                .build_input_stream(&config2.into(), data_callback, err_fn, None)?;
 
-    stream.play()?;
+        stream.play()?;
 
-    let app2 = app.clone();
-    thread::spawn(
-        move || match filter_audio_loop(app2, audio_rx, filtered_tx) {
-            Ok(_) => tracing::info!("Audio filter thread finished successfully"),
-            Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
-        },
-    );
+        let app2 = app.clone();
+        thread::spawn(
+            move || match filter_audio_loop(app2, audio_rx, filtered_tx) {
+                Ok(_) => tracing::info!("Audio filter thread finished successfully"),
+                Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
+            },
+        );
 
-    Ok(StreamState { stream })
+        Ok(StreamState { stream })
     }
 }
 
