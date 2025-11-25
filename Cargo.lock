@@ -3053,7 +3053,6 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "bitcode",
- "bytemuck",
  "byteorder",
  "candle-core",
  "candle-nn",
@@ -3067,7 +3066,6 @@ dependencies = [
  "env_logger",
  "hf-hub",
  "hound",
- "libspa",
  "log",
  "open",
  "pipewire",
