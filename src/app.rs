@@ -649,9 +649,16 @@ impl MubblesApp {
                 ui.horizontal(|ui| {
                     ui.label("Log Level:");
                     let level_names = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+                    let old_level = self.log_level;
                     egui::ComboBox::from_id_salt("log_level")
                         .selected_text(level_names[self.log_level])
                         .show_index(ui, &mut self.log_level, 5, |i| level_names[i]);
+                    
+                    // Update the level control if the level changed
+                    if old_level != self.log_level {
+                        let tracing_level = crate::log_capture::index_to_tracing_level(self.log_level);
+                        self.log_buffer.level_control().set_level(tracing_level);
+                    }
 
                     if ui.button("Clear Logs").clicked() {
                         self.log_buffer.clear();
@@ -662,7 +669,6 @@ impl MubblesApp {
                 ui.separator();
                 ui.add_space(5.0);
 
-                // Display logs with monospace font
                 let logs = self.log_buffer.get_all();
                 let log_text = logs
                     .iter()

@@ -13,6 +13,18 @@ use tracing_subscriber::registry::LookupSpan;
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 1000;
 
+/// Convert log level index to tracing::Level
+pub fn index_to_tracing_level(index: usize) -> tracing::Level {
+    match index {
+        0 => tracing::Level::TRACE,
+        1 => tracing::Level::DEBUG,
+        2 => tracing::Level::INFO,
+        3 => tracing::Level::WARN,
+        4 => tracing::Level::ERROR,
+        _ => tracing::Level::INFO, // Default to INFO
+    }
+}
+
 /// A single log entry
 #[derive(Clone, Debug)]
 pub struct LogEntry {
@@ -35,10 +47,33 @@ impl LogEntry {
     }
 }
 
+/// Shared log level control
+#[derive(Clone)]
+pub struct LogLevelControl {
+    level: Arc<Mutex<tracing::Level>>,
+}
+
+impl LogLevelControl {
+    pub fn new(initial_level: tracing::Level) -> Self {
+        Self {
+            level: Arc::new(Mutex::new(initial_level)),
+        }
+    }
+
+    pub fn set_level(&self, level: tracing::Level) {
+        *self.level.lock().unwrap() = level;
+    }
+
+    pub fn get_level(&self) -> tracing::Level {
+        *self.level.lock().unwrap()
+    }
+}
+
 /// Thread-safe log buffer
 #[derive(Clone)]
 pub struct LogBuffer {
     entries: Arc<Mutex<VecDeque<LogEntry>>>,
+    level_control: LogLevelControl,
 }
 
 impl LogBuffer {
@@ -46,7 +81,13 @@ impl LogBuffer {
     pub fn new() -> Self {
         Self {
             entries: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_LOG_ENTRIES))),
+            level_control: LogLevelControl::new(tracing::Level::INFO),
         }
+    }
+
+    /// Get the level control for this buffer
+    pub fn level_control(&self) -> &LogLevelControl {
+        &self.level_control
     }
 
     /// Add a log entry to the buffer
@@ -58,14 +99,14 @@ impl LogBuffer {
         entries.push_back(entry);
     }
 
-    /// Get all log entries
+    /// Get all log entries (already filtered at capture time)
     pub fn get_all(&self) -> Vec<LogEntry> {
         self.entries.lock().unwrap().iter().cloned().collect()
     }
 
     /// Clear all log entries
     pub fn clear(&self) {
-        self.entries.lock().unwrap().clear();
+        self.entries.lock().unwrap().clear()
     }
 }
 
@@ -93,6 +134,12 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
+        
+        // Filter out messages below the minimum level
+        let min_level = self.buffer.level_control().get_level();
+        if *metadata.level() > min_level {
+            return;
+        }
         
         // Create a visitor to extract the message
         struct MessageVisitor(String);
