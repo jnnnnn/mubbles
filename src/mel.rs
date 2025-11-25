@@ -1,4 +1,4 @@
-use candle_core::{Tensor, IndexOp};
+use candle_core::{IndexOp, Tensor};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 pub const FFT_SIZE: usize = 400; // 200 real + 200 imaginary
@@ -21,6 +21,11 @@ fn log_mel_spectrogram_w(
     let n_samples = samples.len();
     let end = std::cmp::min(n_samples / FFT_STEP + 1, n_len);
 
+
+
+    let mut planner = FftPlanner::new();
+    let fftpln = planner.plan_fft_forward(FFT_SIZE);
+
     for frame_index in 0..end {
         let offset = frame_index * FFT_STEP;
 
@@ -32,7 +37,8 @@ fn log_mel_spectrogram_w(
             fft_in[n_samples - offset..].fill(zero);
         }
 
-        let mut fft_out: Vec<Complex<f32>> = fft(&fft_in);
+        let mut fft_out: Vec<Complex<f32>> = fft_in.iter().map(|&x| Complex::new(x, 0.0)).collect();
+        fftpln.process(&mut fft_out);
 
         // We only need the magnitude of the FFT output
         for j in 0..FFT_SIZE {
@@ -117,14 +123,6 @@ pub fn normalize(mel: &mut Vec<f32>) {
     }
 }
 
-fn fft(inp: &[f32]) -> Vec<Complex<f32>> {
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(inp.len());
-    let mut buffer: Vec<Complex<f32>> = inp.iter().map(|&x| Complex::new(x, 0.0)).collect();
-    fft.process(&mut buffer);
-    buffer
-}
-
 /// Converts PCM audio to a mel spectrogram using the provided mel filters.
 /// The mel filters are used to convert the FFT output to the mel scale.
 /// Each mel frame contains n_mel frequency bins (80 or 128), representing low to high frequencies.
@@ -171,18 +169,18 @@ pub(crate) fn pcm_to_mel_frame(
 }
 
 pub fn unpad_mel(mel: Tensor) -> Result<Tensor, candle_core::Error> {
-        // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
-        let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
-        let mut unpadded_mel_frames = 0;
-        let zero_amp = *amplitudes.last().unwrap_or(&0f32);
-        for (i, &amp) in amplitudes.iter().rev().enumerate() {
-            if amp != zero_amp {
-                unpadded_mel_frames = amplitudes.len() - i;
-                break;
-            }
+    // find where the padding starts so we don't try to align tokens across silence, they all end up at the end
+    let amplitudes = mel.i((0, .., ..))?.sum(0)?.to_vec1::<f32>()?;
+    let mut unpadded_mel_frames = 0;
+    let zero_amp = *amplitudes.last().unwrap_or(&0f32);
+    for (i, &amp) in amplitudes.iter().rev().enumerate() {
+        if amp != zero_amp {
+            unpadded_mel_frames = amplitudes.len() - i;
+            break;
         }
+    }
 
-        mel.i((.., .., 0..unpadded_mel_frames))
+    mel.i((.., .., 0..unpadded_mel_frames))
 }
 
 #[cfg(test)]

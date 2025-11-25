@@ -1398,3 +1398,15 @@ Looking again at ways of running models efficiently on non-Cuda platforms.
 CubeCL is a Burn framework project. I thought about using that a couple of years ago but it was too early. I wonder if Burn has a whisper model now. Google gives https://github.com/Gadersd/whisper-burn .
 
 
+## 2025-11-25
+
+trying to get this working on Ubuntu 25.10.. which uses "pipewire" instead of pulseaudio or whatever.
+
+crashes when trying to start a stream from some devices. also doesn't show some "monitor" devices.
+
+Need to get cpal to list devices the same way that `pw-cli ls` does.
+
+there's a bunch of PRs in cpal for this but it doesn't just work.
+
+try installing `pipewire-alsa`.
+
