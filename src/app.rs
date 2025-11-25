@@ -115,6 +115,7 @@ pub struct MubblesApp {
     devices: Vec<AppDevice>,
     #[serde(skip)]
     selected_device1: usize,
+    #[serde(skip)]
     selected_device2: usize,
 
     // Model configuration
