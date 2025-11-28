@@ -1410,3 +1410,13 @@ there's a bunch of PRs in cpal for this but it doesn't just work.
 
 try installing `pipewire-alsa`.
 
+## 2025-11-27
+
+I want to:
+
+- re-enable the realtime audio spectrogram, that's cool
+- set up to show the likelihood of each word (separate tab? -- egui can't render styled text in a textbox, so use a table or something? that would also let us update partials with a final transcript)
+- get loopback audio working in ubuntu 26.10 (pipewire)
+
+Loopback audio is the highest priority. Let's sort that out first.
+

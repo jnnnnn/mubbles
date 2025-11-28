@@ -36,4 +36,9 @@ Depending on the accelerator you have available, choose which feature -- `mkl` f
 
 ![mubbles screenshot.png](./doc/mubbles-screenshot.png) 
 
+## Build on ubuntu
+
+```sh
+apt install build-essential libssl-dev pkg-config libasound2-dev
+```
 
