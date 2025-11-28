@@ -1,19 +1,27 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+//! Audio capture module with platform-specific backends.
+//!
+//! On Linux, this uses PipeWire for better support of monitor sources (desktop audio capture).
+//! On other platforms, it uses cpal.
+
 use rubato::Resampler;
 use std::{
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
 
-pub struct AudioChunk {
-    data: Vec<f32>,
-}
-
 use crate::app::WhisperUpdate;
+
 // whisper is trained on 16kHz audio
 pub(crate) const TARGET_SAMPLE_RATE: usize = crate::mel::SAMPLE_RATE;
 const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
 
+/// Audio data with sample rate information
+pub struct PcmAudio {
+    pub data: Vec<f32>,
+    pub sample_rate: usize,
+}
+
+/// Convert audio sample rate to the target rate for Whisper
 pub(crate) fn convert_sample_rate(
     audio: &[f32],
     original_sample_rate: usize,
@@ -34,8 +42,9 @@ pub(crate) fn convert_sample_rate(
     Ok(waves_out[0].to_vec())
 }
 
-// a thread that collects non-silent audio samples and sends them on
-fn filter_audio_loop(
+/// Filter audio to detect speech and accumulate non-silent segments.
+/// This is shared across all platforms.
+pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
     filtered_tx: Sender<PcmAudio>,
@@ -77,7 +86,7 @@ fn filter_audio_loop(
             }
             recording_buffer.extend_from_slice(&data);
             under_threshold_count = 0;
-        } else if recording_buffer.len() > 0 {
+        } else if !recording_buffer.is_empty() {
             // the incoming audio is back under the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
             if under_threshold_count < 50
@@ -124,130 +133,218 @@ fn filter_audio_loop(
     }
 }
 
-pub fn get_devices() -> Vec<AppDevice> {
-    let host = cpal::default_host();
-    let mut all = Vec::new();
-    let input_devices = match host.input_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get input devices: {}", whatever);
-            Vec::new()
-        }
-    };
-    for device in input_devices {
-        let config = match device.default_input_config() {
-            Ok(config) => config,
-            Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
-            }
-        };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
-    }
-    let output_devices = match host.output_devices() {
-        Ok(devices) => devices.collect(),
-        Err(whatever) => {
-            tracing::warn!("Failed to get output devices: {}", whatever);
-            Vec::new()
-        }
-    };
-    for device in output_devices {
-        let config = match device.default_output_config() {
-            Ok(config) => config,
-            Err(whatever) => {
-                tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
-                continue;
-            }
-        };
-        let name = device.name().unwrap_or("Unknown".to_string());
-        all.push(AppDevice {
-            name,
-            device,
-            config,
-        });
+// ============================================================================
+// Platform-specific implementations
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::*;
+    use crate::audio_pipewire::{get_pipewire_devices, start_pipewire_stream, PwDevice, PwStreamState};
+
+    /// Unified audio device representation
+    pub struct AppDevice {
+        pub name: String,
+        pub(crate) inner: PwDevice,
     }
 
-    all
-}
+    impl AppDevice {
+        pub fn sample_rate(&self) -> usize {
+            self.inner.sample_rate as usize
+        }
+    }
 
-pub struct StreamState {
-    // the app holds this handle to keep the stream open (and the thread alive)
-    #[allow(dead_code)]
-    pub stream: cpal::Stream,
-}
+    /// Stream handle that keeps audio capture alive
+    pub struct StreamState {
+        #[allow(dead_code)]
+        pub(crate) inner: PwStreamState,
+    }
 
-pub struct AppDevice {
-    pub name: String,
-    pub device: cpal::Device,
-    pub config: cpal::SupportedStreamConfig,
-}
-
-pub struct PcmAudio {
-    pub data: Vec<f32>,
-    pub sample_rate: usize,
-}
-
-// once the return value is dropped, listening stops
-// and the sender is closed
-pub fn start_audio_thread(
-    app: Sender<WhisperUpdate>,
-    app_device: &AppDevice,
-    filtered_tx: Sender<PcmAudio>,
-    partial_tx: Option<Sender<PcmAudio>>,
-) -> anyhow::Result<StreamState> {
-    tracing::info!("Listening on device: {}", app_device.device.name()?);
-
-    let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
-
-    let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
-
-    let audio_config = &app_device.config;
-    let channel_count = audio_config.channels() as usize;
-    let sample_rate = audio_config.sample_rate().0 as usize;
-    let data_callback = move |raw: &[f32], _: &_| {
-        let data = raw
-            .iter()
-            .step_by(channel_count)
-            .copied()
-            .collect::<Vec<f32>>();
-        audio_tx
-            .send(PcmAudio {
-                data: data.clone(),
-                sample_rate,
+    /// Get available audio devices (microphones and monitor sources)
+    pub fn get_devices() -> Vec<AppDevice> {
+        get_pipewire_devices()
+            .into_iter()
+            .map(|pw| AppDevice {
+                name: pw.name.clone(),
+                inner: pw,
             })
-            .unwrap_or_else(|_| {
-                // this is too noisy.
-                // tracing::debug!("Audio channel closed, can't send audio data");
+            .collect()
+    }
+
+    /// Start capturing audio from a device
+    pub fn start_audio_thread(
+        app: Sender<WhisperUpdate>,
+        app_device: &AppDevice,
+        filtered_tx: Sender<PcmAudio>,
+        partial_tx: Option<Sender<PcmAudio>>,
+    ) -> anyhow::Result<StreamState> {
+        tracing::info!("Starting PipeWire audio capture on: {}", app_device.name);
+
+        let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
+
+        // Start the PipeWire stream
+        let pw_state = start_pipewire_stream(
+            app.clone(),
+            &app_device.inner,
+            audio_tx,
+            partial_tx.clone(),
+        )?;
+
+        // Start the filter thread
+        let app2 = app.clone();
+        thread::spawn(move || {
+            match filter_audio_loop(app2, audio_rx, filtered_tx) {
+                Ok(_) => tracing::info!("Audio filter thread finished successfully"),
+                Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
+            }
+        });
+
+        Ok(StreamState { inner: pw_state })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod platform {
+    use super::*;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    /// Unified audio device representation
+    pub struct AppDevice {
+        pub name: String,
+        pub(crate) device: cpal::Device,
+        pub(crate) config: cpal::SupportedStreamConfig,
+    }
+
+    impl AppDevice {
+        pub fn sample_rate(&self) -> usize {
+            self.config.sample_rate().0 as usize
+        }
+    }
+
+    /// Stream handle that keeps audio capture alive
+    pub struct StreamState {
+        #[allow(dead_code)]
+        pub(crate) stream: cpal::Stream,
+    }
+
+    /// Get available audio devices (input and output)
+    pub fn get_devices() -> Vec<AppDevice> {
+        let host = cpal::default_host();
+        let mut all = Vec::new();
+
+        // Get input devices (microphones)
+        let input_devices: Vec<_> = match host.input_devices() {
+            Ok(devices) => devices.collect(),
+            Err(whatever) => {
+                tracing::warn!("Failed to get input devices: {}", whatever);
+                Vec::new()
+            }
+        };
+        for device in input_devices {
+            let config = match device.default_input_config() {
+                Ok(config) => config,
+                Err(whatever) => {
+                    tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
+                    continue;
+                }
+            };
+            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            all.push(AppDevice {
+                name,
+                device,
+                config,
             });
-        if let Some(partial_tx) = &partial_tx {
-            partial_tx
-                .send(PcmAudio { data, sample_rate })
+        }
+
+        // Get output devices (for loopback/monitor on platforms that support it)
+        let output_devices: Vec<_> = match host.output_devices() {
+            Ok(devices) => devices.collect(),
+            Err(whatever) => {
+                tracing::warn!("Failed to get output devices: {}", whatever);
+                Vec::new()
+            }
+        };
+        for device in output_devices {
+            let config = match device.default_output_config() {
+                Ok(config) => config,
+                Err(whatever) => {
+                    tracing::info!("Failed to get config for {:?}: {}", device.name(), whatever);
+                    continue;
+                }
+            };
+            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            all.push(AppDevice {
+                name,
+                device,
+                config,
+            });
+        }
+
+        all
+    }
+
+    /// Start capturing audio from a device
+    pub fn start_audio_thread(
+        app: Sender<WhisperUpdate>,
+        app_device: &AppDevice,
+        filtered_tx: Sender<PcmAudio>,
+        partial_tx: Option<Sender<PcmAudio>>,
+    ) -> anyhow::Result<StreamState> {
+        tracing::info!(
+            "Listening on device: {}",
+            app_device.device.name().unwrap_or_else(|_| "Unknown".to_string())
+        );
+
+        let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
+
+        let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
+
+        let audio_config = &app_device.config;
+        let channel_count = audio_config.channels() as usize;
+        let sample_rate = audio_config.sample_rate().0 as usize;
+        let data_callback = move |raw: &[f32], _: &_| {
+            let data = raw
+                .iter()
+                .step_by(channel_count)
+                .copied()
+                .collect::<Vec<f32>>();
+            audio_tx
+                .send(PcmAudio {
+                    data: data.clone(),
+                    sample_rate,
+                })
                 .unwrap_or_else(|_| {
                     // this is too noisy.
-                    // tracing::debug!("Partial channel closed, can't send partial audio data");
+                    // tracing::debug!("Audio channel closed, can't send audio data");
                 });
-        }
-    };
-    let config2 = app_device.config.clone();
-    let stream =
-        app_device
-            .device
-            .build_input_stream(&config2.into(), data_callback, err_fn, None)?;
+            if let Some(partial_tx) = &partial_tx {
+                partial_tx
+                    .send(PcmAudio { data, sample_rate })
+                    .unwrap_or_else(|_| {
+                        // this is too noisy.
+                        // tracing::debug!("Partial channel closed, can't send partial audio data");
+                    });
+            }
+        };
+        let config2 = app_device.config.clone();
+        let stream =
+            app_device
+                .device
+                .build_input_stream(&config2.into(), data_callback, err_fn, None)?;
 
-    stream.play()?;
+        stream.play()?;
 
-    let app2 = app.clone();
-    thread::spawn(
-        move || match filter_audio_loop(app2, audio_rx, filtered_tx) {
-            Ok(_) => tracing::info!("Audio filter thread finished successfully"),
-            Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
-        },
-    );
+        let app2 = app.clone();
+        thread::spawn(move || {
+            match filter_audio_loop(app2, audio_rx, filtered_tx) {
+                Ok(_) => tracing::info!("Audio filter thread finished successfully"),
+                Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
+            }
+        });
 
-    Ok(StreamState { stream })
+        Ok(StreamState { stream })
+    }
 }
+
+// Re-export platform-specific types
+pub use platform::{get_devices, start_audio_thread, AppDevice, StreamState};

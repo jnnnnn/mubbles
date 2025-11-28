@@ -74,6 +74,11 @@ mkl = ["candle-core/mkl", "candle-transformers/mkl", "candle-nn/mkl"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
 
+# linux:
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.8", features = ["v0_3_44"] }
+libspa = "0.8"
+
 # windows:
 [target.'cfg(windows)'.dependencies]
 winput = "0.2.5"

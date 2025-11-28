@@ -6,7 +6,6 @@ use std::{
 };
 
 use candle_core::Tensor;
-use cpal::traits::{DeviceTrait, HostTrait};
 use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::{
@@ -227,18 +226,31 @@ impl Default for MubblesApp {
 }
 
 impl MubblesApp {
-    /// Find the default output device index in the device list
+    /// Find the default device index in the device list.
+    /// Returns the first device if no preferred default is found.
     fn find_default_device(devices: &[AppDevice]) -> usize {
-        let host = cpal::default_host();
-        let default_device_name = host
-            .default_output_device()
-            .and_then(|d| d.name().ok())
-            .unwrap_or_else(|| "Unknown".to_owned());
+        // On Linux with PipeWire, prefer monitor sources for desktop audio capture
+        // On other platforms, try to find the default output device
+        #[cfg(target_os = "linux")]
+        {
+            // Prefer first monitor source, or first device if none
+            devices.iter().position(|d| d.name.contains("Monitor")).unwrap_or(0)
+        }
+        
+        #[cfg(not(target_os = "linux"))]
+        {
+            use cpal::traits::{DeviceTrait, HostTrait};
+            let host = cpal::default_host();
+            let default_device_name = host
+                .default_output_device()
+                .and_then(|d| d.name().ok())
+                .unwrap_or_else(|| "Unknown".to_owned());
 
-        devices
-            .iter()
-            .position(|d| d.name == default_device_name)
-            .unwrap_or(0)
+            devices
+                .iter()
+                .position(|d| d.name == default_device_name)
+                .unwrap_or(0)
+        }
     }
 
     /// Create an empty mel spectrogram tensor
