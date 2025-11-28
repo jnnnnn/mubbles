@@ -1420,3 +1420,13 @@ I want to:
 
 Loopback audio is the highest priority. Let's sort that out first.
 
+https://github.com/huggingface/candle/issues/2793
+
+https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html?operatingsystem=linux&linux-install=apt
+
+error while loading shared libraries: libiomp5.so: cannot open shared object file: No such file or directory
+
+
+installed to 
+
+    /opt/intel/oneapi/compiler/2025.3/lib/libiomp5.so

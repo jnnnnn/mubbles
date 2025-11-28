@@ -42,3 +42,7 @@ Depending on the accelerator you have available, choose which feature -- `mkl` f
 apt install build-essential libssl-dev pkg-config libasound2-dev
 ```
 
+Also, if you don't have cuda but do have an intel cpu, use --features mkl. 
+
+https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html?operatingsystem=linux&linux-install=apt
+
