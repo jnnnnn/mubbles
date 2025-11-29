@@ -140,7 +140,10 @@ pub fn filter_audio_loop(
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
-    use crate::audio_pipewire::{get_pipewire_devices, start_pipewire_stream, PwDevice, PwStreamState};
+    use crate::audio_pipewire::{
+        get_default_devices, start_device_enumeration, start_pipewire_stream, DeviceReceiver,
+        PwDevice, PwStreamState,
+    };
 
     /// Unified audio device representation
     pub struct AppDevice {
@@ -160,15 +163,52 @@ mod platform {
         pub(crate) inner: PwStreamState,
     }
 
-    /// Get available audio devices (microphones and monitor sources)
-    pub fn get_devices() -> Vec<AppDevice> {
-        get_pipewire_devices()
+    /// Receiver for async device enumeration results
+    pub type DeviceEnumerationReceiver = Option<DeviceReceiver>;
+
+    /// Start async device enumeration and return initial placeholder devices.
+    /// Call `check_device_enumeration` periodically to get the full list when ready.
+    pub fn get_devices() -> (Vec<AppDevice>, DeviceEnumerationReceiver) {
+        // Start background enumeration
+        let rx = start_device_enumeration();
+
+        // Return placeholder devices immediately
+        let devices = get_default_devices()
             .into_iter()
             .map(|pw| AppDevice {
                 name: pw.name.clone(),
                 inner: pw,
             })
-            .collect()
+            .collect();
+
+        (devices, Some(rx))
+    }
+
+    /// Check if device enumeration has completed. Returns Some(devices) if ready.
+    pub fn check_device_enumeration(rx: &mut DeviceEnumerationReceiver) -> Option<Vec<AppDevice>> {
+        if let Some(receiver) = rx {
+            match receiver.try_recv() {
+                Ok(pw_devices) => {
+                    *rx = None; // Enumeration complete, clear receiver
+                    Some(
+                        pw_devices
+                            .into_iter()
+                            .map(|pw| AppDevice {
+                                name: pw.name.clone(),
+                                inner: pw,
+                            })
+                            .collect(),
+                    )
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None, // Still enumerating
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    *rx = None; // Thread finished unexpectedly
+                    None
+                }
+            }
+        } else {
+            None
+        }
     }
 
     /// Start capturing audio from a device
@@ -227,8 +267,11 @@ mod platform {
         pub(crate) stream: cpal::Stream,
     }
 
+    /// Receiver for async device enumeration results (not used on non-Linux)
+    pub type DeviceEnumerationReceiver = Option<()>;
+
     /// Get available audio devices (input and output)
-    pub fn get_devices() -> Vec<AppDevice> {
+    pub fn get_devices() -> (Vec<AppDevice>, DeviceEnumerationReceiver) {
         let host = cpal::default_host();
         let mut all = Vec::new();
 
@@ -280,7 +323,13 @@ mod platform {
             });
         }
 
-        all
+        // On non-Linux, device enumeration is synchronous, so no receiver needed
+        (all, None)
+    }
+
+    /// Check if device enumeration has completed (always returns None on non-Linux)
+    pub fn check_device_enumeration(_rx: &mut DeviceEnumerationReceiver) -> Option<Vec<AppDevice>> {
+        None
     }
 
     /// Start capturing audio from a device
@@ -347,4 +396,7 @@ mod platform {
 }
 
 // Re-export platform-specific types
-pub use platform::{get_devices, start_audio_thread, AppDevice, StreamState};
+pub use platform::{
+    check_device_enumeration, get_devices, start_audio_thread, AppDevice,
+    DeviceEnumerationReceiver, StreamState,
+};

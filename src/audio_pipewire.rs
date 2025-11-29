@@ -2,6 +2,8 @@
 //!
 //! This module provides audio capture using PipeWire, supporting both input devices
 //! (microphones) and monitor sources (desktop/application audio capture).
+//!
+//! Device enumeration runs on a background thread to avoid blocking the UI.
 
 use std::{
     convert::TryInto,
@@ -55,8 +57,42 @@ impl Drop for PwStreamState {
     }
 }
 
-/// Get available PipeWire audio devices (sources and monitors)
-pub fn get_pipewire_devices() -> Vec<PwDevice> {
+/// Channel receiver for device enumeration results
+pub type DeviceReceiver = Receiver<Vec<PwDevice>>;
+
+/// Start device enumeration on a background thread.
+/// Returns a receiver that will receive the device list when enumeration completes.
+pub fn start_device_enumeration() -> DeviceReceiver {
+    let (tx, rx) = mpsc::channel();
+    
+    thread::spawn(move || {
+        let devices = enumerate_devices_blocking();
+        let _ = tx.send(devices);
+    });
+    
+    rx
+}
+
+/// Get default placeholder devices while real enumeration happens in background
+pub fn get_default_devices() -> Vec<PwDevice> {
+    vec![
+        PwDevice {
+            name: "Default (Auto-connect)".to_string(),
+            node_id: None,
+            is_monitor: false,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+        },
+        PwDevice {
+            name: "Default Monitor (Desktop Audio)".to_string(),
+            node_id: None,
+            is_monitor: true,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+        },
+    ]
+}
+
+/// Internal: Enumerate devices synchronously (runs on background thread)
+fn enumerate_devices_blocking() -> Vec<PwDevice> {
     let mut devices = Vec::new();
 
     // Initialize PipeWire
@@ -165,30 +201,8 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
         devices.push(device);
     }
 
-    // Add a "default" device that auto-connects
-    devices.insert(
-        0,
-        PwDevice {
-            name: "Default (Auto-connect)".to_string(),
-            node_id: None,
-            is_monitor: false,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        },
-    );
-
-    // Add a monitor capture option that captures from default sink
-    devices.insert(
-        1,
-        PwDevice {
-            name: "Default Monitor (Desktop Audio)".to_string(),
-            node_id: None,
-            is_monitor: true,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        },
-    );
-
-    // Sort: default first, then monitors, then by name
-    devices[2..].sort_by(|a, b| {
+    // Sort: monitors first, then by name
+    devices.sort_by(|a, b| {
         if a.is_monitor != b.is_monitor {
             b.is_monitor.cmp(&a.is_monitor) // monitors first
         } else {
@@ -196,12 +210,16 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
         }
     });
 
-    tracing::info!("Found {} PipeWire audio devices", devices.len());
-    for device in &devices {
+    // Prepend default devices
+    let mut result = get_default_devices();
+    result.extend(devices);
+
+    tracing::info!("Found {} PipeWire audio devices", result.len());
+    for device in &result {
         tracing::debug!("  {:?}", device);
     }
 
-    devices
+    result
 }
 
 /// User data passed to stream callbacks
@@ -473,7 +491,17 @@ mod tests {
     #[test]
     fn test_device_enumeration() {
         // This test requires PipeWire to be running
-        let devices = get_pipewire_devices();
+        let devices = enumerate_devices_blocking();
+        println!("Found {} devices:", devices.len());
+        for d in &devices {
+            println!("  {:?}", d);
+        }
+    }
+
+    #[test]
+    fn test_async_device_enumeration() {
+        let rx = start_device_enumeration();
+        let devices = rx.recv().expect("Should receive devices");
         println!("Found {} devices:", devices.len());
         for d in &devices {
             println!("  {:?}", d);

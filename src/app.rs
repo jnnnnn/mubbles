@@ -9,7 +9,7 @@ use candle_core::Tensor;
 use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::{
-    audio::{get_devices, AppDevice, StreamState},
+    audio::{check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState},
     file_transcription::transcribe_file,
     partial::PARTIAL_MEL_BINS,
     summary,
@@ -113,6 +113,8 @@ pub struct MubblesApp {
     #[serde(skip)]
     devices: Vec<AppDevice>,
     #[serde(skip)]
+    device_enumeration_rx: DeviceEnumerationReceiver,
+    #[serde(skip)]
     selected_device1: usize,
     #[serde(skip)]
     selected_device2: usize,
@@ -168,7 +170,7 @@ pub struct MubblesApp {
 impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        let devices = get_devices();
+        let (devices, device_enumeration_rx) = get_devices();
 
         let selected_device = Self::find_default_device(&devices);
 
@@ -184,6 +186,7 @@ impl Default for MubblesApp {
 
             // Audio devices
             devices,
+            device_enumeration_rx,
             selected_device1: selected_device,
             selected_device2: selected_device,
 
@@ -323,6 +326,30 @@ impl MubblesApp {
                     self.status = "File transcription complete".to_string();
                 }
             }
+        }
+    }
+
+    /// Check if async device enumeration has completed and update device list
+    fn check_device_enumeration(&mut self) {
+        if let Some(new_devices) = check_device_enumeration(&mut self.device_enumeration_rx) {
+            tracing::info!("Device enumeration complete, found {} devices", new_devices.len());
+            
+            // Preserve selection if possible, otherwise find default
+            let old_device1_name = self.devices.get(self.selected_device1).map(|d| d.name.clone());
+            let old_device2_name = self.devices.get(self.selected_device2).map(|d| d.name.clone());
+            
+            self.devices = new_devices;
+            
+            // Try to restore previous selection by name
+            self.selected_device1 = old_device1_name
+                .and_then(|name| self.devices.iter().position(|d| d.name == name))
+                .unwrap_or_else(|| Self::find_default_device(&self.devices));
+            
+            self.selected_device2 = old_device2_name
+                .and_then(|name| self.devices.iter().position(|d| d.name == name))
+                .unwrap_or_else(|| Self::find_default_device(&self.devices));
+            
+            self.status = format!("Found {} audio devices", self.devices.len());
         }
     }
 
@@ -729,6 +756,9 @@ impl eframe::App for MubblesApp {
             check_thread_error(&mut worker.whisper_thread);
         }
         check_thread_error(&mut self.file_transcription_thread);
+
+        // Check if device enumeration completed
+        self.check_device_enumeration();
 
         // Process updates from Whisper thread
         self.process_whisper_updates();
