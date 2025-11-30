@@ -64,12 +64,12 @@ pub type DeviceReceiver = Receiver<Vec<PwDevice>>;
 /// Returns a receiver that will receive the device list when enumeration completes.
 pub fn start_device_enumeration() -> DeviceReceiver {
     let (tx, rx) = mpsc::channel();
-    
+
     thread::spawn(move || {
         let devices = enumerate_devices_blocking();
         let _ = tx.send(devices);
     });
-    
+
     rx
 }
 
@@ -173,6 +173,7 @@ fn enumerate_devices_blocking() -> Vec<PwDevice> {
                     sample_rate: DEFAULT_SAMPLE_RATE,
                 };
 
+                tracing::info!("Found device: {:?}", device);
                 let _ = device_tx.send(device);
             }
         })
@@ -183,17 +184,23 @@ fn enumerate_devices_blocking() -> Vec<PwDevice> {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done_clone = done.clone();
 
-    let _core_listener = core.add_listener_local().done(move |_, _| {
-        done_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+    let _core_listener = core
+        .add_listener_local()
+        .done(move |_, _| {
+            done_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .register();
 
     // Trigger a sync - the done callback will fire when complete
     core.sync(0).expect("Failed to sync with PipeWire core");
 
     // Process events until sync is complete
     let loop_ = mainloop.loop_();
+    let mut count = 0;
     while !done.load(std::sync::atomic::Ordering::SeqCst) {
-        loop_.iterate(std::time::Duration::from_millis(10));
+        tracing::debug!("Iteration {:?}", count);
+        count += 1;
+        loop_.iterate(std::time::Duration::from_millis(100));
     }
 
     // Collect all devices from the channel
@@ -351,7 +358,7 @@ fn run_pipewire_stream(
     // Build audio format parameters - request F32LE mono or stereo at native rate
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-    
+
     let obj = pw::spa::pod::Object {
         type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
         id: pw::spa::param::ParamType::EnumFormat.as_raw(),
@@ -372,24 +379,21 @@ fn run_pipewire_stream(
         | pw::stream::StreamFlags::MAP_BUFFERS
         | pw::stream::StreamFlags::RT_PROCESS;
 
-    stream.connect(
-        spa::utils::Direction::Input,
-        node_id,
-        flags,
-        &mut params,
-    )?;
+    stream.connect(spa::utils::Direction::Input, node_id, flags, &mut params)?;
 
     // Notify that we've started
-    let _ = app.send(WhisperUpdate::Status("PipeWire stream connected".to_string()));
+    let _ = app.send(WhisperUpdate::Status(
+        "PipeWire stream connected".to_string(),
+    ));
 
     // Run the main loop, checking for stop signal
     let loop_ = mainloop.loop_();
-    
+
     // Add a timer to periodically check for stop signal
     let stop_rx_arc = std::sync::Arc::new(std::sync::Mutex::new(stop_rx));
     let stop_rx_clone = stop_rx_arc.clone();
     let mainloop_weak = mainloop.downgrade();
-    
+
     let _timer = loop_.add_timer(move |_| {
         if let Ok(rx) = stop_rx_clone.lock() {
             if rx.try_recv().is_ok() {
