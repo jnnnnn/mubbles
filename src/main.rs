@@ -1,6 +1,10 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+/// Guard that must be kept alive to ensure logs are flushed on shutdown
+static TRACING_GUARD: std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>> =
+    std::sync::OnceLock::new();
+
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -19,9 +23,9 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             let app = mubbles::MubblesApp::new(cc);
             // Set up tracing with the app's log buffer
-            let _trace_state = set_up_tracing(app.get_log_buffer());
-            // Store the guard to keep tracing alive
-            std::mem::forget(_trace_state);
+            let guard = set_up_tracing(app.get_log_buffer());
+            // Store the guard in a static to ensure proper cleanup on shutdown
+            let _ = TRACING_GUARD.set(guard);
             Ok(Box::new(app))
         }),
     )
@@ -30,11 +34,14 @@ fn main() -> eframe::Result<()> {
 use std::time::Instant;
 use tracing::span::{Attributes, Id};
 use tracing::Subscriber;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{prelude::*, EnvFilter};
 
-fn set_up_tracing(log_buffer: mubbles::log_capture::LogBuffer) -> Box<dyn std::any::Any> {
+fn set_up_tracing(
+    log_buffer: mubbles::log_capture::LogBuffer,
+) -> Box<dyn std::any::Any + Send + Sync> {
     // keep ten days of logs in daily files up to 1MB
     let file_appender = rolling_file::BasicRollingFileAppender::new(
         "./mubbles.log",
@@ -44,20 +51,25 @@ fn set_up_tracing(log_buffer: mubbles::log_capture::LogBuffer) -> Box<dyn std::a
         3,
     )
     .expect("Couldn't open log file");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    // Default filter: warn level for all crates, info for mubbles
+    let default_filter = "warn,mubbles=info";
+    let console_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let file_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     let console_layer = tracing_subscriber::fmt::Layer::new()
         .pretty()
         .with_writer(std::io::stdout.with_max_level(tracing::Level::WARN))
-        .with_filter(EnvFilter::from_default_env());
+        .with_filter(console_filter);
     let file_layer = tracing_subscriber::fmt::Layer::new()
         .with_writer(non_blocking)
         .with_ansi(false)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        //.without_time()
-        .with_filter(EnvFilter::from_default_env())
-        ;
-    
+        .with_filter(file_filter);
+
     // Add log capture layer for UI display
     let capture_layer = mubbles::log_capture::LogCaptureLayer::new(log_buffer);
 
@@ -67,11 +79,11 @@ fn set_up_tracing(log_buffer: mubbles::log_capture::LogBuffer) -> Box<dyn std::a
             .with(SpanTimingLayer)
             .with(console_layer)
             .with(file_layer)
-            .with(capture_layer)
+            .with(capture_layer),
     )
     .expect("Couldn't set up tracing");
 
-    Box::new(_guard)
+    Box::new(guard)
 }
 
 

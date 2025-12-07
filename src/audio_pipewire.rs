@@ -2,6 +2,8 @@
 //!
 //! This module provides audio capture using PipeWire, supporting both input devices
 //! (microphones) and monitor sources (desktop/application audio capture).
+//!
+//! Device enumeration runs on a background thread to avoid blocking the UI.
 
 use std::{
     convert::TryInto,
@@ -55,8 +57,42 @@ impl Drop for PwStreamState {
     }
 }
 
-/// Get available PipeWire audio devices (sources and monitors)
-pub fn get_pipewire_devices() -> Vec<PwDevice> {
+/// Channel receiver for device enumeration results
+pub type DeviceReceiver = Receiver<Vec<PwDevice>>;
+
+/// Start device enumeration on a background thread.
+/// Returns a receiver that will receive the device list when enumeration completes.
+pub fn start_device_enumeration() -> DeviceReceiver {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let devices = enumerate_devices_blocking();
+        let _ = tx.send(devices);
+    });
+
+    rx
+}
+
+/// Get default placeholder devices while real enumeration happens in background
+pub fn get_default_devices() -> Vec<PwDevice> {
+    vec![
+        PwDevice {
+            name: "Default (Auto-connect)".to_string(),
+            node_id: None,
+            is_monitor: false,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+        },
+        PwDevice {
+            name: "Default Monitor (Desktop Audio)".to_string(),
+            node_id: None,
+            is_monitor: true,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+        },
+    ]
+}
+
+/// Internal: Enumerate devices synchronously (runs on background thread)
+fn enumerate_devices_blocking() -> Vec<PwDevice> {
     let mut devices = Vec::new();
 
     // Initialize PipeWire
@@ -137,6 +173,7 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
                     sample_rate: DEFAULT_SAMPLE_RATE,
                 };
 
+                tracing::info!("Found device: {:?}", device);
                 let _ = device_tx.send(device);
             }
         })
@@ -147,17 +184,23 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done_clone = done.clone();
 
-    let _core_listener = core.add_listener_local().done(move |_, _| {
-        done_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+    let _core_listener = core
+        .add_listener_local()
+        .done(move |_, _| {
+            done_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .register();
 
     // Trigger a sync - the done callback will fire when complete
     core.sync(0).expect("Failed to sync with PipeWire core");
 
     // Process events until sync is complete
     let loop_ = mainloop.loop_();
+    let mut count = 0;
     while !done.load(std::sync::atomic::Ordering::SeqCst) {
-        loop_.iterate(std::time::Duration::from_millis(10));
+        tracing::debug!("Iteration {:?}", count);
+        count += 1;
+        loop_.iterate(std::time::Duration::from_millis(100));
     }
 
     // Collect all devices from the channel
@@ -165,30 +208,8 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
         devices.push(device);
     }
 
-    // Add a "default" device that auto-connects
-    devices.insert(
-        0,
-        PwDevice {
-            name: "Default (Auto-connect)".to_string(),
-            node_id: None,
-            is_monitor: false,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        },
-    );
-
-    // Add a monitor capture option that captures from default sink
-    devices.insert(
-        1,
-        PwDevice {
-            name: "Default Monitor (Desktop Audio)".to_string(),
-            node_id: None,
-            is_monitor: true,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        },
-    );
-
-    // Sort: default first, then monitors, then by name
-    devices[2..].sort_by(|a, b| {
+    // Sort: monitors first, then by name
+    devices.sort_by(|a, b| {
         if a.is_monitor != b.is_monitor {
             b.is_monitor.cmp(&a.is_monitor) // monitors first
         } else {
@@ -196,12 +217,16 @@ pub fn get_pipewire_devices() -> Vec<PwDevice> {
         }
     });
 
-    tracing::info!("Found {} PipeWire audio devices", devices.len());
-    for device in &devices {
+    // Prepend default devices
+    let mut result = get_default_devices();
+    result.extend(devices);
+
+    tracing::info!("Found {} PipeWire audio devices", result.len());
+    for device in &result {
         tracing::debug!("  {:?}", device);
     }
 
-    devices
+    result
 }
 
 /// User data passed to stream callbacks
@@ -333,7 +358,7 @@ fn run_pipewire_stream(
     // Build audio format parameters - request F32LE mono or stereo at native rate
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-    
+
     let obj = pw::spa::pod::Object {
         type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
         id: pw::spa::param::ParamType::EnumFormat.as_raw(),
@@ -354,24 +379,21 @@ fn run_pipewire_stream(
         | pw::stream::StreamFlags::MAP_BUFFERS
         | pw::stream::StreamFlags::RT_PROCESS;
 
-    stream.connect(
-        spa::utils::Direction::Input,
-        node_id,
-        flags,
-        &mut params,
-    )?;
+    stream.connect(spa::utils::Direction::Input, node_id, flags, &mut params)?;
 
     // Notify that we've started
-    let _ = app.send(WhisperUpdate::Status("PipeWire stream connected".to_string()));
+    let _ = app.send(WhisperUpdate::Status(
+        "PipeWire stream connected".to_string(),
+    ));
 
     // Run the main loop, checking for stop signal
     let loop_ = mainloop.loop_();
-    
+
     // Add a timer to periodically check for stop signal
     let stop_rx_arc = std::sync::Arc::new(std::sync::Mutex::new(stop_rx));
     let stop_rx_clone = stop_rx_arc.clone();
     let mainloop_weak = mainloop.downgrade();
-    
+
     let _timer = loop_.add_timer(move |_| {
         if let Ok(rx) = stop_rx_clone.lock() {
             if rx.try_recv().is_ok() {
@@ -473,7 +495,17 @@ mod tests {
     #[test]
     fn test_device_enumeration() {
         // This test requires PipeWire to be running
-        let devices = get_pipewire_devices();
+        let devices = enumerate_devices_blocking();
+        println!("Found {} devices:", devices.len());
+        for d in &devices {
+            println!("  {:?}", d);
+        }
+    }
+
+    #[test]
+    fn test_async_device_enumeration() {
+        let rx = start_device_enumeration();
+        let devices = rx.recv().expect("Should receive devices");
         println!("Found {} devices:", devices.len());
         for d in &devices {
             println!("  {:?}", d);
