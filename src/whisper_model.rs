@@ -341,7 +341,7 @@ impl Decoder {
 
         tracing::debug!("decoded audio to text tokens: {:?}", tokens);
 
-        let align_enabled = false;
+        let align_enabled = true;
         let alignment = if align_enabled {
             self.perform_alignment(mel, &audio_features, &tokens, &probs, prefix_len).unwrap_or(vec![])
         } else {

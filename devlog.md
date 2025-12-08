@@ -1430,3 +1430,12 @@ error while loading shared libraries: libiomp5.so: cannot open shared object fil
 installed to 
 
     /opt/intel/oneapi/compiler/2025.3/lib/libiomp5.so
+
+## 2025-12-08
+
+alter this project to have another tab. this tab should display each final transcription in a egui table, including a timestamp and the text of the transcription rendered using egui's normal text rendering (not a textbox). Each word of the text should be color-coded by likelihoood of transcription accuracy, so that 50% (or less) is red and 100% confidence is white. 
+
+use https://docs.rs/egui_extras/latest/egui_extras/struct.TableBuilder.html for the table. store each "AlignedWord" struct as the rows and efficiently only render the relevant (visible) rows.
+
+no, wrong. each AlignedWord transcription result should be a row in the table. Add the timestamp to the AlignedWord struct.
+

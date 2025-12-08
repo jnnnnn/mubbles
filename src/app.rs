@@ -7,6 +7,7 @@ use std::{
 
 use candle_core::Tensor;
 use egui_plot::{Line, Plot, PlotPoints};
+use egui_extras::{Column, TableBuilder};
 
 use crate::{
     audio::{check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState},
@@ -32,6 +33,7 @@ const WORD_CHAR_WIDTH: f32 = 7.0;
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 enum AppTab {
     Transcript,
+    TranscriptionHistory,
     StatisticalSummary,
     AISummary,
     Settings,
@@ -100,6 +102,8 @@ pub struct MubblesApp {
     text: String,
     #[serde(skip)]
     aligned_words: Vec<AlignedWord>,
+    #[serde(skip)]
+    word_history: Vec<Vec<AlignedWord>>,
 
     // Recording state
     #[serde(skip)]
@@ -176,6 +180,7 @@ impl Default for MubblesApp {
             // Transcript state
             text: String::new(),
             aligned_words: vec![],
+            word_history: Vec::new(),
 
             // Recording state
             recording: false,
@@ -291,7 +296,8 @@ impl MubblesApp {
 
             match update {
                 WhisperUpdate::Transcription(t) => {
-                    self.text.push_str(t.trim());
+                    let trimmed = t.trim().to_string();
+                    self.text.push_str(&trimmed);
                     self.text.push('\n');
                     self.changed = true;
                 }
@@ -304,6 +310,7 @@ impl MubblesApp {
                     self.level.push_back(l);
                 }
                 WhisperUpdate::Alignment(a) => {
+                    self.word_history.push(a.clone());
                     self.aligned_words = a;
                 }
                 WhisperUpdate::MelFrame(_frame) => {
@@ -579,6 +586,7 @@ impl MubblesApp {
     fn render_tabs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.tab, AppTab::Transcript, "Transcript");
+            ui.selectable_value(&mut self.tab, AppTab::TranscriptionHistory, "History");
             ui.selectable_value(
                 &mut self.tab,
                 AppTab::StatisticalSummary,
@@ -618,6 +626,9 @@ impl MubblesApp {
                     ui.available_size(),
                     egui::TextEdit::multiline(&mut self.text),
                 );
+            }
+            AppTab::TranscriptionHistory => {
+                self.render_transcription_history(ui);
             }
             AppTab::StatisticalSummary => {
                 ui.add_sized(
@@ -723,6 +734,61 @@ impl MubblesApp {
             }
         });
     }
+
+    /// Render the transcription history tab with a virtualized table of words
+    fn render_transcription_history(&self, ui: &mut egui::Ui) {
+        if self.word_history.is_empty() {
+            ui.label("No transcriptions yet. Start recording to see transcriptions here.");
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(format!("{} rows", self.word_history.len()));
+        });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(5.0);
+
+        let row_height = 18.0;
+        let num_rows = self.word_history.len();
+
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .column(Column::auto().at_least(70.0)) // Timestamp
+            .column(Column::auto().at_least(50.0)) // Probability
+            .column(Column::remainder().at_least(100.0)) // Word
+            .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
+            .header(20.0, |mut header| {
+                header.col(|ui| { ui.strong("Time"); });
+                header.col(|ui| { ui.strong("Words"); });
+            })
+            .body(|body| {
+                body.rows(row_height, num_rows, |mut row| {
+                    let idx = row.index();
+                    let words = &self.word_history[idx];
+                    
+                    row.col(|ui| {
+                        ui.label("00:00");
+                    });
+                    row.col(|ui| {
+                        for word in words {
+                            let color = probability_to_color(word.probability);
+                            ui.label(egui::RichText::new(&word.word).color(color));
+                        }
+                    });
+                });
+            });
+    }
+}
+
+/// we want low-confidence words to be red
+fn probability_to_color(probability: f32) -> egui::Color32 {
+    let t = ((probability - 0.5) * 2.0).clamp(0.0, 1.0);
+    let green = (t * 255.0) as u8;
+    let blue = (t * 255.0) as u8;
+    egui::Color32::from_rgb(255, green, blue)
 }
 
 /// Updates from the Whisper processing thread

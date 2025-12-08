@@ -114,12 +114,19 @@ pub(crate) fn dtw_path_from_matrix(x_tensor: &Tensor) -> Result<Vec<(usize, usiz
     Ok(path)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct AlignedWord {
     pub word: String,
     pub start: f64,
     pub end: f64,
     pub probability: f32,
+    /// When this word was transcribed (wall-clock time)
+    #[serde(default = "default_timestamp")]
+    pub timestamp: chrono::DateTime<chrono::Local>,
+}
+
+fn default_timestamp() -> chrono::DateTime<chrono::Local> {
+    chrono::Local::now()
 }
 
 struct Word {
@@ -158,6 +165,7 @@ pub fn align(
     let word_token_groups = decode_to_unicode(text_tokens, tokenizer)?;
 
     let mut aligned_words = Vec::new();
+    let now = chrono::Local::now();
     for (text_idx, audio_idx) in text_token_audio_frames.iter().enumerate() {
         if text_idx < prefix_len || text_idx >= text_tokens.len() {
             continue; // Skip prefix tokens or out-of-bounds indices
@@ -173,6 +181,7 @@ pub fn align(
             start: start_time,
             end: 0.0, // will be set later
             probability,
+            timestamp: now,
         });
     }
     // end time is the start time of the next word, so we need to adjust it
