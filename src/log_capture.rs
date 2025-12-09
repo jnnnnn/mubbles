@@ -177,3 +177,79 @@ where
         // We don't need to track spans for the log display
     }
 }
+
+/// Logger for appending transcriptions to monthly files
+#[derive(Clone)]
+pub struct TranscriptionLogger {
+    last_written_minute: Arc<Mutex<Option<chrono::DateTime<chrono::Local>>>>,
+}
+
+impl TranscriptionLogger {
+    pub fn new() -> Self {
+        Self {
+            last_written_minute: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Append transcription text to the monthly file in the given folder.
+    /// If the minute has changed since the last write, prepends an ISO timestamp.
+    pub fn append(&self, folder: &str, text: &str) {
+        if folder.is_empty() {
+            return;
+        }
+
+        let folder = shellexpand::tilde(folder);
+        let folder_path = std::path::Path::new(folder.as_ref());
+
+        // Create folder if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(folder_path) {
+            tracing::error!("Failed to create transcription folder: {}", e);
+            return;
+        }
+
+        let now = chrono::Local::now();
+        let filename = format!("{}.txt", now.format("%Y-%m"));
+        let file_path = folder_path.join(&filename);
+
+        // Check if we need to write a timestamp (minute changed)
+        let mut last_minute = self.last_written_minute.lock().unwrap();
+        let need_timestamp = match *last_minute {
+            Some(last) => now.format("%Y-%m-%d %H:%M").to_string() 
+                != last.format("%Y-%m-%d %H:%M").to_string(),
+            None => true,
+        };
+
+        let mut content = String::new();
+        if need_timestamp {
+            content.push_str(&format!("\n[{}]\n", now.format("%Y-%m-%dT%H:%M:%S%:z")));
+        }
+        content.push_str(text);
+        content.push('\n');
+
+        // Append to file
+        use std::io::Write;
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    tracing::error!("Failed to write to transcription file: {}", e);
+                } else {
+                    *last_minute = Some(now);
+                    tracing::debug!("Appended transcription to {}", file_path.display());
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to open transcription file {}: {}", file_path.display(), e);
+            }
+        }
+    }
+}
+
+impl Default for TranscriptionLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -167,6 +167,10 @@ pub struct MubblesApp {
     #[serde(skip)]
     log_buffer: crate::log_capture::LogBuffer,
     log_level: usize, // 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR
+
+    transcription_folder: String,
+    #[serde(skip)]
+    transcription_logger: crate::log_capture::TranscriptionLogger,
 }
 
 impl Default for MubblesApp {
@@ -227,6 +231,10 @@ impl Default for MubblesApp {
             // Logging state
             log_buffer: crate::log_capture::LogBuffer::new(),
             log_level: 2, // Default to INFO
+
+            // Monthly transcription file settings
+            transcription_folder: String::new(),
+            transcription_logger: crate::log_capture::TranscriptionLogger::new(),
         }
     }
 }
@@ -300,6 +308,7 @@ impl MubblesApp {
                     self.text.push_str(&trimmed);
                     self.text.push('\n');
                     self.changed = true;
+                    self.transcription_logger.append(&self.transcription_folder, &trimmed);
                 }
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
@@ -690,6 +699,34 @@ impl MubblesApp {
                 });
 
                 ui.label("Select a WAV audio file to transcribe using the current model settings.");
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("Monthly Transcription Log");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Folder:");
+                    ui.add_sized(
+                        egui::vec2(ui.available_width() - 80.0, 20.0),
+                        egui::TextEdit::singleline(&mut self.transcription_folder)
+                            .hint_text("e.g., ~/transcriptions"),
+                    );
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.transcription_folder = path.display().to_string();
+                        }
+                    }
+                });
+
+                ui.label("Transcriptions will be appended to monthly files (e.g., 2025-12.txt) in this folder.");
+                if !self.transcription_folder.is_empty() {
+                    let now = chrono::Local::now();
+                    let filename = format!("{}.txt", now.format("%Y-%m"));
+                    ui.label(format!("Current file: {}/{}", self.transcription_folder, filename));
+                }
             }
             AppTab::Log => {
                 ui.heading("Application Logs");
@@ -774,6 +811,10 @@ impl MubblesApp {
                     });
                     row.col(|ui| {
                         for word in words {
+                            // Skip special tokens like <|startoftranscript|>, <|en|>, etc.
+                            if word.word.starts_with("<|") && word.word.ends_with("|>") {
+                                continue;
+                            }
                             let color = probability_to_color(word.probability);
                             ui.label(egui::RichText::new(&word.word).color(color));
                         }

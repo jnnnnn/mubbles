@@ -60,6 +60,7 @@ rustfft = "6.4.1"
 hound = "3.5.1"
 bitcode = "0.6.7"
 rfd = "0.15.4"
+shellexpand = "3"
 
 [features]
 default = ["candle-core", "candle-transformers", "candle-nn"]
