@@ -394,7 +394,12 @@ impl MubblesApp {
                     self.toggle_recording();
                 }
 
-                // Device selectors
+                // Device selectors (clamp to valid range in case persisted value is stale)
+                if !self.devices.is_empty() {
+                    self.selected_device1 = self.selected_device1.min(self.devices.len() - 1);
+                    self.selected_device2 = self.selected_device2.min(self.devices.len() - 1);
+                }
+
                 let source1 = egui::ComboBox::from_label("Sound device").show_index(
                     ui,
                     &mut self.selected_device1,

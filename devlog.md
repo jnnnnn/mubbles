@@ -1438,4 +1438,9 @@ alter this project to have another tab. this tab should display each final trans
 use https://docs.rs/egui_extras/latest/egui_extras/struct.TableBuilder.html for the table. store each "AlignedWord" struct as the rows and efficiently only render the relevant (visible) rows.
 
 no, wrong. each AlignedWord transcription result should be a row in the table. Add the timestamp to the AlignedWord struct.
+give up. go straight for pipewire-rs when building for linux.
+
+## 2026-01-05
+
+`libiomp5md.dll not found` when using --mkl feature requires https://www.intel.com/content/www/us/en/developer/articles/tool/compilers-redistributable-libraries-by-version.html because the candle crate's dependency doesn't install it properly.
 
