@@ -1,28 +1,20 @@
 # Mubbles
 
-An Egui wrapper around Whisper.cpp, the OpenAI speech-to-text model.
+An Egui wrapper around HuggingFace's Candle Whisper model, which implements Whisper, the OpenAI speech-to-text model.
 
 Can record from microphone and speakers.
 
 ## Usage
 
-Obtain a ggml-format Whisper model. The easiest way is probably to download one from https://huggingface.co/ggerganov/whisper.cpp/tree/main, and also see more documentation about models [here].
+Run the app.
 
-The app expects to find a model at `./small.bin` or `~/.cache/whisper/small.bin`. 
+Cuda builds require Nvidia / Cuda drivers.
 
-I have found that the `small` model is a good balance between performance and quality. 
-- If you're on a M1+ Mac or have a beefy Cuda card, maybe `medium` is better. 
-- If you're on cpu-only, use `tiny`.
+Huggingface models will be downloaded automatically when transcription starts.
 
-If necessary, you can also get a pytorch-format model from [huggingface](https://huggingface.co/openai/whisper-base) and then convert it to ggml using [this script](https://github.com/ggerganov/whisper.cpp/blob/master/models/convert-pt-to-ggml.py). 
+Some things are still a bit broken because I don't use them (this is really a personal project).
 
-Once you have a model file, run the app:
-
-```sh
-cargo run
-```
-
-You may need to remove the `cuda` feature from the `whisper-rs` dependency if you don't have a CUDA-capable GPU (and the cuda tookit installed). In this case, I would recommend using the Tiny model.
+PRs welcome but I may not get to them for a few weeks.
 
 ## Regular usage
 
@@ -45,4 +37,20 @@ apt install build-essential libssl-dev pkg-config libasound2-dev
 Also, if you don't have cuda but do have an intel cpu, use --features mkl. 
 
 https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html?operatingsystem=linux&linux-install=apt
+
+## Roadmap
+
+1. Summarization should use a standard configurable endpoint
+2. UI is a bit crowded, simplify
+3. fix autotype
+4. fix partials to show the mel spectrogram in real time
+   - last attempt at this failed, wrangling texture memory is a little complex in egui
+5. fix input file transcription
+6. implement snippet saving, where you can click on a fragment and hear it / save the audio file.
+7. figure out why the accuracy for the first and last word is so bad
+8. implement a better speech detection / segmenting algorithm. 
+    - I've had a go with silero and:
+    - couldn't get the model to download automatically / easily and
+    - I don't like onnx because it's not super transparent and
+    - adds a whole lot of dependencies. 
 
