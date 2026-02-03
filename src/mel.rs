@@ -183,6 +183,104 @@ pub fn unpad_mel(mel: Tensor) -> Result<Tensor, candle_core::Error> {
     mel.i((.., .., 0..unpadded_mel_frames))
 }
 
+// =============================================================================
+// MelProcessor - Efficient incremental mel spectrogram processing
+// =============================================================================
+
+use std::sync::Arc;
+
+/// Caches FFT planner and Hanning window for efficient incremental mel processing.
+/// Creating an FFT planner is expensive (~1ms), so we reuse it across calls.
+pub struct MelProcessor {
+    fft: Arc<dyn rustfft::Fft<f32>>,
+    hann: Vec<f32>,
+    mel_filters: Vec<f32>,
+    n_mel: usize,
+    n_fft: usize,
+}
+
+impl MelProcessor {
+    /// Create a new MelProcessor with cached FFT planner and Hanning window.
+    pub fn new(n_mel: usize, mel_filters: Vec<f32>) -> Self {
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let hann = hanning_window();
+        let n_fft = 1 + FFT_SIZE / 2; // 201
+        Self {
+            fft,
+            hann,
+            mel_filters,
+            n_mel,
+            n_fft,
+        }
+    }
+
+    /// Process a single frame of FFT_SIZE samples and return mel bins.
+    /// The input should be exactly FFT_SIZE (400) samples.
+    pub fn process_frame(&self, samples: &[f32]) -> [f32; 80] {
+        debug_assert!(
+            samples.len() >= FFT_SIZE,
+            "Need {} samples, got {}",
+            FFT_SIZE,
+            samples.len()
+        );
+
+        // Apply Hanning window
+        let mut fft_in: Vec<Complex<f32>> = (0..FFT_SIZE)
+            .map(|j| {
+                let windowed = self.hann[j] * samples.get(j).copied().unwrap_or(0.0);
+                Complex::new(windowed, 0.0)
+            })
+            .collect();
+
+        // Perform FFT
+        self.fft.process(&mut fft_in);
+
+        // Compute magnitude squared
+        let mut magnitudes = [0.0f32; FFT_SIZE];
+        for j in 0..FFT_SIZE {
+            magnitudes[j] = fft_in[j].re * fft_in[j].re + fft_in[j].im * fft_in[j].im;
+        }
+
+        // Fold negative frequencies into positive (for real input, FFT is symmetric)
+        for j in 1..FFT_SIZE / 2 {
+            magnitudes[j] += magnitudes[FFT_SIZE - j];
+        }
+
+        // Apply mel filterbank
+        let mut frame = [-10.0f32; 80];
+        for bin in 0..self.n_mel {
+            let mut sum = 0.0f32;
+            for fbin in 0..self.n_fft {
+                sum += magnitudes[fbin] * self.mel_filters[bin * self.n_fft + fbin];
+            }
+            frame[bin] = f32::max(sum, 1e-10f32).log10();
+        }
+
+        frame
+    }
+
+    /// Process multiple frames from samples, returning mel frames.
+    /// Samples should contain enough data for the desired number of frames.
+    /// Each frame uses FFT_SIZE samples, with frames advancing by FFT_STEP.
+    pub fn process_samples(&self, samples: &[f32]) -> Vec<[f32; 80]> {
+        if samples.len() < FFT_SIZE {
+            return vec![];
+        }
+
+        let n_frames = (samples.len() - FFT_SIZE) / FFT_STEP + 1;
+        let mut frames = Vec::with_capacity(n_frames);
+
+        for i in 0..n_frames {
+            let offset = i * FFT_STEP;
+            let frame = self.process_frame(&samples[offset..offset + FFT_SIZE]);
+            frames.push(frame);
+        }
+
+        frames
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +317,48 @@ mod tests {
         assert_eq!(mel.len(), 98);
         let first_frame = mel.first().unwrap();
         assert_eq!(first_frame[0], -10.0f32);
+    }
+
+    #[test]
+    fn mel_processor_matches_original() {
+        let samples = vec![0.0f32; SAMPLE_RATE * 1]; // 1 second of silence
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let model =
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
+        let mel_filters = model.mel_filters.clone();
+
+        // Compare MelProcessor output with pcm_to_mel_frame
+        let processor = MelProcessor::new(80, mel_filters.clone());
+        let processor_frames = processor.process_samples(&samples);
+
+        let original_frames = pcm_to_mel_frame(80, &samples, &mel_filters);
+
+        assert_eq!(
+            processor_frames.len(),
+            original_frames.len(),
+            "Frame count mismatch"
+        );
+
+        // Compare first few frames
+        for (i, (proc_frame, orig_frame)) in processor_frames
+            .iter()
+            .zip(original_frames.iter())
+            .take(10)
+            .enumerate()
+        {
+            for bin in 0..80 {
+                let diff = (proc_frame[bin] - orig_frame[bin]).abs();
+                assert!(
+                    diff < 0.001,
+                    "Frame {} bin {} differs: {} vs {} (diff: {})",
+                    i,
+                    bin,
+                    proc_frame[bin],
+                    orig_frame[bin],
+                    diff
+                );
+            }
+        }
     }
 }

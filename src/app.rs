@@ -22,8 +22,7 @@ use crate::{
 const LEVEL_PLOT_WIDTH: f32 = 100.0;
 const LEVEL_PLOT_HEIGHT: f32 = 30.0;
 const LEVEL_BUFFER_SIZE: usize = 100;
-const MEL_BUFFER_SIZE: usize = 500; // 5 seconds at 100Hz
-const MEL_UPDATE_HZ: f32 = 100.0;
+const MEL_UPDATE_HZ: f32 = 100.0;  // Mel frames per second (10ms per frame)
 const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
@@ -40,11 +39,13 @@ enum AppTab {
     Log,
 }
 
-/// Mel spectrogram display state
+// Maximum mel frames to display (5 seconds at 100 Hz)
+const MAX_MEL_FRAMES: usize = 500;
+
+/// Mel spectrogram display state with pre-allocated texture
 struct DisplayMel {
-    buffer: VecDeque<[u8; PARTIAL_MEL_BINS]>,
     texture: Option<egui::TextureHandle>,
-    image: Option<egui::ColorImage>,
+    frame_count: usize, // number of frames populated in texture
     min: f32,
     max: f32,
 }
@@ -52,9 +53,8 @@ struct DisplayMel {
 impl DisplayMel {
     fn new() -> Self {
         Self {
-            buffer: VecDeque::with_capacity(MEL_BUFFER_SIZE),
             texture: None,
-            image: None,
+            frame_count: 0,
             min: -10.0,
             max: 0.0,
         }
@@ -70,25 +70,60 @@ impl DisplayMel {
             + 0.01;
     }
 
-    fn push_frame(&mut self, frame: &[f32]) {
-        self.update_range(frame);
-
-        let bytes: Vec<u8> = frame
+    /// Convert mel frame values to grayscale bytes
+    fn frame_to_bytes(&self, frame: &[f32]) -> Vec<u8> {
+        frame
             .iter()
             .map(|&x| {
                 let normalized = (x - self.min) * (255.0 / (self.max - self.min));
                 normalized.clamp(0.0, 255.0) as u8
             })
-            .collect();
+            .collect()
+    }
 
-        let mut arr = [0u8; PARTIAL_MEL_BINS];
-        let len = bytes.len().min(PARTIAL_MEL_BINS);
-        arr[..len].copy_from_slice(&bytes[..len]);
-
-        if self.buffer.len() >= MEL_BUFFER_SIZE {
-            self.buffer.pop_front();
+    /// Push a new mel frame to the texture using incremental update
+    fn push_frame(&mut self, frame: &[f32], ctx: &egui::Context) {
+        if self.frame_count >= MAX_MEL_FRAMES {
+            return; // Don't overflow pre-allocated texture
         }
-        self.buffer.push_back(arr);
+
+        self.update_range(frame);
+        let bytes = self.frame_to_bytes(frame);
+
+        // Create column image for just this frame (1 pixel wide, PARTIAL_MEL_BINS tall)
+        let column = egui::ColorImage::from_gray([1, PARTIAL_MEL_BINS], &bytes);
+
+        if let Some(tex) = &mut self.texture {
+            // Update column in pre-allocated texture
+            tex.set_partial([self.frame_count, 0], column, egui::TextureOptions::default());
+            self.frame_count += 1;
+        } else {
+            // Create pre-allocated texture (black/silent initially)
+            let empty = egui::ColorImage::new(
+                [MAX_MEL_FRAMES, PARTIAL_MEL_BINS],
+                egui::Color32::BLACK,
+            );
+            let mut tex = ctx.load_texture("mel_partial", empty, egui::TextureOptions::default());
+            // Set the first column
+            tex.set_partial([0, 0], column, egui::TextureOptions::default());
+            self.texture = Some(tex);
+            self.frame_count = 1;
+        }
+    }
+
+    /// Reset mel display (clear texture and frame count)
+    fn reset(&mut self) {
+        // Clear texture to black, keep the allocation
+        if let Some(tex) = &mut self.texture {
+            let empty = egui::ColorImage::new(
+                [MAX_MEL_FRAMES, PARTIAL_MEL_BINS],
+                egui::Color32::BLACK,
+            );
+            tex.set(empty, egui::TextureOptions::default());
+        }
+        self.frame_count = 0;
+        self.min = -10.0;
+        self.max = 0.0;
     }
 }
 
@@ -143,9 +178,7 @@ pub struct MubblesApp {
     #[serde(skip)]
     level: VecDeque<f32>,
     #[serde(skip)]
-    mel1: DisplayMel,
-    #[serde(skip)]
-    mel2: Tensor,
+    mel: DisplayMel,
 
     // UI state
     #[serde(skip)]
@@ -213,8 +246,7 @@ impl Default for MubblesApp {
 
             // Visualization state
             level: VecDeque::with_capacity(LEVEL_BUFFER_SIZE),
-            mel1: DisplayMel::new(),
-            mel2: Self::create_empty_mel_tensor(),
+            mel: DisplayMel::new(),
 
             // UI state
             changed: false,
@@ -267,12 +299,6 @@ impl MubblesApp {
         }
     }
 
-    /// Create an empty mel spectrogram tensor
-    fn create_empty_mel_tensor() -> Tensor {
-        Tensor::zeros((2, 3), candle_core::DType::F32, &candle_core::Device::Cpu)
-            .expect("Failed to create mel tensor")
-    }
-
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         tracing::info!("Startup at {}", chrono::Local::now());
@@ -289,7 +315,7 @@ impl MubblesApp {
     }
 
     /// Process updates from the Whisper thread
-    fn process_whisper_updates(&mut self) {
+    fn process_whisper_updates(&mut self, ctx: &egui::Context) {
         loop {
             let update = match self.from_whisper.try_recv() {
                 Ok(update) => update,
@@ -309,6 +335,9 @@ impl MubblesApp {
                     self.text.push('\n');
                     self.changed = true;
                     self.transcription_logger.append(&self.transcription_folder, &trimmed);
+                    // Reset mel display when final transcription arrives
+                    self.mel.reset();
+                    self.aligned_words.clear();
                 }
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
@@ -320,17 +349,15 @@ impl MubblesApp {
                 }
                 WhisperUpdate::Alignment(a) => {
                     self.word_history.push(a.clone());
-                    self.aligned_words = a;
+                    self.aligned_words = a; // Complete replacement
                 }
-                WhisperUpdate::MelFrame(_frame) => {
-                    // Disabled: update_mel_buffer(&frame, &mut self.mel1);
+                WhisperUpdate::MelFrame(frame) => {
+                    if self.partials {
+                        self.mel.push_frame(&frame, ctx);
+                    }
                 }
                 WhisperUpdate::Mel(_m) => {
-                    // Disabled: slow (up to 1s)
-                    tracing::debug!(
-                        "App received mel spectrogram with shape: {:?}",
-                        self.mel2.shape()
-                    );
+                    // Ignored: we use incremental MelFrame updates instead
                 }
                 WhisperUpdate::Status(s) => {
                     self.status = s;
@@ -469,18 +496,20 @@ impl MubblesApp {
         ui.label(format!("Status: {}", self.status));
     }
 
-    /// Render the mel spectrogram
-    fn render_mel_row(&mut self, ui: &mut egui::Ui) -> egui::InnerResponse<()> {
-        ui.with_layout(
+    /// Render the mel spectrogram (only when partials enabled)
+    fn render_mel_row(&mut self, ui: &mut egui::Ui) -> Option<egui::InnerResponse<()>> {
+        if !self.partials {
+            return None; // Don't render mel when partials disabled
+        }
+
+        Some(ui.with_layout(
             egui::Layout::left_to_right(egui::Align::LEFT)
                 .with_main_wrap(true)
                 .with_cross_align(egui::Align::TOP),
             |ui| {
-                if let Err(e) = draw_mel2(&mut self.mel2, &mut self.mel1, ui) {
-                    tracing::error!("Error drawing mel spectrogram: {}", e);
-                }
+                draw_mel(&mut self.mel, ui);
             },
-        )
+        ))
     }
 
     /// Render aligned words overlay on mel spectrogram
@@ -488,9 +517,11 @@ impl MubblesApp {
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
-        mel_response: egui::InnerResponse<()>,
+        mel_response: Option<egui::InnerResponse<()>>,
     ) {
-        draw_aligned_words(ctx, &mut self.aligned_words, ui, mel_response, &self.mel1);
+        if let Some(response) = mel_response {
+            draw_aligned_words(ctx, &mut self.aligned_words, ui, response, &self.mel);
+        }
     }
 
     /// Render options checkboxes and buttons
@@ -548,7 +579,8 @@ impl MubblesApp {
     fn clear_transcript(&mut self) {
         self.text.clear();
         tracing::info!("Cleared text at: {}", chrono::Local::now());
-        self.mel2 = Self::create_empty_mel_tensor();
+        self.mel.reset();
+        self.aligned_words.clear();
     }
 
     /// Open the log directory
@@ -871,7 +903,7 @@ impl eframe::App for MubblesApp {
         self.check_device_enumeration();
 
         // Process updates from Whisper thread
-        self.process_whisper_updates();
+        self.process_whisper_updates(ctx);
 
         // Render UI
         self.render_top_panel(ctx);
@@ -911,10 +943,13 @@ fn draw_aligned_words(
     mel_response: egui::InnerResponse<()>,
     display: &DisplayMel,
 ) {
-    let mel_seconds = match &display.texture {
-        Some(tex) => tex.size()[0] as f32 / MEL_UPDATE_HZ,
-        None => return,
-    };
+    // Use frame_count for actual content, not texture size
+    if display.frame_count == 0 {
+        return;
+    }
+
+    // Each frame is 10ms (100 Hz)
+    let mel_seconds = display.frame_count as f32 / MEL_UPDATE_HZ;
 
     if mel_seconds < 0.1 {
         return;
@@ -959,12 +994,6 @@ fn draw_aligned_words(
     }
 }
 
-/// Update mel buffer with a new frame (currently unused)
-#[allow(dead_code)]
-fn update_mel_buffer(frame: &[f32], mel: &mut DisplayMel) {
-    mel.push_frame(frame);
-}
-
 /// Plot audio level over time
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     let points: PlotPoints<'_> = level
@@ -986,116 +1015,39 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     });
 }
 
-/// Draw mel spectrogram using DisplayMel buffer (currently unused)
-#[allow(dead_code)]
-fn draw_mel1(mel: &mut DisplayMel, ui: &mut egui::Ui) {
-    let DisplayMel {
-        buffer,
-        texture,
-        image,
-        ..
-    } = mel;
+/// Draw mel spectrogram from pre-allocated texture with scrolling
+fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
+    if let Some(tex) = &mel.texture {
+        // Fixed display width, spectrogram scrolls within
+        const DISPLAY_WIDTH: f32 = 400.0;
+        const DISPLAY_HEIGHT: f32 = 80.0;
 
-    // Initialize image if needed
-    let image = image.get_or_insert_with(|| {
-        let black = egui::Color32::from_black_alpha(0);
-        egui::ColorImage::filled([PARTIAL_MEL_BINS, LEVEL_BUFFER_SIZE], black)
-    });
+        // Calculate visible portion (scroll to show most recent frames)
+        let total_frames = MAX_MEL_FRAMES as f32;
+        let visible_frames = DISPLAY_WIDTH; // 1 pixel per frame
+        
+        // UV coordinates for scrolling: show the rightmost portion
+        let start_frame = if mel.frame_count as f32 > visible_frames {
+            (mel.frame_count as f32 - visible_frames) / total_frames
+        } else {
+            0.0
+        };
+        let end_frame = mel.frame_count as f32 / total_frames;
 
-    // Initialize texture if needed
-    let texture = texture.get_or_insert_with(|| {
-        ui.ctx().load_texture(
-            "mel_spectrogram",
-            image.clone(),
-            egui::TextureOptions::default(),
-        )
-    });
+        // Create UV rect to show scrolled portion
+        let uv = egui::Rect::from_min_max(
+            egui::pos2(start_frame, 0.0),
+            egui::pos2(end_frame.max(0.01), 1.0), // Ensure non-zero width
+        );
 
-    let xmax = buffer.len();
-    let mut pixels: Vec<egui::Color32> = vec![egui::Color32::from_gray(0); PARTIAL_MEL_BINS * xmax];
-
-    // Convert buffer to pixels
-    for (x, frame) in buffer.iter().enumerate() {
-        for (y, &value) in frame.iter().enumerate() {
-            pixels[x + y * xmax] = egui::Color32::from_gray(value);
-        }
-    }
-
-    image.pixels = pixels;
-    image.size = [xmax, PARTIAL_MEL_BINS];
-    texture.set(image.clone(), egui::TextureOptions::default());
-
-    ui.add(
-        egui::Image::from_texture(&*texture)
-            .corner_radius(10.0)
-            .maintain_aspect_ratio(false)
-            .fit_to_exact_size(egui::vec2(
-                buffer.len() as f32 * 4.0,
-                PARTIAL_MEL_BINS as f32,
-            )),
-    );
-}
-
-/// Draw mel spectrogram from Tensor
-fn draw_mel2(
-    mel2: &Tensor,
-    display: &mut DisplayMel,
-    ui: &mut egui::Ui,
-) -> Result<(), anyhow::Error> {
-    let shape = mel2.shape();
-    if shape.rank() != 2 {
-        anyhow::bail!(
-            "Unexpected tensor rank, expected: 2, got: {} ({:?})",
-            shape.rank(),
-            shape.dims()
+        ui.add(
+            egui::Image::from_texture(egui::load::SizedTexture::from_handle(tex))
+                .uv(uv)
+                .corner_radius(5.0)
+                .maintain_aspect_ratio(false)
+                .fit_to_exact_size(egui::vec2(DISPLAY_WIDTH, DISPLAY_HEIGHT)),
         );
     }
-
-    let n_frames = shape.dims()[1];
-    if n_frames < 10 {
-        return Ok(());
-    }
-
-    let mut mel_image = egui::ColorImage::filled(
-        [n_frames, PARTIAL_MEL_BINS],
-        egui::Color32::from_black_alpha(0),
-    );
-
-    let mel_min = mel2.min_all()?.to_scalar::<f32>()?;
-    let mel_max = mel2.max_all()?.to_scalar::<f32>()? + 0.01;
-    let mel_data = mel2.to_vec2::<f32>()?;
-
-    // Convert tensor data to image pixels
-    for f in 0..n_frames {
-        for b in 0..PARTIAL_MEL_BINS {
-            let value = mel_data[b][f];
-            let color_value =
-                ((value - mel_min) / (mel_max - mel_min) * 255.0).clamp(0.0, 255.0) as u8;
-            mel_image.pixels[b * n_frames + f] =
-                egui::Color32::from_rgb(color_value, color_value, color_value);
-        }
-    }
-
-    // Create or update texture
-    if display.texture.is_none() {
-        let tex = ui.ctx().load_texture(
-            "mel_spectrogram2",
-            mel_image.clone(),
-            egui::TextureOptions::default(),
-        );
-        display.texture = Some(tex);
-    }
-
-    let tex = display.texture.as_mut().unwrap();
-    tex.set(mel_image, egui::TextureOptions::default());
-
-    ui.add(
-        egui::Image::from_texture(&*tex)
-            .corner_radius(10.0)
-            .maintain_aspect_ratio(false),
-    );
-
-    Ok(())
 }
 
 // =============================================================================

@@ -3,7 +3,7 @@ use std::{collections::VecDeque, thread::JoinHandle};
 use crate::{
     app::WhisperUpdate,
     audio::{PcmAudio, TARGET_SAMPLE_RATE},
-    mel::{pcm_to_mel_frame, unpad_mel, FFT_SIZE, FFT_STEP},
+    mel::{MelProcessor, FFT_SIZE, FFT_STEP},
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
@@ -20,11 +20,6 @@ pub(crate) fn start_partial_thread(
     Ok(result?)
 }
 
-struct PartialAudio {
-    resampled: VecDeque<f32>,
-    unused: usize, // the number of samples that have not yet been used to generate mel frames
-}
-
 fn partial_loop(
     app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
     partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
@@ -35,56 +30,36 @@ fn partial_loop(
     let mut whisper_context =
         load_whisper_model(WhichModel::Tiny, app.clone()).expect("Failed to load whisper model");
 
+    // Create MelProcessor with cached FFT planner for efficient incremental processing
+    let mel_processor = MelProcessor::new(
+        PARTIAL_MEL_BINS,
+        whisper_context.mel_filters.clone(),
+    );
+
     let mut last_5s_mel = VecDeque::<[f32; PARTIAL_MEL_BINS]>::new();
     loop {
         if let Err(e) = accumulate_audio(&mut recent_samples, &mut offset, &partial_rx) {
             tracing::debug!("Accumulate ended: {:?}", e);
             break Ok(())
         }
-        let filters = whisper_context.mel_filters.as_slice();
+
         generate_new_mel_frames(
             &mut recent_samples,
             &mut offset,
             &mut last_5s_mel,
-            filters,
+            &mel_processor,
             &app,
         )?;
 
-        if last_5s_mel.len() == 0 {
+        if last_5s_mel.is_empty() {
             continue;
         }
-        //let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
-        let mel =
-            crate::mel::pcm_to_mel(PARTIAL_MEL_BINS, recent_samples.make_contiguous(), filters);
-        let result = perform2(&mel, &mut whisper_context, &app);
-        if !result.is_ok() {
-            tracing::debug!("Failed to perform partial transcription: {:?}", result);
+
+        let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
+        if let Err(e) = result {
+            tracing::debug!("Failed to perform partial transcription: {:?}", e);
         }
     }
-}
-
-// for debugging, use the standard mel encoding
-fn perform2(
-    mel: &[f32],
-    whisper_context: &mut WhisperContext,
-    app: &std::sync::mpsc::Sender<WhisperUpdate>,
-) -> Result<(), anyhow::Error> {
-    let n_mel_frames = mel.len() / whisper_context.config.num_mel_bins;
-    let mel_tensor = candle_core::Tensor::from_slice(
-        mel,
-        (1, whisper_context.config.num_mel_bins, n_mel_frames),
-        &whisper_context.device,
-    )?;
-    app.send(WhisperUpdate::Mel(
-        unpad_mel(mel_tensor.clone())?.squeeze(0)?,
-    ))?;
-
-    let token_callback = Some(|_: String| {});
-    let dr = whisper_context
-        .decoder
-        .decode(&mel_tensor, 0.0, None, &token_callback)?;
-    app.send(WhisperUpdate::Alignment(dr.alignment.clone()))?;
-    Ok(())
 }
 
 pub const PARTIAL_LEN: usize = 5;
@@ -153,24 +128,26 @@ fn generate_new_mel_frames(
     recent_samples: &mut VecDeque<f32>,
     offset: &mut usize,
     last_5s_mel: &mut VecDeque<[f32; 80]>,
-    mel_filters: &[f32],
+    mel_processor: &MelProcessor,
     app: &std::sync::mpsc::Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
     // mel frames are generated with a bit of lookahead -- 160 samples plus lookahead of 240 goes into the fft.
-    const LOOKAHEAD: usize = FFT_SIZE-FFT_STEP; // 15ms at 16kHz
+    const LOOKAHEAD: usize = FFT_SIZE - FFT_STEP; // 15ms at 16kHz
     if *offset + FFT_SIZE < recent_samples.len() {
         let frames = (recent_samples.len() - *offset - LOOKAHEAD) / FFT_STEP;
-        let _pcm = recent_samples
+        let pcm: Vec<f32> = recent_samples
             .range(*offset..*offset + frames * FFT_STEP + LOOKAHEAD)
             .cloned()
-            .collect::<Vec<f32>>();
+            .collect();
         tracing::debug!(
             "Generating {} mel frames from {} samples",
             frames,
-            _pcm.len()
+            pcm.len()
         );
         *offset += frames * FFT_STEP;
-        let mels = pcm_to_mel_frame(PARTIAL_MEL_BINS, &_pcm, &mel_filters);
+
+        // Use cached MelProcessor for efficient FFT
+        let mels = mel_processor.process_samples(&pcm);
         let mut frame_count = 0;
 
         for frame in mels {
