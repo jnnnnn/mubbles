@@ -101,7 +101,7 @@ impl DisplayMel {
             // Create pre-allocated texture (black/silent initially)
             let empty = egui::ColorImage::new(
                 [MAX_MEL_FRAMES, PARTIAL_MEL_BINS],
-                egui::Color32::BLACK,
+                vec![egui::Color32::BLACK; MAX_MEL_FRAMES * PARTIAL_MEL_BINS],
             );
             let mut tex = ctx.load_texture("mel_partial", empty, egui::TextureOptions::default());
             // Set the first column
@@ -117,7 +117,7 @@ impl DisplayMel {
         if let Some(tex) = &mut self.texture {
             let empty = egui::ColorImage::new(
                 [MAX_MEL_FRAMES, PARTIAL_MEL_BINS],
-                egui::Color32::BLACK,
+                vec![egui::Color32::BLACK; MAX_MEL_FRAMES * PARTIAL_MEL_BINS],
             );
             tex.set(empty, egui::TextureOptions::default());
         }
