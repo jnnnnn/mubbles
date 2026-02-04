@@ -199,7 +199,7 @@ impl TranscriptionLogger {
         }
 
         let folder = shellexpand::tilde(folder);
-        let folder_path = std::path::Path::new(folder.as_ref());
+        let folder_path = std::path::Path::new(folder.as_ref() as &str);
 
         // Create folder if it doesn't exist
         if let Err(e) = std::fs::create_dir_all(folder_path) {
