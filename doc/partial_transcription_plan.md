@@ -156,23 +156,23 @@ fn reset(&mut self) {
 
 ---
 
-### Phase 4: Remove Dead Code
+### Phase 4: Remove Dead Code ✅ COMPLETE
 
-#### Task 4.1: Remove unused items in app.rs
-- [ ] `draw_mel1` function (line 988-1022) - marked `#[allow(dead_code)]`
-- [ ] `update_mel_buffer` function (line 962-965) - marked `#[allow(dead_code)]`
-- [ ] `DisplayMel.image` field
-- [ ] `DisplayMel.buffer` field
-- [ ] `mel2: Tensor` field - unify with mel1
+#### Task 4.1: Remove unused items in app.rs ✅
+- [x] `draw_mel1` function (line 988-1022) - marked `#[allow(dead_code)]`
+- [x] `update_mel_buffer` function (line 962-965) - marked `#[allow(dead_code)]`
+- [x] `DisplayMel.image` field
+- [x] `DisplayMel.buffer` field
+- [x] `mel2: Tensor` field - unify with mel1
 
-#### Task 4.2: Remove unused items in partial.rs  
-- [ ] `PartialAudio` struct (line 23-26) - defined but never used
-- [ ] `perform2` function once `perform_partial_transcription` is fixed
+#### Task 4.2: Remove unused items in partial.rs ✅
+- [x] `PartialAudio` struct (line 23-26) - defined but never used
+- [x] `perform2` function once `perform_partial_transcription` is fixed
 
-#### Task 4.3: Audit other dead_code markers
-- [ ] `whisper_model.rs` line 58, 70, 510
-- [ ] `voice_detect.rs` line 197
-- [ ] `audio.rs` line 162, 266
+#### Task 4.3: Audit other dead_code markers ✅
+- [x] `whisper_model.rs` line 58, 70, 510 - Actually used or intentionally kept
+- [x] `voice_detect.rs` line 197 - No longer has dead_code marker
+- [x] `audio.rs` line 162, 266 - Intentional (fields kept for drop semantics)
 
 ---
 

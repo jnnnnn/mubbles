@@ -1444,3 +1444,6 @@ give up. go straight for pipewire-rs when building for linux.
 
 `libiomp5md.dll not found` when using --mkl feature requires https://www.intel.com/content/www/us/en/developer/articles/tool/compilers-redistributable-libraries-by-version.html because the candle crate's dependency doesn't install it properly.
 
+## 2026-02-05
+
+tried updating to latest candle but recent changes have broken support for older cards. there's work to fix. 
