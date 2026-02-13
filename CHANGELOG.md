@@ -1,5 +1,7 @@
 # Changelog
 
+
+
 ## 1.4
  - statistical summary shows five most unusual words for each ten lines of transcript
 

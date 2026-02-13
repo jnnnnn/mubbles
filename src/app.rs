@@ -482,25 +482,27 @@ impl MubblesApp {
                     self.selected_device2 = self.selected_device2.min(self.devices.len() - 1);
                 }
 
-                let source1 = egui::ComboBox::from_label("Sound device").show_index(
-                    ui,
-                    &mut self.selected_device1,
-                    self.devices.len(),
-                    |i| self.devices[i].name.clone(),
-                );
-                if source1.changed() {
-                    self.worker = None;
-                }
+                ui.vertical(|ui| {
+                    let source1 = egui::ComboBox::from_label("Sound device").show_index(
+                        ui,
+                        &mut self.selected_device1,
+                        self.devices.len(),
+                        |i| self.devices[i].name.clone(),
+                    );
+                    if source1.changed() {
+                        self.worker = None;
+                    }
 
-                let source2 = egui::ComboBox::from_label("Sound device 2").show_index(
-                    ui,
-                    &mut self.selected_device2,
-                    self.devices.len(),
-                    |i| self.devices[i].name.clone(),
-                );
-                if source2.changed() {
-                    self.worker = None;
-                }
+                    let source2 = egui::ComboBox::from_label("Sound device 2").show_index(
+                        ui,
+                        &mut self.selected_device2,
+                        self.devices.len(),
+                        |i| self.devices[i].name.clone(),
+                    );
+                    if source2.changed() {
+                        self.worker = None;
+                    }
+                });
             },
         );
 
@@ -654,8 +656,8 @@ impl MubblesApp {
     /// Start file transcription
     fn start_file_transcription(&mut self) {
         let file_dialog = rfd::FileDialog::new()
-            .add_filter("Audio Files", &["wav"])
-            .set_title("Select WAV Audio File to Transcribe");
+            .add_filter("Audio Files", &["wav", "mp3", "flac", "ogg", "m4a", "aac", "wma"])
+            .set_title("Select Audio File to Transcribe");
 
         if let Some(path) = file_dialog.pick_file() {
             let tx = self.file_tx.clone();
@@ -806,7 +808,7 @@ impl MubblesApp {
                             self.file_cancel.store(true, Ordering::Relaxed);
                         }
                         ui.spinner();
-                    } else if ui.button("Select WAV File...").clicked() {
+                    } else if ui.button("Select audio File...").clicked() {
                         self.start_file_transcription();
                     }
                 });

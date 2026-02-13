@@ -6,7 +6,7 @@
 
 [package]
 name = "mubbles"
-version = "2.1.0"
+version = "2.2.0"
 authors = ["Jonathan Newnham"]
 edition = "2021"
 rust-version = "1.81"
@@ -58,6 +58,7 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter", "std"] }
 rustfft = "6.4.1"
 #ort = { version = "1.16.3", features = [] }
 hound = "3.5.1"
+symphonia = { version = "0.5.3", features = ["all"] }
 bitcode = "0.6.7"
 rfd = "0.15.4"
 shellexpand = "3"
