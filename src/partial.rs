@@ -27,8 +27,11 @@ fn partial_loop(
     let mut recent_samples = VecDeque::<f32>::new();
     let mut offset: usize = 0;
 
+    let app_status = app.clone();
     let mut whisper_context =
-        load_whisper_model(WhichModel::Tiny, app.clone()).expect("Failed to load whisper model");
+        load_whisper_model(WhichModel::Tiny, move |s| {
+            app_status.send(WhisperUpdate::Status(s)).ok();
+        }).expect("Failed to load whisper model");
 
     // Create MelProcessor with cached FFT planner for efficient incremental processing
     let mel_processor = MelProcessor::new(

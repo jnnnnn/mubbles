@@ -1,6 +1,10 @@
 use std::{
     collections::VecDeque,
-    sync::mpsc::{self, Sender, TryRecvError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Sender, TryRecvError},
+        Arc,
+    },
     thread::JoinHandle,
     time::Duration,
 };
@@ -11,7 +15,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::{
     audio::{check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState},
-    file_transcription::transcribe_file,
+    file_transcription::{self, FileUpdate},
     partial::PARTIAL_MEL_BINS,
     summary,
     whisper::{WhichModel, WhisperParams},
@@ -35,6 +39,7 @@ enum AppTab {
     TranscriptionHistory,
     StatisticalSummary,
     AISummary,
+    FileTranscription,
     Settings,
     Log,
 }
@@ -195,6 +200,18 @@ pub struct MubblesApp {
     file_transcription_running: bool,
     #[serde(skip)]
     file_transcription_thread: Option<JoinHandle<()>>,
+    #[serde(skip)]
+    file_tx: mpsc::Sender<FileUpdate>,
+    #[serde(skip)]
+    file_rx: mpsc::Receiver<FileUpdate>,
+    #[serde(skip)]
+    file_transcription_text: String,
+    #[serde(skip)]
+    file_transcription_progress: Option<(usize, usize)>,
+    #[serde(skip)]
+    file_transcription_status: String,
+    #[serde(skip)]
+    file_cancel: Arc<AtomicBool>,
 
     // Logging state
     #[serde(skip)]
@@ -210,6 +227,7 @@ impl Default for MubblesApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         let (devices, device_enumeration_rx) = get_devices();
+        let (file_tx, file_rx) = mpsc::channel();
 
         let selected_device = Self::find_default_device(&devices);
 
@@ -259,6 +277,12 @@ impl Default for MubblesApp {
             // File transcription state
             file_transcription_running: false,
             file_transcription_thread: None,
+            file_tx,
+            file_rx,
+            file_transcription_text: String::new(),
+            file_transcription_progress: None,
+            file_transcription_status: String::new(),
+            file_cancel: Arc::new(AtomicBool::new(false)),
 
             // Logging state
             log_buffer: crate::log_capture::LogBuffer::new(),
@@ -362,9 +386,40 @@ impl MubblesApp {
                 WhisperUpdate::Status(s) => {
                     self.status = s;
                 }
-                WhisperUpdate::FileTranscriptionComplete => {
+            }
+        }
+    }
+
+    /// Process updates from the file transcription thread
+    fn process_file_updates(&mut self) {
+        while let Ok(update) = self.file_rx.try_recv() {
+            match update {
+                FileUpdate::Status(s) => {
+                    self.file_transcription_status = s;
+                }
+                FileUpdate::Progress { chunk, total } => {
+                    self.file_transcription_progress = Some((chunk, total));
+                    self.file_transcription_status =
+                        format!("Transcribing chunk {}/{}...", chunk, total);
+                }
+                FileUpdate::Transcription(t) => {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        if !self.file_transcription_text.is_empty() {
+                            self.file_transcription_text.push('\n');
+                        }
+                        self.file_transcription_text.push_str(trimmed);
+                    }
+                }
+                FileUpdate::Error(msg) => {
                     self.file_transcription_running = false;
-                    self.status = "File transcription complete".to_string();
+                    self.file_transcription_status = format!("Error: {}", msg);
+                    self.file_transcription_progress = None;
+                }
+                FileUpdate::Complete => {
+                    self.file_transcription_running = false;
+                    self.file_transcription_status = "File transcription complete".to_string();
+                    self.file_transcription_progress = None;
                 }
             }
         }
@@ -598,21 +653,27 @@ impl MubblesApp {
 
     /// Start file transcription
     fn start_file_transcription(&mut self) {
-        // Open file dialog
         let file_dialog = rfd::FileDialog::new()
-            .add_filter("Audio Files", &["wav", "mp3", "flac", "ogg", "m4a"])
-            .set_title("Select Audio File to Transcribe");
+            .add_filter("Audio Files", &["wav"])
+            .set_title("Select WAV Audio File to Transcribe");
 
         if let Some(path) = file_dialog.pick_file() {
-            let tx = self.whisper_tx.clone();
+            let tx = self.file_tx.clone();
             let model = WhichModel::from(self.selected_model);
-            let accuracy = self.accuracy;
+            let cancel = self.file_cancel.clone();
 
             self.file_transcription_running = true;
+            self.file_transcription_text.clear();
+            self.file_transcription_progress = None;
+            self.file_transcription_status = "Starting...".to_string();
+            self.file_cancel.store(false, Ordering::Relaxed);
+            self.tab = AppTab::FileTranscription;
 
             let thread = std::thread::spawn(move || {
-                if let Err(e) = transcribe_file(path, model, accuracy, tx) {
+                let tx2 = tx.clone();
+                if let Err(e) = file_transcription::transcribe_file(path, model, tx, cancel) {
                     tracing::error!("File transcription failed: {}", e);
+                    tx2.send(FileUpdate::Error(e.to_string())).ok();
                 }
             });
 
@@ -639,6 +700,7 @@ impl MubblesApp {
                 "Statistical Summary",
             );
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
+            ui.selectable_value(&mut self.tab, AppTab::FileTranscription, "File");
             ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
             ui.selectable_value(&mut self.tab, AppTab::Log, "Log");
         });
@@ -710,37 +772,6 @@ impl MubblesApp {
                 ui.separator();
                 ui.add_space(10.0);
 
-                ui.heading("File Transcription");
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    let button_text = if self.file_transcription_running {
-                        "Transcribing..."
-                    } else {
-                        "Transcribe Audio File..."
-                    };
-
-                    if ui
-                        .add_enabled(
-                            !self.file_transcription_running,
-                            egui::Button::new(button_text),
-                        )
-                        .clicked()
-                    {
-                        self.start_file_transcription();
-                    }
-
-                    if self.file_transcription_running {
-                        ui.spinner();
-                    }
-                });
-
-                ui.label("Select a WAV audio file to transcribe using the current model settings.");
-
-                ui.add_space(20.0);
-                ui.separator();
-                ui.add_space(10.0);
-
                 ui.heading("Monthly Transcription Log");
                 ui.add_space(10.0);
 
@@ -764,6 +795,61 @@ impl MubblesApp {
                     let filename = format!("{}.txt", now.format("%Y-%m"));
                     ui.label(format!("Current file: {}/{}", self.transcription_folder, filename));
                 }
+            }
+            AppTab::FileTranscription => {
+                ui.heading("File Transcription");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if self.file_transcription_running {
+                        if ui.button("Cancel").clicked() {
+                            self.file_cancel.store(true, Ordering::Relaxed);
+                        }
+                        ui.spinner();
+                    } else if ui.button("Select WAV File...").clicked() {
+                        self.start_file_transcription();
+                    }
+                });
+
+                // Status line
+                if !self.file_transcription_status.is_empty() {
+                    ui.add_space(5.0);
+                    ui.label(&self.file_transcription_status);
+                }
+
+                // Progress bar
+                if let Some((chunk, total)) = self.file_transcription_progress {
+                    ui.add_space(5.0);
+                    let fraction = chunk as f32 / total as f32;
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .text(format!("{}/{}", chunk, total))
+                            .animate(self.file_transcription_running),
+                    );
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(5.0);
+
+                // Output text area
+                if !self.file_transcription_text.is_empty() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy to Clipboard").clicked() {
+                            ui.ctx().copy_text(self.file_transcription_text.clone());
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.file_transcription_text.clear();
+                        }
+                    });
+                    ui.add_space(5.0);
+                }
+
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.file_transcription_text.as_str())
+                        .desired_width(f32::INFINITY),
+                );
             }
             AppTab::Log => {
                 ui.heading("Application Logs");
@@ -880,7 +966,6 @@ pub enum WhisperUpdate {
     Mel(Tensor),
     Status(String),
     MelFrame(Vec<f32>),
-    FileTranscriptionComplete,
 }
 
 impl eframe::App for MubblesApp {
@@ -904,6 +989,9 @@ impl eframe::App for MubblesApp {
 
         // Process updates from Whisper thread
         self.process_whisper_updates(ctx);
+
+        // Process updates from file transcription thread
+        self.process_file_updates();
 
         // Render UI
         self.render_top_panel(ctx);

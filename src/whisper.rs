@@ -155,15 +155,15 @@ impl std::fmt::Debug for WhisperContext {
 }
 
 struct MyProgress {
-    sender: Sender<WhisperUpdate>,
+    status_fn: Box<dyn Fn(String) + Send>,
     total_size: usize,
     current: usize,
     fname: String,
 }
 impl MyProgress {
-    fn new(sender: Sender<WhisperUpdate>) -> Self {
+    fn new(status_fn: Box<dyn Fn(String) + Send>) -> Self {
         MyProgress {
-            sender,
+            status_fn,
             total_size: 0,
             current: 0,
             fname: String::new(),
@@ -179,20 +179,18 @@ impl hf_hub::api::Progress for MyProgress {
         self.current += size;
         let percentage = (self.current as f64 / self.total_size as f64) * 100.0;
 
-        self.sender
-            .send(WhisperUpdate::Status(format!(
-                "Downloading {}: {} MiB ({percentage:.1}%)",
-                self.fname,
-                self.current / (1024 * 1024)
-            )))
-            .unwrap_or_default();
+        (self.status_fn)(format!(
+            "Downloading {}: {} MiB ({percentage:.1}%)",
+            self.fname,
+            self.current / (1024 * 1024)
+        ));
     }
     fn finish(&mut self) {}
 }
 
 fn get_with_progress(
     repo: hf_hub::Repo,
-    app: Sender<WhisperUpdate>,
+    status_fn: Box<dyn Fn(String) + Send>,
     filename: &str,
 ) -> Result<std::path::PathBuf, E> {
     // unfortunately, api::download_with_progress does not check cache first, so we do it manually
@@ -206,7 +204,7 @@ fn get_with_progress(
         tracing::info!("Downloading file: {}", filename);
         Api::new()?
             .repo(repo)
-            .download_with_progress(filename, MyProgress::new(app))?
+            .download_with_progress(filename, MyProgress::new(status_fn))?
     };
     Ok(path)
 }
@@ -215,7 +213,10 @@ fn get_device() -> Result<candle_core::Device> {
     Ok(candle_core::Device::cuda_if_available(0)?)
 }
 
-pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Result<WhisperContext> {
+pub fn load_whisper_model(
+    model: WhichModel,
+    status_fn: impl Fn(String) + Send + 'static,
+) -> Result<WhisperContext> {
     tracing::info!("Loading whisper model: {:?}", model);
     let device = get_device()?;
     let (model_id, revision) = model.model_and_revision();
@@ -228,7 +229,7 @@ pub fn load_whisper_model(model: WhichModel, app: Sender<WhisperUpdate>) -> Resu
         let repo_with_api = api.repo(inner_repo.clone());
         let config = repo_with_api.get("config.json")?;
         let tokenizer = repo_with_api.get("tokenizer.json")?;
-        let model = get_with_progress(inner_repo, app.clone(), "model.safetensors")?;
+        let model = get_with_progress(inner_repo, Box::new(status_fn), "model.safetensors")?;
         (config, tokenizer, model)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
@@ -306,7 +307,10 @@ fn whisper_loop(
     app.send(WhisperUpdate::Status(
         "Loading whisper model...".to_string(),
     ))?;
-    let mut ctx: WhisperContext = load_whisper_model(params.model, app.clone())?;
+    let app_status = app.clone();
+    let mut ctx: WhisperContext = load_whisper_model(params.model, move |s| {
+        app_status.send(WhisperUpdate::Status(s)).ok();
+    })?;
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
         // first recv needs to be blocking to prevent the thread from spinning
@@ -399,6 +403,7 @@ pub fn whisperize(
         }
         tracing::info!("Whisper segment: {:?}", segment.dr);
 
+        #[cfg(debug_assertions)]
         if let Some(t) = segment.dr.text.first() {
             if t == ".com" {
                 // write out wav file for testing. use timestamp to avoid overwriting
@@ -470,7 +475,10 @@ mod tests {
         tracing::info!("Loaded {} samples from wav file", pcm_audio.data.len());
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
+        let tx2 = tx.clone();
+        let mut state = load_whisper_model(WhichModel::Tiny, move |s| {
+            tx2.send(WhisperUpdate::Status(s)).ok();
+        })?;
 
         whisperize(&mut state, &pcm_audio.data, &tx)?;
         whisperize(&mut state, &pcm_audio.data, &tx)?;
@@ -504,8 +512,7 @@ mod tests {
             &candle_core::Device::cuda_if_available(0)?,
         )?;
 
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut state = load_whisper_model(WhichModel::Tiny, tx.clone())?;
+        let mut state = load_whisper_model(WhichModel::Tiny, |_| {})?;
 
         let token_callback = Some(|_: String| { });
         let (segments, _) = state.decoder.run(&mel_tensor, None, None, &token_callback)?;

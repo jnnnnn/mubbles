@@ -1,102 +1,135 @@
 //! File transcription module
-//! 
+//!
 //! Handles transcribing audio files using the Whisper model.
+//! Isolated from the microphone pipeline with its own channel and progress reporting.
 
-use std::sync::mpsc::Sender;
-
-use crate::{
-    app::WhisperUpdate,
-    audio::PcmAudio,
-    whisper::{load_whisper_model, whisperize, WhichModel, WhisperContext},
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::Sender,
+    Arc,
 };
 
-/// Transcribe an audio file
-pub fn transcribe_file(
-    path: std::path::PathBuf,
-    model: WhichModel,
-    _accuracy: usize,
-    app: Sender<WhisperUpdate>,
-) -> Result<(), anyhow::Error> {
-    app.send(WhisperUpdate::Status(format!(
-        "Loading audio file: {}",
-        path.display()
-    )))?;
+use candle_core::Tensor;
 
-    // we need to get the file from disk
-    let mut reader = hound::WavReader::open(&path)?;
+use crate::{
+    audio::{convert_sample_rate, TARGET_SAMPLE_RATE},
+    mel,
+    whisper::{load_whisper_model, WhichModel, WhisperContext},
+};
+
+/// Updates from the file transcription thread (separate from WhisperUpdate)
+#[derive(Debug, Clone)]
+pub enum FileUpdate {
+    Status(String),
+    Progress { chunk: usize, total: usize },
+    Transcription(String),
+    Error(String),
+    Complete,
+}
+
+/// Load a WAV audio file, convert to mono, and resample to Whisper's target sample rate.
+pub fn load_audio_file(path: &std::path::Path) -> Result<Vec<f32>, anyhow::Error> {
+    let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
-    
-    app.send(WhisperUpdate::Status(format!(
-        "Audio format: {} Hz, {} channels, {} bits",
-        spec.sample_rate, spec.channels, spec.bits_per_sample
-    )))?;
 
-    // whisper requires samples as f32
+    // decode samples to f32
     let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => {
-            reader.samples::<f32>()
-                .collect::<Result<Vec<_>, _>>()?
-        }
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
         hound::SampleFormat::Int => {
             let max_value = 2_i32.pow(spec.bits_per_sample as u32 - 1) as f32;
-            reader.samples::<i32>()
+            reader
+                .samples::<i32>()
                 .map(|s| s.map(|v| v as f32 / max_value))
                 .collect::<Result<Vec<_>, _>>()?
         }
     };
 
-    // whisper model expects mono audio, so convert if necessary
-    let mono_samples: Vec<f32> = if spec.channels == 1 {
+    // convert to mono
+    let mono = if spec.channels == 1 {
         samples
     } else {
-        samples.chunks(spec.channels as usize)
+        samples
+            .chunks(spec.channels as usize)
             .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
             .collect()
     };
 
-    app.send(WhisperUpdate::Status(format!(
-        "Loaded {} samples ({:.2} seconds)",
-        mono_samples.len(),
-        mono_samples.len() as f32 / spec.sample_rate as f32
+    // resample to target rate
+    if spec.sample_rate as usize != TARGET_SAMPLE_RATE {
+        convert_sample_rate(&mono, spec.sample_rate as usize)
+            .map_err(|e| anyhow::anyhow!("Resampling failed: {}", e))
+    } else {
+        Ok(mono)
+    }
+}
+
+/// Transcribe an audio file, sending progress and results to the dedicated channel.
+pub fn transcribe_file(
+    path: std::path::PathBuf,
+    model: WhichModel,
+    tx: Sender<FileUpdate>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), anyhow::Error> {
+    tx.send(FileUpdate::Status(format!(
+        "Loading audio: {}",
+        path.display()
     )))?;
 
-    // whisper requires 16kHz sample rate, so resample if necessary
-    let resampled = if spec.sample_rate != 16000 {
-        app.send(WhisperUpdate::Status(format!(
-            "Resampling from {} Hz to 16000 Hz",
-            spec.sample_rate
-        )))?;
-        crate::audio::convert_sample_rate(&mono_samples, spec.sample_rate as usize)
-            .map_err(|e| anyhow::anyhow!("Resampling failed: {}", e))?
-    } else {
-        mono_samples
-    };
+    let resampled = load_audio_file(&path)?;
+    let duration_secs = resampled.len() as f32 / TARGET_SAMPLE_RATE as f32;
+    tx.send(FileUpdate::Status(format!(
+        "Loaded {:.1}s of audio",
+        duration_secs
+    )))?;
 
-    // We need a whisper model in memory to run transcriptions
-    app.send(WhisperUpdate::Status("Loading Whisper model...".to_string()))?;
-    let mut ctx: WhisperContext = load_whisper_model(model, app.clone())?;
-    
-    // whisper processes audio in 30s chunks, so we will do that here
-    const CHUNK_SIZE: usize = 16000 * 30; // 30 seconds at 16kHz
+    // load whisper model, forwarding download progress to our channel
+    tx.send(FileUpdate::Status("Loading Whisper model...".to_string()))?;
+    let tx_status = tx.clone();
+    let mut ctx: WhisperContext = load_whisper_model(model, move |s| {
+        tx_status.send(FileUpdate::Status(s)).ok();
+    })?;
+    tx.send(FileUpdate::Status("Model loaded".to_string()))?;
+
+    // whisper processes audio in 30s chunks
+    const CHUNK_SIZE: usize = TARGET_SAMPLE_RATE * 30;
     let total_chunks = (resampled.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    
+
     for (i, chunk) in resampled.chunks(CHUNK_SIZE).enumerate() {
-        app.send(WhisperUpdate::Status(format!(
-            "Transcribing chunk {}/{}...",
-            i + 1,
-            total_chunks
-        )))?;
-        
-        // Create PcmAudio for compatibility with existing whisper code
-        let _pcm = PcmAudio {
-            data: chunk.to_vec(),
-            sample_rate: 16000,
-        };
-        
-        // Use the existing whisperize function
-        whisperize(&mut ctx, chunk, &app)?;
+        if cancel.load(Ordering::Relaxed) {
+            tx.send(FileUpdate::Status("Cancelled".to_string()))?;
+            return Ok(());
+        }
+
+        tx.send(FileUpdate::Progress {
+            chunk: i + 1,
+            total: total_chunks,
+        })?;
+
+        // generate mel spectrogram
+        let mel_raw =
+            mel::pcm_to_mel(ctx.config.num_mel_bins, chunk, &ctx.mel_filters);
+        let num_bins = ctx.config.num_mel_bins;
+        let num_mel_frames = mel_raw.len() / num_bins;
+        let mel_tensor =
+            Tensor::from_slice(&mel_raw, (1, num_bins, num_mel_frames), &ctx.device)?;
+
+        // run decoder
+        let tx_token = tx.clone();
+        let token_cb = Some(move |text: String| {
+            tx_token
+                .send(FileUpdate::Status(text))
+                .unwrap_or_default();
+        });
+        let (segments, last_tokens) = ctx.decoder.run(&mel_tensor, None, None, &token_cb)?;
+        ctx.previous_content_tokens = last_tokens;
+
+        for segment in &segments {
+            for phrase in &segment.dr.text {
+                tx.send(FileUpdate::Transcription(phrase.clone()))?;
+            }
+        }
     }
 
-    app.send(WhisperUpdate::FileTranscriptionComplete)?;
+    tx.send(FileUpdate::Complete)?;
     Ok(())
 }

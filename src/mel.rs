@@ -289,10 +289,9 @@ mod tests {
     fn mel_zero() {
         let samples = &vec![0.0f32; SAMPLE_RATE * 30]; // 30 seconds of silence at 16kHz
 
-        let (tx, _rx) = std::sync::mpsc::channel();
         // load model to get filters
         let model =
-            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, |_| {}).unwrap();
         let mel_filters = &model.mel_filters;
 
         let mel = pcm_to_mel(80, samples, mel_filters);
@@ -307,9 +306,8 @@ mod tests {
         let samples = &vec![0.0f32; SAMPLE_RATE * 1]; // 1 seconds of silence at 16kHz
 
         // load model to get filters
-        let (tx, _rx) = std::sync::mpsc::channel();
         let model =
-            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, |_| {}).unwrap();
         let mel_filters = &model.mel_filters;
 
         let mel = pcm_to_mel_frame(80, samples, mel_filters);
@@ -323,9 +321,8 @@ mod tests {
     fn mel_processor_matches_original() {
         let samples = vec![0.0f32; SAMPLE_RATE * 1]; // 1 second of silence
 
-        let (tx, _rx) = std::sync::mpsc::channel();
         let model =
-            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, tx).unwrap();
+            crate::whisper::load_whisper_model(crate::whisper::WhichModel::Tiny, |_| {}).unwrap();
         let mel_filters = model.mel_filters.clone();
 
         // Compare MelProcessor output with pcm_to_mel_frame
