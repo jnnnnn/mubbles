@@ -359,6 +359,9 @@ impl MubblesApp {
                     self.text.push('\n');
                     self.changed = true;
                     self.transcription_logger.append(&self.transcription_folder, &trimmed);
+                    if self.autotype {
+                        crate::autotype::type_text(&trimmed);
+                    }
                     // Reset mel display when final transcription arrives
                     self.mel.reset();
                     self.aligned_words.clear();

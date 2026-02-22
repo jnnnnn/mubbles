@@ -15,6 +15,7 @@ mod summary;
 mod audio;
 #[cfg(target_os = "linux")]
 mod audio_pipewire;
+mod autotype;
 mod partial;
 mod file_transcription;
 pub mod log_capture;
