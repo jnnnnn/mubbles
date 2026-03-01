@@ -756,21 +756,91 @@ impl MubblesApp {
                 );
             }
             AppTab::Settings => {
-                ui.heading("AI Prompts");
+                ui.heading("AI Provider");
                 ui.add_space(10.0);
 
-                ui.label("User Prompt:");
-                ui.add_sized(
-                    egui::vec2(ui.available_width(), 150.0),
-                    egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
-                );
+                ui.horizontal(|ui| {
+                    ui.label("Provider:");
+                    let prev_provider = self.ai_summary.provider.clone();
+                    egui::ComboBox::from_id_salt("ai_provider")
+                        .selected_text(format!("{}", self.ai_summary.provider))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.ai_summary.provider,
+                                summary::ApiProvider::OpenAI,
+                                "OpenAI",
+                            );
+                            ui.selectable_value(
+                                &mut self.ai_summary.provider,
+                                summary::ApiProvider::Ollama,
+                                "Ollama (local)",
+                            );
+                            ui.selectable_value(
+                                &mut self.ai_summary.provider,
+                                summary::ApiProvider::Custom,
+                                "Custom (any OpenAI-compatible API)",
+                            );
+                        });
+                    // When provider changes, update URL and model to defaults
+                    if self.ai_summary.provider != prev_provider {
+                        self.ai_summary.api_url =
+                            self.ai_summary.provider.default_url().to_string();
+                        self.ai_summary.model =
+                            self.ai_summary.provider.default_model().to_string();
+                    }
+                });
 
+                ui.add_space(5.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("API URL:");
+                    ui.add_sized(
+                        egui::vec2(ui.available_width(), 20.0),
+                        egui::TextEdit::singleline(&mut self.ai_summary.api_url)
+                            .hint_text("https://api.openai.com/v1/chat/completions"),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Model:");
+                    ui.add_sized(
+                        egui::vec2(ui.available_width(), 20.0),
+                        egui::TextEdit::singleline(&mut self.ai_summary.model)
+                            .hint_text("gpt-4o-mini"),
+                    );
+                });
+
+                if self.ai_summary.provider.needs_key() {
+                    ui.horizontal(|ui| {
+                        ui.label("API Key:");
+                        ui.add_sized(
+                            egui::vec2(ui.available_width(), 20.0),
+                            egui::TextEdit::singleline(&mut self.ai_summary.api_key)
+                                .password(true)
+                                .hint_text("sk-..."),
+                        );
+                    });
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("AI Prompts");
                 ui.add_space(10.0);
 
                 ui.label("System Prompt:");
                 ui.add_sized(
-                    egui::vec2(ui.available_width(), 150.0),
+                    egui::vec2(ui.available_width(), 100.0),
                     egui::TextEdit::multiline(&mut self.ai_summary.system_prompt),
+                );
+
+                ui.add_space(10.0);
+
+                ui.label("User Prompt (use %SOFAR% and %ADDITIONAL% as placeholders):");
+                ui.add_sized(
+                    egui::vec2(ui.available_width(), 100.0),
+                    egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
                 );
 
                 ui.add_space(20.0);

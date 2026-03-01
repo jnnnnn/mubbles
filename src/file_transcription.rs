@@ -20,6 +20,57 @@ use crate::{
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
+/// Maximum chunk length in samples (30s at Whisper's sample rate).
+const MAX_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE * 30;
+
+/// Window in samples to search for a quiet point around each 30s boundary (±2s).
+const SEARCH_WINDOW: usize = TARGET_SAMPLE_RATE * 2;
+
+/// Sliding RMS window in samples (50ms) for measuring local energy.
+const RMS_WINDOW: usize = TARGET_SAMPLE_RATE / 20;
+
+/// Split PCM audio into chunks of at most 30s, preferring to break at the
+/// quietest point within ±2s of each nominal 30s boundary.
+fn split_at_silence(pcm: &[f32]) -> Vec<&[f32]> {
+    if pcm.len() <= MAX_CHUNK_SAMPLES {
+        return vec![pcm];
+    }
+
+    let mut chunks = Vec::new();
+    let mut offset = 0;
+
+    while offset < pcm.len() {
+        let remaining = pcm.len() - offset;
+        if remaining <= MAX_CHUNK_SAMPLES {
+            chunks.push(&pcm[offset..]);
+            break;
+        }
+
+        // Nominal split at 30s
+        let nominal = offset + MAX_CHUNK_SAMPLES;
+        let search_start = nominal.saturating_sub(SEARCH_WINDOW).max(offset);
+        let search_end = (nominal + SEARCH_WINDOW).min(pcm.len());
+
+        // Find the quietest RMS_WINDOW-sized window in the search range
+        let best = (search_start..search_end.saturating_sub(RMS_WINDOW))
+            .map(|i| {
+                let window = &pcm[i..i + RMS_WINDOW];
+                let energy: f32 = window.iter().map(|s| s * s).sum::<f32>() / RMS_WINDOW as f32;
+                (i, energy)
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(nominal);
+
+        // Split at the midpoint of the quietest window
+        let split = (best + RMS_WINDOW / 2).min(pcm.len());
+        chunks.push(&pcm[offset..split]);
+        offset = split;
+    }
+
+    chunks
+}
+
 /// Updates from the file transcription thread (separate from WhisperUpdate)
 #[derive(Debug, Clone)]
 pub enum FileUpdate {
@@ -133,11 +184,11 @@ pub fn transcribe_file(
     })?;
     tx.send(FileUpdate::Status("Model loaded".to_string()))?;
 
-    // whisper processes audio in 30s chunks
-    const CHUNK_SIZE: usize = TARGET_SAMPLE_RATE * 30;
-    let total_chunks = (resampled.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    // Split audio into ≤30s chunks at silence boundaries
+    let chunks = split_at_silence(&resampled);
+    let total_chunks = chunks.len();
 
-    for (i, chunk) in resampled.chunks(CHUNK_SIZE).enumerate() {
+    for (i, chunk) in chunks.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             tx.send(FileUpdate::Status("Cancelled".to_string()))?;
             return Ok(());

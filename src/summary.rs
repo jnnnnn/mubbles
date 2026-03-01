@@ -6,6 +6,45 @@ use std::{
 use reqwest::blocking::Client;
 use serde_json::json;
 
+#[derive(serde::Deserialize, serde::Serialize, PartialEq, Clone, Debug)]
+pub enum ApiProvider {
+    OpenAI,
+    Ollama,
+    Custom,
+}
+
+impl std::fmt::Display for ApiProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiProvider::OpenAI => write!(f, "OpenAI"),
+            ApiProvider::Ollama => write!(f, "Ollama"),
+            ApiProvider::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
+impl ApiProvider {
+    pub fn default_url(&self) -> &str {
+        match self {
+            ApiProvider::OpenAI => "https://api.openai.com/v1/chat/completions",
+            ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions",
+            ApiProvider::Custom => "",
+        }
+    }
+
+    pub fn default_model(&self) -> &str {
+        match self {
+            ApiProvider::OpenAI => "gpt-4o-mini",
+            ApiProvider::Ollama => "llama3.2",
+            ApiProvider::Custom => "",
+        }
+    }
+
+    pub fn needs_key(&self) -> bool {
+        !matches!(self, ApiProvider::Ollama)
+    }
+}
+
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct SummaryState {
@@ -13,6 +52,10 @@ pub struct SummaryState {
     pub text: String,
     pub user_prompt: String,
     pub system_prompt: String,
+    pub provider: ApiProvider,
+    pub api_url: String,
+    pub api_key: String,
+    pub model: String,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
@@ -25,24 +68,32 @@ pub enum SummaryUpdate {
     Additional(String),
 }
 
-const DEFAULT_USER_PROMPT: &str = r#"
-    Summary so far: 
-    %SOFAR%
+const DEFAULT_USER_PROMPT: &str = r#"Summary so far:
+%SOFAR%
 
-    Additional raw meeting transcript:
-    %ADDITIONAL%
+Additional raw meeting transcript:
+%ADDITIONAL%"#;
 
-    "#;
-const DEFAULT_SYSTEM_PROMPT: &str = r#"Act as a meeting secretary and write minutes for the additional transcript, following on from the summary so far."#;
+const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a skilled meeting secretary. Write concise, well-structured minutes for the additional transcript, continuing from the summary so far. Focus on:
+- Key decisions and action items
+- Important discussion points
+- Who said what (when speakers are identified)
+- Concrete outcomes and next steps
+Use bullet points. Be concise but don't omit important details."#;
 
 impl Default for SummaryState {
     fn default() -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<SummaryUpdate>();
+        let provider = ApiProvider::OpenAI;
         Self {
             offset: 0,
             text: String::new(),
             user_prompt: DEFAULT_USER_PROMPT.to_string(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            provider: provider.clone(),
+            api_url: provider.default_url().to_string(),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            model: provider.default_model().to_string(),
             output_words: 5,
             input_lines: 7,
             tx,
@@ -70,16 +121,17 @@ pub fn statistical_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut 
 }
 
 pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
-    // this button triggers an OpenAI summary request
-    if ui.button("Request OpenAI summary").clicked() {
-        trigger_summarization_request(summary, text);
-    }
+    ui.horizontal(|ui| {
+        let label = format!("Request {} summary", summary.provider);
+        if ui.button(label).clicked() {
+            trigger_summarization_request(summary, text);
+        }
 
-    // this is the only way for the user to clear the offset for generating new AI summary
-    if ui.button("Clear summary").clicked() {
-        summary.offset = 0;
-        summary.text = String::new();
-    }
+        if ui.button("Clear summary").clicked() {
+            summary.offset = 0;
+            summary.text = String::new();
+        }
+    });
 
     // Since we're on the main thread here, we can see if there's any responses
     // that have been returned by a summary thread through the mpsc channel
@@ -94,19 +146,6 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
 }
 
 fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
-    // 8000 chars is ~1500 tokens. Allowing for 10 lines of response (100
-    // tokens) and 10 lines of context (100 tokens), we have a total size of
-    // 1700 tokens. gpt-3.5-turbo-16k has a max_tokens of 16k; -turbo has a
-    // max_tokens of 8k. So use whichever model makes sense (the smaller model
-    // is half the price). So we can safely take 14k tokens of transcript, which
-    // is 14k * 8000 / 1500 = 75k chars.
-    //
-    // change of plan
-    //
-    // after some quick tests, I find that this skips too much. Each request
-    // seems to return about ten lines of summary, so taking 8000 chars (~160
-    // lines) gives us one line of summary for every 16 lines of transcript. So
-    // we'll take 8000 chars of transcript at a time.
     let additional = raw
         .chars()
         .skip(summary.offset)
@@ -119,9 +158,9 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         );
         return;
     }
-    // call openai to generate summary of additional text.
     tracing::info!(
-        "requesting summary. Offset: {}, chars: {}",
+        "requesting {} summary. Offset: {}, chars: {}",
+        summary.provider,
         summary.offset,
         additional.len()
     );
@@ -141,26 +180,42 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         .replace("%ADDITIONAL%", additional.as_str());
 
     let sender = summary.tx.clone();
-
     let system_prompt = summary.system_prompt.to_owned();
+    let api_url = summary.api_url.clone();
+    let api_key = summary.api_key.clone();
+    let model = summary.model.clone();
+    let needs_key = summary.provider.needs_key();
+
     thread::spawn(move || {
-        openai_request(user_prompt, system_prompt, sender);
+        chat_completion_request(user_prompt, system_prompt, api_url, api_key, model, needs_key, sender);
     });
 }
 
-/// Synchronously request a summary from openai, and send it back to the main thread.
-fn openai_request(
+/// Synchronously send a chat completion request to any OpenAI-compatible API
+/// (OpenAI, Ollama, or any custom endpoint) and send the result back via the channel.
+fn chat_completion_request(
     user_prompt: String,
     system_prompt: String,
+    api_url: String,
+    api_key: String,
+    model: String,
+    needs_key: bool,
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
 ) {
+    if api_url.is_empty() {
+        tracing::error!("API URL is not configured. Set it in Settings.");
+        return;
+    }
+    if needs_key && api_key.is_empty() {
+        tracing::error!("API key is not configured. Set it in Settings or via OPENAI_API_KEY env var.");
+        return;
+    }
+    if model.is_empty() {
+        tracing::error!("Model is not configured. Set it in Settings.");
+        return;
+    }
+
     let client = Client::new();
-    // if user + system > 35k chars, use -16k model
-    let model = if user_prompt.len() + system_prompt.len() > 35000 {
-        "gpt-3.5-turbo-16k"
-    } else {
-        "gpt-3.5-turbo"
-    };
     let body = json!({
         "messages": [
             { "role": "system", "content": system_prompt },
@@ -168,33 +223,43 @@ fn openai_request(
         ],
         "model": model,
         "temperature": 0.7,
-        "max_tokens": 256,
-        "stop": ["\n\n", " Human:", " AI:"]
+        "max_tokens": 1024,
     });
-    let apikey = if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-        key
-    } else {
-        tracing::error!("OPENAI_API_KEY not set. Create an account and then a key at https://platform.openai.com/account/usage .");
-        return;
+
+    let mut request = client
+        .post(&api_url)
+        .header("Content-Type", "application/json");
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = match request.json(&body).send() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to send request to {}: {}", api_url, e);
+            return;
+        }
     };
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", apikey))
-        .json(&body)
-        .send()
-        .expect("failed to send request");
-    let response_json: serde_json::Value = response.json().expect("failed to parse response");
+
+    let response_json: serde_json::Value = match response.json() {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("Failed to parse response: {}", e);
+            return;
+        }
+    };
     tracing::info!("response: {:?}", response_json);
+
     let summary = response_json["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_else(|| {
-            tracing::error!("failed to parse response: {:?}", response_json);
+            tracing::error!("Unexpected response format: {:?}", response_json);
             ""
         })
         .to_string();
-    tx.send(SummaryUpdate::Additional(summary))
-        .expect("failed to send summary");
+    if let Err(e) = tx.send(SummaryUpdate::Additional(summary)) {
+        tracing::error!("Failed to send summary to main thread: {}", e);
+    }
 }
 
 struct WordInSummary {
