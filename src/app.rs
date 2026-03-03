@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Sender, TryRecvError},
@@ -40,6 +40,7 @@ enum AppTab {
     StatisticalSummary,
     AISummary,
     FileTranscription,
+    Devices,
     Settings,
     Log,
 }
@@ -158,8 +159,7 @@ pub struct MubblesApp {
     devices: Vec<AppDevice>,
     #[serde(skip)]
     device_enumeration_rx: DeviceEnumerationReceiver,
-    selected_device1: usize,
-    selected_device2: usize,
+    selected_device_names: HashSet<String>,
 
     // Model configuration
     selected_model: usize,
@@ -229,7 +229,7 @@ impl Default for MubblesApp {
         let (devices, device_enumeration_rx) = get_devices();
         let (file_tx, file_rx) = mpsc::channel();
 
-        let selected_device = Self::find_default_device(&devices);
+        let selected_device_names = Self::default_device_names(&devices);
 
         Self {
             // Transcript state
@@ -245,8 +245,7 @@ impl Default for MubblesApp {
             // Audio devices
             devices,
             device_enumeration_rx,
-            selected_device1: selected_device,
-            selected_device2: selected_device,
+            selected_device_names,
 
             // Model configuration
             selected_model: 1,
@@ -296,17 +295,19 @@ impl Default for MubblesApp {
 }
 
 impl MubblesApp {
-    /// Find the default device index in the device list.
-    /// Returns the first device if no preferred default is found.
-    fn find_default_device(devices: &[AppDevice]) -> usize {
-        // On Linux with PipeWire, prefer monitor sources for desktop audio capture
-        // On other platforms, try to find the default output device
+    /// Find default device names to select initially.
+    fn default_device_names(devices: &[AppDevice]) -> HashSet<String> {
+        let mut names = HashSet::new();
+
         #[cfg(target_os = "linux")]
         {
-            // Prefer first monitor source, or first device if none
-            devices.iter().position(|d| d.name.contains("Monitor")).unwrap_or(0)
+            if let Some(d) = devices.iter().find(|d| d.name.contains("Monitor")) {
+                names.insert(d.name.clone());
+            } else if let Some(d) = devices.first() {
+                names.insert(d.name.clone());
+            }
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
             use cpal::traits::{DeviceTrait, HostTrait};
@@ -316,11 +317,14 @@ impl MubblesApp {
                 .and_then(|d| d.name().ok())
                 .unwrap_or_else(|| "Unknown".to_owned());
 
-            devices
-                .iter()
-                .position(|d| d.name == default_device_name)
-                .unwrap_or(0)
+            if let Some(d) = devices.iter().find(|d| d.name == default_device_name) {
+                names.insert(d.name.clone());
+            } else if let Some(d) = devices.first() {
+                names.insert(d.name.clone());
+            }
         }
+
+        names
     }
 
     /// Called once before the first frame.
@@ -432,22 +436,13 @@ impl MubblesApp {
     fn check_device_enumeration(&mut self) {
         if let Some(new_devices) = check_device_enumeration(&mut self.device_enumeration_rx) {
             tracing::info!("Device enumeration complete, found {} devices", new_devices.len());
-            
-            // Preserve selection if possible, otherwise find default
-            let old_device1_name = self.devices.get(self.selected_device1).map(|d| d.name.clone());
-            let old_device2_name = self.devices.get(self.selected_device2).map(|d| d.name.clone());
-            
             self.devices = new_devices;
-            
-            // Try to restore previous selection by name
-            self.selected_device1 = old_device1_name
-                .and_then(|name| self.devices.iter().position(|d| d.name == name))
-                .unwrap_or_else(|| Self::find_default_device(&self.devices));
-            
-            self.selected_device2 = old_device2_name
-                .and_then(|name| self.devices.iter().position(|d| d.name == name))
-                .unwrap_or_else(|| Self::find_default_device(&self.devices));
-            
+
+            // If no selected devices exist in the new list, pick defaults
+            if !self.devices.iter().any(|d| self.selected_device_names.contains(&d.name)) {
+                self.selected_device_names = Self::default_device_names(&self.devices);
+            }
+
             self.status = format!("Found {} audio devices", self.devices.len());
         }
     }
@@ -479,39 +474,11 @@ impl MubblesApp {
                     self.toggle_recording();
                 }
 
-                // Device selectors (clamp to valid range in case persisted value is stale)
-                if !self.devices.is_empty() {
-                    self.selected_device1 = self.selected_device1.min(self.devices.len() - 1);
-                    self.selected_device2 = self.selected_device2.min(self.devices.len() - 1);
-                }
+                let selected_count = self.devices.iter()
+                    .filter(|d| self.selected_device_names.contains(&d.name))
+                    .count();
+                ui.label(format!("{} device(s) selected", selected_count));
 
-                ui.vertical(|ui| {
-                    let source1 = egui::ComboBox::from_label("Sound device").show_index(
-                        ui,
-                        &mut self.selected_device1,
-                        self.devices.len(),
-                        |i| self.devices[i].name.clone(),
-                    );
-                    if source1.changed() {
-                        self.worker = None;
-                    }
-
-                    let source2 = egui::ComboBox::from_label("Sound device 2").show_index(
-                        ui,
-                        &mut self.selected_device2,
-                        self.devices.len(),
-                        |i| self.devices[i].name.clone(),
-                    );
-                    if source2.changed() {
-                        self.worker = None;
-                    }
-                });
-            },
-        );
-
-        ui.with_layout(
-            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP),
-            |ui| {
                 // Model selector
                 let model = egui::ComboBox::from_label("Model")
                     .selected_text(WhichModel::from(self.selected_model).to_string())
@@ -530,10 +497,16 @@ impl MubblesApp {
         if self.worker.is_some() {
             self.worker = None;
         } else {
+            let device_refs: Vec<&AppDevice> = self.devices.iter()
+                .filter(|d| self.selected_device_names.contains(&d.name))
+                .collect();
+            if device_refs.is_empty() {
+                self.status = "No devices selected. Go to the Devices tab to select devices.".to_string();
+                return;
+            }
             match start_listening(
                 &self.whisper_tx,
-                &self.devices[self.selected_device1],
-                &self.devices[self.selected_device2],
+                &device_refs,
                 WhisperParams {
                     accuracy: self.accuracy,
                     model: WhichModel::from(self.selected_model),
@@ -706,6 +679,7 @@ impl MubblesApp {
             );
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
             ui.selectable_value(&mut self.tab, AppTab::FileTranscription, "File");
+            ui.selectable_value(&mut self.tab, AppTab::Devices, "Devices");
             ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
             ui.selectable_value(&mut self.tab, AppTab::Log, "Log");
         });
@@ -926,6 +900,9 @@ impl MubblesApp {
                         .desired_width(f32::INFINITY),
                 );
             }
+            AppTab::Devices => {
+                self.render_devices_tab(ui);
+            }
             AppTab::Log => {
                 ui.heading("Application Logs");
                 ui.add_space(10.0);
@@ -968,6 +945,58 @@ impl MubblesApp {
                 );
             }
         });
+    }
+
+    /// Render the devices tab with checkboxes for each audio device
+    fn render_devices_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Audio Devices");
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Refresh Devices").clicked() {
+                let (devices, rx) = get_devices();
+                self.devices = devices;
+                self.device_enumeration_rx = rx;
+                if self.worker.is_some() {
+                    self.worker = None;
+                    self.status = "Stopped: devices refreshed".to_string();
+                }
+            }
+            ui.label(format!("{} devices found", self.devices.len()));
+        });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(5.0);
+
+        let is_recording = self.worker.is_some();
+        let device_names: Vec<String> = self.devices.iter().map(|d| d.name.clone()).collect();
+        let mut changed = false;
+
+        for name in &device_names {
+            let mut selected = self.selected_device_names.contains(name);
+            let checkbox = ui.add_enabled(
+                !is_recording,
+                egui::Checkbox::new(&mut selected, name.as_str()),
+            );
+            if checkbox.changed() {
+                if selected {
+                    self.selected_device_names.insert(name.clone());
+                } else {
+                    self.selected_device_names.remove(name);
+                }
+                changed = true;
+            }
+        }
+
+        if is_recording {
+            ui.add_space(5.0);
+            ui.label("Stop recording to change device selection.");
+        }
+
+        if changed {
+            self.worker = None;
+        }
     }
 
     /// Render the transcription history tab with a virtualized table of words
@@ -1219,8 +1248,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
 
 /// Holds handles to keep audio streams and worker threads alive
 struct Worker {
-    audio: StreamState,
-    audio2: Option<StreamState>,
+    audio_streams: Vec<StreamState>,
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
 }
@@ -1228,8 +1256,7 @@ struct Worker {
 /// Start audio capture and transcription
 fn start_listening(
     app: &Sender<WhisperUpdate>,
-    app_device: &AppDevice,
-    app_device2: &AppDevice,
+    devices: &[&AppDevice],
     params: WhisperParams,
 ) -> Result<Worker, anyhow::Error> {
     // Start partial transcription thread if enabled
@@ -1241,31 +1268,28 @@ fn start_listening(
         (None, None)
     };
 
-    // Start filtered audio channel
+    // Start filtered audio channel (shared by all devices)
     let (filtered_tx, filtered_rx) = mpsc::channel();
 
-    // Start primary audio stream
-    let stream =
-        crate::audio::start_audio_thread(app.clone(), app_device, filtered_tx.clone(), partial_tx)?;
-
-    // Start secondary audio stream if different device selected
-    let audio2 = if app_device2.name != app_device.name {
-        Some(crate::audio::start_audio_thread(
+    // Start an audio stream for each selected device
+    let mut audio_streams = Vec::new();
+    for (i, device) in devices.iter().enumerate() {
+        // Only send partial audio from the first device
+        let ptx = if i == 0 { partial_tx.clone() } else { None };
+        let stream = crate::audio::start_audio_thread(
             app.clone(),
-            app_device2,
-            filtered_tx,
-            None,
-        )?)
-    } else {
-        None
-    };
+            device,
+            filtered_tx.clone(),
+            ptx,
+        )?;
+        audio_streams.push(stream);
+    }
 
     // Start whisper transcription thread
     let whisper_thread = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params)?;
 
     Ok(Worker {
-        audio: stream,
-        audio2,
+        audio_streams,
         partial_thread,
         whisper_thread: Some(whisper_thread),
     })
