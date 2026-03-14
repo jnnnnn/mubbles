@@ -10,11 +10,13 @@ use std::{
 };
 
 use candle_core::Tensor;
-use egui_plot::{Line, Plot, PlotPoints};
 use egui_extras::{Column, TableBuilder};
+use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::{
-    audio::{check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState},
+    audio::{
+        check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState,
+    },
     file_transcription::{self, FileUpdate},
     partial::PARTIAL_MEL_BINS,
     summary,
@@ -26,7 +28,7 @@ use crate::{
 const LEVEL_PLOT_WIDTH: f32 = 100.0;
 const LEVEL_PLOT_HEIGHT: f32 = 30.0;
 const LEVEL_BUFFER_SIZE: usize = 100;
-const MEL_UPDATE_HZ: f32 = 100.0;  // Mel frames per second (10ms per frame)
+const MEL_UPDATE_HZ: f32 = 100.0; // Mel frames per second (10ms per frame)
 const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
@@ -101,7 +103,11 @@ impl DisplayMel {
 
         if let Some(tex) = &mut self.texture {
             // Update column in pre-allocated texture
-            tex.set_partial([self.frame_count, 0], column, egui::TextureOptions::default());
+            tex.set_partial(
+                [self.frame_count, 0],
+                column,
+                egui::TextureOptions::default(),
+            );
             self.frame_count += 1;
         } else {
             // Create pre-allocated texture (black/silent initially)
@@ -362,7 +368,8 @@ impl MubblesApp {
                     self.text.push_str(&trimmed);
                     self.text.push('\n');
                     self.changed = true;
-                    self.transcription_logger.append(&self.transcription_folder, &trimmed);
+                    self.transcription_logger
+                        .append(&self.transcription_folder, &trimmed);
                     if self.autotype {
                         crate::autotype::type_text(&trimmed);
                     }
@@ -435,11 +442,18 @@ impl MubblesApp {
     /// Check if async device enumeration has completed and update device list
     fn check_device_enumeration(&mut self) {
         if let Some(new_devices) = check_device_enumeration(&mut self.device_enumeration_rx) {
-            tracing::info!("Device enumeration complete, found {} devices", new_devices.len());
+            tracing::info!(
+                "Device enumeration complete, found {} devices",
+                new_devices.len()
+            );
             self.devices = new_devices;
 
             // If no selected devices exist in the new list, pick defaults
-            if !self.devices.iter().any(|d| self.selected_device_names.contains(&d.name)) {
+            if !self
+                .devices
+                .iter()
+                .any(|d| self.selected_device_names.contains(&d.name))
+            {
                 self.selected_device_names = Self::default_device_names(&self.devices);
             }
 
@@ -474,11 +488,18 @@ impl MubblesApp {
                     self.toggle_recording();
                 }
 
-                let selected_count = self.devices.iter()
+                let selected_count = self
+                    .devices
+                    .iter()
                     .filter(|d| self.selected_device_names.contains(&d.name))
                     .count();
-                ui.label(format!("{} device(s) selected", selected_count));
+                //ui.label(format!("{} device(s) selected", selected_count));
+            },
+        );
 
+        ui.with_layout(
+            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP),
+            |ui| {
                 // Model selector
                 let model = egui::ComboBox::from_label("Model")
                     .selected_text(WhichModel::from(self.selected_model).to_string())
@@ -497,11 +518,14 @@ impl MubblesApp {
         if self.worker.is_some() {
             self.worker = None;
         } else {
-            let device_refs: Vec<&AppDevice> = self.devices.iter()
+            let device_refs: Vec<&AppDevice> = self
+                .devices
+                .iter()
                 .filter(|d| self.selected_device_names.contains(&d.name))
                 .collect();
             if device_refs.is_empty() {
-                self.status = "No devices selected. Go to the Devices tab to select devices.".to_string();
+                self.status =
+                    "No devices selected. Go to the Devices tab to select devices.".to_string();
                 return;
             }
             match start_listening(
@@ -535,14 +559,16 @@ impl MubblesApp {
             return None; // Don't render mel when partials disabled
         }
 
-        Some(ui.with_layout(
-            egui::Layout::left_to_right(egui::Align::LEFT)
-                .with_main_wrap(true)
-                .with_cross_align(egui::Align::TOP),
-            |ui| {
-                draw_mel(&mut self.mel, ui);
-            },
-        ))
+        Some(
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::LEFT)
+                    .with_main_wrap(true)
+                    .with_cross_align(egui::Align::TOP),
+                |ui| {
+                    draw_mel(&mut self.mel, ui);
+                },
+            ),
+        )
     }
 
     /// Render aligned words overlay on mel spectrogram
@@ -632,7 +658,10 @@ impl MubblesApp {
     /// Start file transcription
     fn start_file_transcription(&mut self) {
         let file_dialog = rfd::FileDialog::new()
-            .add_filter("Audio Files", &["wav", "mp3", "flac", "ogg", "m4a", "aac", "wma"])
+            .add_filter(
+                "Audio Files",
+                &["wav", "mp3", "flac", "ogg", "m4a", "aac", "wma"],
+            )
             .set_title("Select Audio File to Transcribe");
 
         if let Some(path) = file_dialog.pick_file() {
@@ -914,7 +943,7 @@ impl MubblesApp {
                     egui::ComboBox::from_id_salt("log_level")
                         .selected_text(level_names[self.log_level])
                         .show_index(ui, &mut self.log_level, 5, |i| level_names[i]);
-                    
+
                     // Update the level control if the level changed
                     if old_level != self.log_level {
                         let tracing_level = crate::log_capture::index_to_tracing_level(self.log_level);
@@ -1025,14 +1054,18 @@ impl MubblesApp {
             .column(Column::remainder().at_least(100.0)) // Word
             .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
             .header(20.0, |mut header| {
-                header.col(|ui| { ui.strong("Time"); });
-                header.col(|ui| { ui.strong("Words"); });
+                header.col(|ui| {
+                    ui.strong("Time");
+                });
+                header.col(|ui| {
+                    ui.strong("Words");
+                });
             })
             .body(|body| {
                 body.rows(row_height, num_rows, |mut row| {
                     let idx = row.index();
                     let words = &self.word_history[idx];
-                    
+
                     row.col(|ui| {
                         ui.label("00:00");
                     });
@@ -1217,7 +1250,7 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
         // Calculate visible portion (scroll to show most recent frames)
         let total_frames = MAX_MEL_FRAMES as f32;
         let visible_frames = DISPLAY_WIDTH; // 1 pixel per frame
-        
+
         // UV coordinates for scrolling: show the rightmost portion
         let start_frame = if mel.frame_count as f32 > visible_frames {
             (mel.frame_count as f32 - visible_frames) / total_frames
@@ -1276,12 +1309,8 @@ fn start_listening(
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
-        let stream = crate::audio::start_audio_thread(
-            app.clone(),
-            device,
-            filtered_tx.clone(),
-            ptx,
-        )?;
+        let stream =
+            crate::audio::start_audio_thread(app.clone(), device, filtered_tx.clone(), ptx)?;
         audio_streams.push(stream);
     }
 
