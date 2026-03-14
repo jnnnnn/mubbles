@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Sender, TryRecvError},
@@ -488,18 +488,6 @@ impl MubblesApp {
                     self.toggle_recording();
                 }
 
-                let selected_count = self
-                    .devices
-                    .iter()
-                    .filter(|d| self.selected_device_names.contains(&d.name))
-                    .count();
-                //ui.label(format!("{} device(s) selected", selected_count));
-            },
-        );
-
-        ui.with_layout(
-            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP),
-            |ui| {
                 // Model selector
                 let model = egui::ComboBox::from_label("Model")
                     .selected_text(WhichModel::from(self.selected_model).to_string())
@@ -508,6 +496,10 @@ impl MubblesApp {
                     });
                 if model.changed() {
                     self.worker = None;
+                }
+
+                if ui.button("Devices…").clicked() {
+                    self.tab = AppTab::Devices;
                 }
             },
         );
@@ -998,33 +990,27 @@ impl MubblesApp {
         ui.separator();
         ui.add_space(5.0);
 
-        let is_recording = self.worker.is_some();
         let device_names: Vec<String> = self.devices.iter().map(|d| d.name.clone()).collect();
-        let mut changed = false;
 
         for name in &device_names {
             let mut selected = self.selected_device_names.contains(name);
-            let checkbox = ui.add_enabled(
-                !is_recording,
-                egui::Checkbox::new(&mut selected, name.as_str()),
-            );
-            if checkbox.changed() {
+            if ui.checkbox(&mut selected, name.as_str()).changed() {
                 if selected {
                     self.selected_device_names.insert(name.clone());
+                    // Start audio stream if worker is running
+                    if let Some(worker) = &mut self.worker {
+                        if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
+                            worker.add_device(device);
+                        }
+                    }
                 } else {
                     self.selected_device_names.remove(name);
+                    // Stop audio stream if worker is running
+                    if let Some(worker) = &mut self.worker {
+                        worker.remove_device(name);
+                    }
                 }
-                changed = true;
             }
-        }
-
-        if is_recording {
-            ui.add_space(5.0);
-            ui.label("Stop recording to change device selection.");
-        }
-
-        if changed {
-            self.worker = None;
         }
     }
 
@@ -1281,9 +1267,48 @@ fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
 
 /// Holds handles to keep audio streams and worker threads alive
 struct Worker {
-    audio_streams: Vec<StreamState>,
+    audio_streams: HashMap<String, StreamState>,
+    filtered_tx: Sender<crate::audio::PcmAudio>,
+    partial_tx: Option<Sender<crate::audio::PcmAudio>>,
+    app_tx: Sender<WhisperUpdate>,
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
+}
+
+impl Worker {
+    /// Add an audio stream for a device
+    fn add_device(&mut self, device: &AppDevice) {
+        if self.audio_streams.contains_key(&device.name) {
+            return;
+        }
+        // Only give partial_tx to first device (if none are streaming yet)
+        let ptx = if self.audio_streams.is_empty() {
+            self.partial_tx.clone()
+        } else {
+            None
+        };
+        match crate::audio::start_audio_thread(
+            self.app_tx.clone(),
+            device,
+            self.filtered_tx.clone(),
+            ptx,
+        ) {
+            Ok(stream) => {
+                tracing::info!("Started audio stream for: {}", device.name);
+                self.audio_streams.insert(device.name.clone(), stream);
+            }
+            Err(e) => {
+                tracing::error!("Failed to start audio for {}: {}", device.name, e);
+            }
+        }
+    }
+
+    /// Remove an audio stream for a device (dropping it stops capture)
+    fn remove_device(&mut self, name: &str) {
+        if self.audio_streams.remove(name).is_some() {
+            tracing::info!("Stopped audio stream for: {}", name);
+        }
+    }
 }
 
 /// Start audio capture and transcription
@@ -1305,13 +1330,13 @@ fn start_listening(
     let (filtered_tx, filtered_rx) = mpsc::channel();
 
     // Start an audio stream for each selected device
-    let mut audio_streams = Vec::new();
+    let mut audio_streams = HashMap::new();
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
         let stream =
             crate::audio::start_audio_thread(app.clone(), device, filtered_tx.clone(), ptx)?;
-        audio_streams.push(stream);
+        audio_streams.insert(device.name.clone(), stream);
     }
 
     // Start whisper transcription thread
@@ -1319,6 +1344,9 @@ fn start_listening(
 
     Ok(Worker {
         audio_streams,
+        filtered_tx,
+        partial_tx,
+        app_tx: app.clone(),
         partial_thread,
         whisper_thread: Some(whisper_thread),
     })
