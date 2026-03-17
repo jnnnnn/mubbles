@@ -56,6 +56,7 @@ pub struct SummaryState {
     pub api_url: String,
     pub api_key: String,
     pub model: String,
+    pub ai_input_chars: usize,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
@@ -66,6 +67,7 @@ pub struct SummaryState {
 
 pub enum SummaryUpdate {
     Additional(String),
+    Status(String),
 }
 
 const DEFAULT_USER_PROMPT: &str = r#"Summary so far:
@@ -94,6 +96,7 @@ impl Default for SummaryState {
             api_url: provider.default_url().to_string(),
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             model: provider.default_model().to_string(),
+            ai_input_chars: 8000,
             output_words: 5,
             input_lines: 7,
             tx,
@@ -133,23 +136,33 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
         }
     });
 
-    // Since we're on the main thread here, we can see if there's any responses
-    // that have been returned by a summary thread through the mpsc channel
+    poll_ai_updates(summary, text);
+}
+
+/// Poll for AI summary responses from the background thread.
+/// Call this from any UI path that needs to drive AI summary updates.
+/// Returns the latest status message, if any.
+pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<String> {
+    let mut status = None;
     while let Ok(update) = summary.rx.try_recv() {
         match update {
             SummaryUpdate::Additional(additional) => {
                 summary.text.push_str(format!("\n{}", additional).as_str());
                 trigger_summarization_request(summary, text);
             }
+            SummaryUpdate::Status(s) => {
+                status = Some(s);
+            }
         }
     }
+    status
 }
 
 fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
     let additional = raw
         .chars()
         .skip(summary.offset)
-        .take(8000)
+        .take(summary.ai_input_chars)
         .collect::<String>();
     if additional.len() < 100 {
         tracing::warn!(
@@ -165,6 +178,12 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         additional.len()
     );
     summary.offset += additional.len();
+
+    let _ = summary.tx.send(SummaryUpdate::Status(format!(
+        "Requesting {} summary ({} chars)...",
+        summary.provider,
+        additional.len()
+    )));
 
     let sofar = summary
         .text
@@ -204,14 +223,17 @@ fn chat_completion_request(
 ) {
     if api_url.is_empty() {
         tracing::error!("API URL is not configured. Set it in Settings.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: API URL not configured".to_string()));
         return;
     }
     if needs_key && api_key.is_empty() {
         tracing::error!("API key is not configured. Set it in Settings or via OPENAI_API_KEY env var.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: API key not configured".to_string()));
         return;
     }
     if model.is_empty() {
         tracing::error!("Model is not configured. Set it in Settings.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: model not configured".to_string()));
         return;
     }
 
@@ -237,6 +259,7 @@ fn chat_completion_request(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to send request to {}: {}", api_url, e);
+            let _ = tx.send(SummaryUpdate::Status(format!("AI summary error: {}", e)));
             return;
         }
     };
@@ -245,21 +268,55 @@ fn chat_completion_request(
         Ok(j) => j,
         Err(e) => {
             tracing::error!("Failed to parse response: {}", e);
+            let _ = tx.send(SummaryUpdate::Status(format!("AI summary parse error: {}", e)));
             return;
         }
     };
     tracing::info!("response: {:?}", response_json);
 
-    let summary = response_json["choices"][0]["message"]["content"]
+    let raw_summary = response_json["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_else(|| {
             tracing::error!("Unexpected response format: {:?}", response_json);
             ""
-        })
-        .to_string();
+        });
+    let summary = strip_xml_blocks(raw_summary);
+    let _ = tx.send(SummaryUpdate::Status("AI summary received".to_string()));
     if let Err(e) = tx.send(SummaryUpdate::Additional(summary)) {
         tracing::error!("Failed to send summary to main thread: {}", e);
     }
+}
+
+/// Strip content inside XML-style tag blocks (e.g. `<think>...</think>`) from text.
+fn strip_xml_blocks(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open_start) = rest.find('<') {
+        // Find the tag name
+        let after_open = &rest[open_start + 1..];
+        let tag_end = after_open
+            .find(|c: char| c == '>' || c.is_whitespace())
+            .unwrap_or(after_open.len());
+        let tag_name = &after_open[..tag_end];
+        if tag_name.is_empty() || tag_name.starts_with('/') {
+            // Not an opening tag, keep the '<' and move on
+            result.push_str(&rest[..open_start + 1]);
+            rest = &rest[open_start + 1..];
+            continue;
+        }
+        let closing = format!("</{}>", tag_name);
+        if let Some(close_pos) = rest[open_start..].find(&closing) {
+            // Found matching close tag — skip the entire block
+            result.push_str(&rest[..open_start]);
+            rest = &rest[open_start + close_pos + closing.len()..];
+        } else {
+            // No closing tag, keep everything
+            result.push_str(&rest[..open_start + 1]);
+            rest = &rest[open_start + 1..];
+        }
+    }
+    result.push_str(rest);
+    result.trim().to_string()
 }
 
 struct WordInSummary {
@@ -424,5 +481,27 @@ mod tests {
         // make sure we end up at the end of the text
         assert_eq!(state.offset, 668);
         assert_eq!(state.offset, raw.len());
+    }
+
+    #[test]
+    fn test_strip_xml_blocks() {
+        assert_eq!(
+            strip_xml_blocks("<think>reasoning here</think>The answer"),
+            "The answer"
+        );
+        assert_eq!(
+            strip_xml_blocks("Before <reasoning>internal</reasoning> after"),
+            "Before  after"
+        );
+        assert_eq!(
+            strip_xml_blocks("<think>one</think>middle<reflect>two</reflect>end"),
+            "middleend"
+        );
+        assert_eq!(strip_xml_blocks("no tags here"), "no tags here");
+        assert_eq!(strip_xml_blocks("a < b and c > d"), "a < b and c > d");
+        assert_eq!(
+            strip_xml_blocks("<think>\nlong\nblock\n</think>\n- bullet point"),
+            "- bullet point"
+        );
     }
 }

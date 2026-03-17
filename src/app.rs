@@ -683,8 +683,48 @@ impl MubblesApp {
     /// Render the central panel with tabs and text editor
     fn render_central_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Always poll for AI summary updates, even when not on the AI tab
+            if let Some(status) = summary::poll_ai_updates(&mut self.ai_summary, &mut self.text) {
+                self.status = status;
+            }
+
             self.render_tabs(ui);
-            self.render_text_editor(ui);
+
+            let wide_enough = ui.available_width() > 800.0;
+            if wide_enough && matches!(self.tab, AppTab::Transcript) {
+                // Side-by-side: transcript left, AI summary right
+                let half = ui.available_width() / 2.0;
+                ui.columns(2, |cols| {
+                    let scroll = egui::ScrollArea::vertical()
+                        .id_salt("transcript_scroll");
+                    let scroll = if self.changed {
+                        self.changed = false;
+                        scroll.vertical_scroll_offset(10_000_000.0)
+                    } else {
+                        scroll
+                    };
+                    scroll.show(&mut cols[0], |ui| {
+                        ui.add_sized(
+                            egui::vec2(half - 10.0, ui.available_height()),
+                            egui::TextEdit::multiline(&mut self.text),
+                        );
+                    });
+
+                    cols[1].vertical(|ui| {
+                        summary::ai_ui(&mut self.ai_summary, ui, &mut self.text);
+                        egui::ScrollArea::vertical()
+                            .id_salt("ai_summary_scroll")
+                            .show(ui, |ui| {
+                                ui.add_sized(
+                                    egui::vec2(half - 10.0, ui.available_height()),
+                                    egui::TextEdit::multiline(&mut self.ai_summary.text),
+                                );
+                            });
+                    });
+                });
+            } else {
+                self.render_text_editor(ui);
+            }
         });
     }
 
@@ -822,6 +862,14 @@ impl MubblesApp {
                 ui.add_space(10.0);
 
                 ui.heading("AI Prompts");
+                ui.add_space(10.0);
+
+                ui.add(
+                    egui::Slider::new(&mut self.ai_summary.ai_input_chars, 500..=50000)
+                        .text("Characters per AI chunk")
+                        .logarithmic(true),
+                );
+
                 ui.add_space(10.0);
 
                 ui.label("System Prompt:");
