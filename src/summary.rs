@@ -60,6 +60,8 @@ pub struct SummaryState {
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
+    pub ollama_models: Vec<String>,
+    #[serde(skip)]
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
     #[serde(skip)]
     rx: std::sync::mpsc::Receiver<SummaryUpdate>,
@@ -99,6 +101,7 @@ impl Default for SummaryState {
             ai_input_chars: 8000,
             output_words: 5,
             input_lines: 7,
+            ollama_models: Vec::new(),
             tx,
             rx,
         }
@@ -285,6 +288,33 @@ fn chat_completion_request(
     if let Err(e) = tx.send(SummaryUpdate::Additional(summary)) {
         tracing::error!("Failed to send summary to main thread: {}", e);
     }
+}
+
+/// Fetch the list of model names from an Ollama instance.
+/// Derives the base URL from the chat completions URL by stripping `/v1/chat/completions`.
+pub fn fetch_ollama_models(api_url: &str) -> Vec<String> {
+    let base = api_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1/chat/completions")
+        .trim_end_matches('/');
+    let tags_url = format!("{}/api/tags", base);
+    tracing::info!("Fetching Ollama models from {}", tags_url);
+    let Ok(resp) = Client::new().get(&tags_url).send() else {
+        tracing::warn!("Failed to reach Ollama at {}", tags_url);
+        return vec![];
+    };
+    let Ok(json) = resp.json::<serde_json::Value>() else {
+        tracing::warn!("Failed to parse Ollama model list");
+        return vec![];
+    };
+    json["models"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Strip content inside XML-style tag blocks (e.g. `<think>...</think>`) from text.

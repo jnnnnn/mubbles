@@ -822,6 +822,13 @@ impl MubblesApp {
                             self.ai_summary.provider.default_url().to_string();
                         self.ai_summary.model =
                             self.ai_summary.provider.default_model().to_string();
+                        if self.ai_summary.provider == summary::ApiProvider::Ollama {
+                            self.ai_summary.ollama_models =
+                                summary::fetch_ollama_models(&self.ai_summary.api_url);
+                            if let Some(first) = self.ai_summary.ollama_models.first() {
+                                self.ai_summary.model = first.clone();
+                            }
+                        }
                     }
                 });
 
@@ -838,11 +845,35 @@ impl MubblesApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Model:");
-                    ui.add_sized(
-                        egui::vec2(ui.available_width(), 20.0),
-                        egui::TextEdit::singleline(&mut self.ai_summary.model)
-                            .hint_text("gpt-4o-mini"),
-                    );
+                    if self.ai_summary.provider == summary::ApiProvider::Ollama {
+                        egui::ComboBox::from_id_salt("ollama_model")
+                            .selected_text(&self.ai_summary.model)
+                            .width(ui.available_width() - 90.0)
+                            .show_ui(ui, |ui| {
+                                for m in &self.ai_summary.ollama_models.clone() {
+                                    ui.selectable_value(&mut self.ai_summary.model, m.clone(), m);
+                                }
+                            });
+                        if ui.button("Refresh").clicked() {
+                            self.ai_summary.ollama_models =
+                                summary::fetch_ollama_models(&self.ai_summary.api_url);
+                            if !self.ai_summary.ollama_models.is_empty()
+                                && !self
+                                    .ai_summary
+                                    .ollama_models
+                                    .contains(&self.ai_summary.model)
+                            {
+                                self.ai_summary.model =
+                                    self.ai_summary.ollama_models[0].clone();
+                            }
+                        }
+                    } else {
+                        ui.add_sized(
+                            egui::vec2(ui.available_width(), 20.0),
+                            egui::TextEdit::singleline(&mut self.ai_summary.model)
+                                .hint_text("gpt-4o-mini"),
+                        );
+                    }
                 });
 
                 if self.ai_summary.provider.needs_key() {
