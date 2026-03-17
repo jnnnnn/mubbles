@@ -901,6 +901,11 @@ impl MubblesApp {
                         .logarithmic(true),
                 );
 
+                ui.add(
+                    egui::Slider::new(&mut self.ai_summary.summary_context_lines, 0..=50)
+                        .text("Summary context lines sent to AI"),
+                );
+
                 ui.add_space(10.0);
 
                 ui.label("System Prompt:");

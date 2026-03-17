@@ -57,6 +57,7 @@ pub struct SummaryState {
     pub api_key: String,
     pub model: String,
     pub ai_input_chars: usize,
+    pub summary_context_lines: usize,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
@@ -99,6 +100,7 @@ impl Default for SummaryState {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             model: provider.default_model().to_string(),
             ai_input_chars: 8000,
+            summary_context_lines: 5,
             output_words: 5,
             input_lines: 7,
             ollama_models: Vec::new(),
@@ -192,7 +194,10 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         .text
         .lines()
         .rev()
-        .take(10)
+        .take(summary.summary_context_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
         .collect::<Vec<_>>()
         .join("\n");
 
