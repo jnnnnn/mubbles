@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
     thread,
+    time::Duration,
 };
 
 use reqwest::blocking::Client;
@@ -58,10 +60,23 @@ pub struct SummaryState {
     pub model: String,
     pub ai_input_chars: usize,
     pub summary_context_lines: usize,
+    pub max_tokens: usize,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
     pub ollama_models: Vec<String>,
+    #[serde(skip)]
+    pub ollama_model_ctx: Option<usize>,
+    #[serde(skip)]
+    pub in_progress: Arc<AtomicBool>,
+    #[serde(skip)]
+    aborted: Arc<AtomicBool>,
+    #[serde(skip)]
+    pub status: String,
+    #[serde(skip)]
+    streaming_start: usize,
+    #[serde(skip)]
+    streaming_raw: String,
     #[serde(skip)]
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
     #[serde(skip)]
@@ -69,7 +84,8 @@ pub struct SummaryState {
 }
 
 pub enum SummaryUpdate {
-    Additional(String),
+    StreamChunk(String),
+    StreamDone,
     Status(String),
 }
 
@@ -79,12 +95,13 @@ const DEFAULT_USER_PROMPT: &str = r#"Summary so far:
 Additional raw meeting transcript:
 %ADDITIONAL%"#;
 
-const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a skilled meeting secretary. Write concise, well-structured minutes for the additional transcript, continuing from the summary so far. Focus on:
+const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a skilled meeting secretary. You will receive recent summary context and a new chunk of raw transcript. Write ONLY new bullet points for the additional transcript. Do not repeat or rephrase the summary so far.
+Focus on:
 - Key decisions and action items
 - Important discussion points
 - Who said what (when speakers are identified)
 - Concrete outcomes and next steps
-Use bullet points. Be concise but don't omit important details."#;
+Use bullet points. Be concise but don't omit important details. Output only the new bullet points, nothing else."#;
 
 impl Default for SummaryState {
     fn default() -> Self {
@@ -101,9 +118,16 @@ impl Default for SummaryState {
             model: provider.default_model().to_string(),
             ai_input_chars: 8000,
             summary_context_lines: 5,
+            max_tokens: 4096,
             output_words: 5,
             input_lines: 7,
             ollama_models: Vec::new(),
+            ollama_model_ctx: None,
+            in_progress: Arc::new(AtomicBool::new(false)),
+            aborted: Arc::new(AtomicBool::new(false)),
+            status: String::new(),
+            streaming_start: 0,
+            streaming_raw: String::new(),
             tx,
             rx,
         }
@@ -131,8 +155,20 @@ pub fn statistical_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut 
 pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
     ui.horizontal(|ui| {
         let label = format!("Request {} summary", summary.provider);
-        if ui.button(label).clicked() {
-            trigger_summarization_request(summary, text);
+        let busy = summary.in_progress.load(Ordering::Relaxed);
+        ui.add_enabled_ui(!busy, |ui| {
+            if ui.button(label).clicked() {
+                summary.aborted.store(false, Ordering::Relaxed);
+                trigger_summarization_request(summary, text);
+            }
+        });
+
+        if busy {
+            if ui.button("❌ Abort").clicked() {
+                summary.aborted.store(true, Ordering::Relaxed);
+                summary.in_progress.store(false, Ordering::Relaxed);
+                summary.status = "Aborted".to_string();
+            }
         }
 
         if ui.button("Clear summary").clicked() {
@@ -140,6 +176,22 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
             summary.text = String::new();
         }
     });
+
+    if summary.in_progress.load(Ordering::Relaxed) {
+        let total = text.len();
+        let done = summary.offset;
+        let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        ui.add(egui::ProgressBar::new(fraction).text(format!(
+            "{} / {} chars ({}%)",
+            done,
+            total,
+            (fraction * 100.0) as u32,
+        )));
+    }
+
+    if !summary.status.is_empty() {
+        ui.label(&summary.status);
+    }
 
     poll_ai_updates(summary, text);
 }
@@ -151,12 +203,30 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
     let mut status = None;
     while let Ok(update) = summary.rx.try_recv() {
         match update {
-            SummaryUpdate::Additional(additional) => {
-                summary.text.push_str(format!("\n{}", additional).as_str());
+            SummaryUpdate::StreamChunk(chunk) => {
+                if summary.aborted.load(Ordering::Relaxed) {
+                    continue;
+                }
+                summary.text.push_str(&chunk);
+                summary.streaming_raw.push_str(&chunk);
+            }
+            SummaryUpdate::StreamDone => {
+                if summary.aborted.load(Ordering::Relaxed) {
+                    summary.streaming_raw.clear();
+                    continue;
+                }
+                // Replace the raw streamed text with the XML-stripped version
+                summary.text.truncate(summary.streaming_start);
+                let filtered = strip_xml_blocks(&summary.streaming_raw);
+                summary.text.push_str(&format!("\n{}", filtered));
+                summary.streaming_raw.clear();
                 trigger_summarization_request(summary, text);
             }
             SummaryUpdate::Status(s) => {
-                status = Some(s);
+                if !summary.aborted.load(Ordering::Relaxed) {
+                    summary.status = s.clone();
+                    status = Some(s);
+                }
             }
         }
     }
@@ -174,6 +244,13 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
             "{} chars is not enough additional text to summarize",
             additional.len()
         );
+        let remaining = raw.len().saturating_sub(summary.offset);
+        summary.in_progress.store(false, Ordering::Relaxed);
+        let _ = summary.tx.send(SummaryUpdate::Status(format!(
+            "Done — {} summary lines, {} remaining chars too short to summarize",
+            summary.text.lines().count(),
+            remaining,
+        )));
         return;
     }
     tracing::info!(
@@ -183,11 +260,17 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         additional.len()
     );
     summary.offset += additional.len();
+    summary.in_progress.store(true, Ordering::Relaxed);
+    summary.streaming_start = summary.text.len();
+    summary.streaming_raw.clear();
 
+    let remaining = raw.len().saturating_sub(summary.offset);
     let _ = summary.tx.send(SummaryUpdate::Status(format!(
-        "Requesting {} summary ({} chars)...",
+        "Requesting {} summary — {} chars to summarize, {} remaining, {} summary lines so far",
         summary.provider,
-        additional.len()
+        additional.len(),
+        remaining,
+        summary.text.lines().count(),
     )));
 
     let sofar = summary
@@ -206,20 +289,28 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         .replace("%SOFAR%", sofar.as_str())
         .replace("%ADDITIONAL%", additional.as_str());
 
+    tracing::info!(
+        "prompt: {} context lines, {} prompt chars",
+        sofar.lines().count(),
+        user_prompt.len(),
+    );
+
     let sender = summary.tx.clone();
     let system_prompt = summary.system_prompt.to_owned();
     let api_url = summary.api_url.clone();
     let api_key = summary.api_key.clone();
     let model = summary.model.clone();
     let needs_key = summary.provider.needs_key();
+    let max_tokens = summary.max_tokens;
+    let in_progress = summary.in_progress.clone();
 
     thread::spawn(move || {
-        chat_completion_request(user_prompt, system_prompt, api_url, api_key, model, needs_key, sender);
+        chat_completion_request(user_prompt, system_prompt, api_url, api_key, model, needs_key, max_tokens, in_progress, sender);
     });
 }
 
-/// Synchronously send a chat completion request to any OpenAI-compatible API
-/// (OpenAI, Ollama, or any custom endpoint) and send the result back via the channel.
+/// Synchronously send a streaming chat completion request to any OpenAI-compatible API
+/// (OpenAI, Ollama, or any custom endpoint) and stream chunks back via the channel.
 fn chat_completion_request(
     user_prompt: String,
     system_prompt: String,
@@ -227,8 +318,15 @@ fn chat_completion_request(
     api_key: String,
     model: String,
     needs_key: bool,
+    max_tokens: usize,
+    in_progress: Arc<AtomicBool>,
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
 ) {
+    struct ClearOnDrop(Arc<AtomicBool>);
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) { self.0.store(false, Ordering::Relaxed); }
+    }
+    let _guard = ClearOnDrop(in_progress);
     if api_url.is_empty() {
         tracing::error!("API URL is not configured. Set it in Settings.");
         let _ = tx.send(SummaryUpdate::Status("AI summary error: API URL not configured".to_string()));
@@ -245,7 +343,10 @@ fn chat_completion_request(
         return;
     }
 
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let body = json!({
         "messages": [
             { "role": "system", "content": system_prompt },
@@ -253,7 +354,8 @@ fn chat_completion_request(
         ],
         "model": model,
         "temperature": 0.7,
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
+        "stream": true,
     });
 
     let mut request = client
@@ -262,6 +364,11 @@ fn chat_completion_request(
     if !api_key.is_empty() {
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
+
+    let _ = tx.send(SummaryUpdate::Status(format!(
+        "Streaming from {} — {} prompt chars, max_tokens {}",
+        model, user_prompt.len(), max_tokens
+    )));
 
     let response = match request.json(&body).send() {
         Ok(r) => r,
@@ -272,26 +379,44 @@ fn chat_completion_request(
         }
     };
 
-    let response_json: serde_json::Value = match response.json() {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::error!("Failed to parse response: {}", e);
-            let _ = tx.send(SummaryUpdate::Status(format!("AI summary parse error: {}", e)));
-            return;
-        }
-    };
-    tracing::info!("response: {:?}", response_json);
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(response);
+    let mut total_chars = 0usize;
 
-    let raw_summary = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_else(|| {
-            tracing::error!("Unexpected response format: {:?}", response_json);
-            ""
-        });
-    let summary = strip_xml_blocks(raw_summary);
-    let _ = tx.send(SummaryUpdate::Status("AI summary received".to_string()));
-    if let Err(e) = tx.send(SummaryUpdate::Additional(summary)) {
-        tracing::error!("Failed to send summary to main thread: {}", e);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("Error reading SSE stream: {}", e);
+                let _ = tx.send(SummaryUpdate::Status(format!("AI stream error: {}", e)));
+                break;
+            }
+        };
+
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if data == "[DONE]" {
+            break;
+        }
+
+        let chunk: serde_json::Value = match serde_json::from_str(data) {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+
+        if let Some(content) = chunk["choices"][0]["delta"]["content"].as_str() {
+            total_chars += content.len();
+            let _ = tx.send(SummaryUpdate::StreamChunk(content.to_string()));
+        }
+    }
+
+    let _ = tx.send(SummaryUpdate::Status(format!(
+        "AI stream complete — {} chars received",
+        total_chars
+    )));
+    if let Err(e) = tx.send(SummaryUpdate::StreamDone) {
+        tracing::error!("Failed to send stream-done to main thread: {}", e);
     }
 }
 
@@ -320,6 +445,21 @@ pub fn fetch_ollama_models(api_url: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Fetch the context length for a specific Ollama model via `/api/show`.
+pub fn fetch_ollama_model_ctx(api_url: &str, model_name: &str) -> Option<usize> {
+    let base = api_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1/chat/completions")
+        .trim_end_matches('/');
+    let show_url = format!("{}/api/show", base);
+    let body = json!({ "name": model_name });
+    let resp = Client::new().post(&show_url).json(&body).send().ok()?;
+    let json: serde_json::Value = resp.json().ok()?;
+    json["model_info"]["general.context_length"]
+        .as_u64()
+        .map(|v| v as usize)
 }
 
 /// Strip content inside XML-style tag blocks (e.g. `<think>...</think>`) from text.

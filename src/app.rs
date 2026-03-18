@@ -828,6 +828,12 @@ impl MubblesApp {
                             if let Some(first) = self.ai_summary.ollama_models.first() {
                                 self.ai_summary.model = first.clone();
                             }
+                            self.ai_summary.ollama_model_ctx = summary::fetch_ollama_model_ctx(
+                                &self.ai_summary.api_url,
+                                &self.ai_summary.model,
+                            );
+                        } else {
+                            self.ai_summary.ollama_model_ctx = None;
                         }
                     }
                 });
@@ -846,6 +852,7 @@ impl MubblesApp {
                 ui.horizontal(|ui| {
                     ui.label("Model:");
                     if self.ai_summary.provider == summary::ApiProvider::Ollama {
+                        let prev_model = self.ai_summary.model.clone();
                         egui::ComboBox::from_id_salt("ollama_model")
                             .selected_text(&self.ai_summary.model)
                             .width(ui.available_width() - 90.0)
@@ -866,6 +873,12 @@ impl MubblesApp {
                                 self.ai_summary.model =
                                     self.ai_summary.ollama_models[0].clone();
                             }
+                        }
+                        if self.ai_summary.model != prev_model {
+                            self.ai_summary.ollama_model_ctx = summary::fetch_ollama_model_ctx(
+                                &self.ai_summary.api_url,
+                                &self.ai_summary.model,
+                            );
                         }
                     } else {
                         ui.add_sized(
@@ -905,6 +918,19 @@ impl MubblesApp {
                     egui::Slider::new(&mut self.ai_summary.summary_context_lines, 0..=50)
                         .text("Summary context lines sent to AI"),
                 );
+
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(&mut self.ai_summary.max_tokens, 256..=32768)
+                            .text("Max response tokens")
+                            .logarithmic(true),
+                    );
+                    if let Some(ctx) = self.ai_summary.ollama_model_ctx {
+                        if ui.button(format!("Use model ctx: {}", ctx)).clicked() {
+                            self.ai_summary.max_tokens = ctx;
+                        }
+                    }
+                });
 
                 ui.add_space(10.0);
 
