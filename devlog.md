@@ -1447,3 +1447,17 @@ give up. go straight for pipewire-rs when building for linux.
 ## 2026-02-05
 
 tried updating to latest candle but recent changes have broken support for older cards. there's work to fix. 
+
+
+## 2026-03-18
+
+added various features.
+
+summary driven by local model having a few issues. fix by limiting thinking tokens.
+
+system prompt: Provide concise reasoning before the final answer.
+num_predict: 1024
+disable reasoning in api
+limit num_ctx
+
+todo: limit thinking tokens

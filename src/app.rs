@@ -695,8 +695,7 @@ impl MubblesApp {
                 // Side-by-side: transcript left, AI summary right
                 let half = ui.available_width() / 2.0;
                 ui.columns(2, |cols| {
-                    let scroll = egui::ScrollArea::vertical()
-                        .id_salt("transcript_scroll");
+                    let scroll = egui::ScrollArea::vertical().id_salt("transcript_scroll");
                     let scroll = if self.changed {
                         self.changed = false;
                         scroll.vertical_scroll_offset(10_000_000.0)
@@ -931,6 +930,12 @@ impl MubblesApp {
                         }
                     }
                 });
+
+                ui.add(
+                    egui::Slider::new(&mut self.ai_summary.thinking_budget, 0..=8192)
+                        .text("Thinking budget (chars, 0 = disable)")
+                        .logarithmic(true),
+                );
 
                 ui.add_space(10.0);
 
