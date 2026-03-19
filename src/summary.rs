@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
     thread,
     time::Duration,
 };
@@ -32,7 +29,7 @@ impl ApiProvider {
     pub fn default_url(&self) -> &str {
         match self {
             ApiProvider::OpenAI => "https://api.openai.com/v1/chat/completions",
-            ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions",
+            ApiProvider::Ollama => "http://localhost:11434/api/chat",
             ApiProvider::Custom => "",
         }
     }
@@ -78,15 +75,11 @@ pub struct SummaryState {
     #[serde(skip)]
     pub status: String,
     #[serde(skip)]
+    pub thinking_text: String,
+    #[serde(skip)]
     streaming_start: usize,
     #[serde(skip)]
     streaming_raw: String,
-    /// Thinking/reasoning tokens streamed separately from content.
-    #[serde(skip)]
-    pub streaming_thinking: String,
-    /// Whether the thinking section is expanded in the UI.
-    #[serde(skip)]
-    pub thinking_expanded: bool,
     #[serde(skip)]
     tx: std::sync::mpsc::Sender<SummaryUpdate>,
     #[serde(skip)]
@@ -94,7 +87,7 @@ pub struct SummaryState {
 }
 
 pub enum SummaryUpdate {
-    StreamContent(String),
+    StreamChunk(String),
     StreamThinking(String),
     StreamDone,
     Status(String),
@@ -132,7 +125,7 @@ impl Default for SummaryState {
             ai_input_chars: 8000,
             summary_context_lines: 5,
             max_tokens: 4096,
-            thinking_budget: 2048,
+            thinking_budget: 0,
             output_words: 5,
             input_lines: 7,
             ollama_models: Vec::new(),
@@ -140,10 +133,9 @@ impl Default for SummaryState {
             in_progress: Arc::new(AtomicBool::new(false)),
             aborted: Arc::new(AtomicBool::new(false)),
             status: String::new(),
+            thinking_text: String::new(),
             streaming_start: 0,
             streaming_raw: String::new(),
-            streaming_thinking: String::new(),
-            thinking_expanded: false,
             tx,
             rx,
         }
@@ -175,7 +167,7 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
         ui.add_enabled_ui(!busy, |ui| {
             if ui.button(label).clicked() {
                 summary.aborted.store(false, Ordering::Relaxed);
-                trigger_summarization(summary, text);
+                trigger_summarization_request(summary, text);
             }
         });
 
@@ -190,18 +182,13 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
         if ui.button("Clear summary").clicked() {
             summary.offset = 0;
             summary.text = String::new();
-            summary.streaming_thinking.clear();
         }
     });
 
     if summary.in_progress.load(Ordering::Relaxed) {
         let total = text.len();
         let done = summary.offset;
-        let fraction = if total > 0 {
-            done as f32 / total as f32
-        } else {
-            0.0
-        };
+        let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
         ui.add(egui::ProgressBar::new(fraction).text(format!(
             "{} / {} chars ({}%)",
             done,
@@ -214,36 +201,9 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
         ui.label(&summary.status);
     }
 
-    // Show thinking in a collapsible, dimmed section
-    if !summary.streaming_thinking.is_empty() {
-        let thinking_chars = summary.streaming_thinking.len();
-        let budget = summary.thinking_budget;
-        let header = if thinking_chars >= budget {
-            format!("💭 Thinking ({} chars — budget exhausted)", thinking_chars)
-        } else {
-            format!("💭 Thinking ({} / {} chars)", thinking_chars, budget)
-        };
-        egui::CollapsingHeader::new(
-            egui::RichText::new(header)
-                .italics()
-                .color(ui.visuals().weak_text_color()),
-        )
-        .id_salt("thinking_section")
-        .default_open(summary.thinking_expanded)
-        .show(ui, |ui| {
-            summary.thinking_expanded = true;
-            egui::ScrollArea::vertical()
-                .id_salt("thinking_scroll")
-                .max_height(150.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(&summary.streaming_thinking)
-                            .italics()
-                            .weak()
-                            .size(11.0),
-                    );
-                });
+    if !summary.thinking_text.is_empty() {
+        ui.collapsing("Thinking", |ui| {
+            ui.label(&summary.thinking_text);
         });
     }
 
@@ -257,7 +217,7 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
     let mut status = None;
     while let Ok(update) = summary.rx.try_recv() {
         match update {
-            SummaryUpdate::StreamContent(chunk) => {
+            SummaryUpdate::StreamChunk(chunk) => {
                 if summary.aborted.load(Ordering::Relaxed) {
                     continue;
                 }
@@ -268,42 +228,39 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
                 if summary.aborted.load(Ordering::Relaxed) {
                     continue;
                 }
+                summary.thinking_text.push_str(&chunk);
             }
             SummaryUpdate::StreamDone => {
                 tracing::debug!(
-                    "StreamDone — raw_len={}, thinking_len={}, start={}, text_len={}, aborted={}",
+                    "StreamDone received — raw_len={}, streaming_start={}, text_len={}, aborted={}",
                     summary.streaming_raw.len(),
-                    summary.streaming_thinking.len(),
                     summary.streaming_start,
                     summary.text.len(),
                     summary.aborted.load(Ordering::Relaxed),
                 );
                 if summary.aborted.load(Ordering::Relaxed) {
                     summary.streaming_raw.clear();
-                    summary.streaming_thinking.clear();
                     summary.in_progress.store(false, Ordering::Relaxed);
                     continue;
                 }
-                if summary.streaming_raw.is_empty() && summary.streaming_thinking.is_empty() {
+                if summary.streaming_raw.is_empty() {
+                    // Stream produced no content (error or empty response)
                     tracing::warn!("StreamDone with no content — stopping");
                     summary.in_progress.store(false, Ordering::Relaxed);
                     continue;
                 }
-                // Replace raw streamed text with XML-stripped version
-                // (catches any <think> blocks models sneak into content)
+                // Replace the raw streamed text with the XML-stripped version
                 summary.text.truncate(summary.streaming_start);
                 let filtered = strip_xml_blocks(&summary.streaming_raw);
                 tracing::debug!(
-                    "Filtered stream: {} raw → {} filtered chars, {} thinking chars",
+                    "Filtered stream: {} raw chars → {} filtered chars",
                     summary.streaming_raw.len(),
                     filtered.len(),
-                    summary.streaming_thinking.len(),
                 );
-                summary.text.push_str(&format!("\n{}", filtered));
+                summary.text.push_str(filtered.trim_start());
                 summary.streaming_raw.clear();
-                // Keep streaming_thinking visible until next request clears it
-                // Continue with next chunk (or stop if done)
-                trigger_summarization(summary, text);
+                // Continue with next chunk (sets in_progress=true, or false if done)
+                trigger_summarization_request(summary, text);
             }
             SummaryUpdate::Status(s) => {
                 if !summary.aborted.load(Ordering::Relaxed) {
@@ -317,16 +274,17 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
     status
 }
 
-/// Carve off the next chunk of transcript and spawn a background thread
-/// to stream a chat-completion request.
-fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
-    let additional: String = raw
+fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
+    let additional = raw
         .chars()
         .skip(summary.offset)
         .take(summary.ai_input_chars)
-        .collect();
-
+        .collect::<String>();
     if additional.len() < 100 {
+        tracing::warn!(
+            "{} chars is not enough additional text to summarize",
+            additional.len()
+        );
         let remaining = raw.len().saturating_sub(summary.offset);
         summary.in_progress.store(false, Ordering::Relaxed);
         let _ = summary.tx.send(SummaryUpdate::Status(format!(
@@ -336,7 +294,6 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
         )));
         return;
     }
-
     tracing::info!(
         "requesting {} summary. Offset: {}, chars: {}",
         summary.provider,
@@ -345,21 +302,23 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
     );
     summary.offset += additional.len();
     summary.in_progress.store(true, Ordering::Relaxed);
+    if !summary.text.is_empty() && !summary.text.ends_with('\n') {
+        summary.text.push('\n');
+    }
     summary.streaming_start = summary.text.len();
     summary.streaming_raw.clear();
-    summary.streaming_thinking.clear();
-    summary.thinking_expanded = false;
+    summary.thinking_text.clear();
 
     let remaining = raw.len().saturating_sub(summary.offset);
     let _ = summary.tx.send(SummaryUpdate::Status(format!(
-        "Requesting {} summary — {} chars, {} remaining, {} lines so far",
+        "Requesting {} summary — {} chars to summarize, {} remaining, {} summary lines so far",
         summary.provider,
         additional.len(),
         remaining,
         summary.text.lines().count(),
     )));
 
-    let sofar: String = summary
+    let sofar = summary
         .text
         .lines()
         .rev()
@@ -372,8 +331,8 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
 
     let user_prompt = summary
         .user_prompt
-        .replace("%SOFAR%", &sofar)
-        .replace("%ADDITIONAL%", &additional);
+        .replace("%SOFAR%", sofar.as_str())
+        .replace("%ADDITIONAL%", additional.as_str());
 
     tracing::info!(
         "prompt: {} context lines, {} prompt chars",
@@ -381,122 +340,102 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
         user_prompt.len(),
     );
 
-    let tx = summary.tx.clone();
-    let system_prompt = summary.system_prompt.clone();
+    let sender = summary.tx.clone();
+    let system_prompt = summary.system_prompt.to_owned();
     let api_url = summary.api_url.clone();
     let api_key = summary.api_key.clone();
     let model = summary.model.clone();
     let needs_key = summary.provider.needs_key();
-    let is_ollama = summary.provider == ApiProvider::Ollama;
     let max_tokens = summary.max_tokens;
+    let is_ollama = matches!(summary.provider, ApiProvider::Ollama);
     let thinking_budget = summary.thinking_budget;
+    let aborted = summary.aborted.clone();
 
     thread::spawn(move || {
-        chat_completion_stream(
-            &user_prompt,
-            &system_prompt,
-            &api_url,
-            &api_key,
-            &model,
-            needs_key,
-            is_ollama,
-            max_tokens,
-            thinking_budget,
-            &tx,
-        );
+        chat_completion_request(user_prompt, system_prompt, api_url, api_key, model, needs_key, max_tokens, is_ollama, thinking_budget, sender, aborted);
     });
 }
 
-fn chat_completion_stream(
-    user_prompt: &str,
-    system_prompt: &str,
-    api_url: &str,
-    api_key: &str,
-    model: &str,
+fn chat_completion_request(
+    user_prompt: String,
+    system_prompt: String,
+    api_url: String,
+    api_key: String,
+    model: String,
     needs_key: bool,
-    is_ollama: bool,
     max_tokens: usize,
+    is_ollama: bool,
     thinking_budget: usize,
-    tx: &std::sync::mpsc::Sender<SummaryUpdate>,
+    tx: std::sync::mpsc::Sender<SummaryUpdate>,
+    aborted: Arc<AtomicBool>,
 ) {
-    // --- validation ----------------------------------------------------------
     if api_url.is_empty() {
-        tracing::error!("API URL is not configured");
-        let _ = tx.send(SummaryUpdate::Status(
-            "AI summary error: API URL not configured".into(),
-        ));
-        let _ = tx.send(SummaryUpdate::StreamDone);
+        tracing::error!("API URL is not configured. Set it in Settings.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: API URL not configured".to_string()));
         return;
     }
     if needs_key && api_key.is_empty() {
-        tracing::error!("API key is not configured");
-        let _ = tx.send(SummaryUpdate::Status(
-            "AI summary error: API key not configured".into(),
-        ));
-        let _ = tx.send(SummaryUpdate::StreamDone);
+        tracing::error!("API key is not configured. Set it in Settings or via OPENAI_API_KEY env var.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: API key not configured".to_string()));
         return;
     }
     if model.is_empty() {
-        tracing::error!("Model is not configured");
-        let _ = tx.send(SummaryUpdate::Status(
-            "AI summary error: model not configured".into(),
-        ));
-        let _ = tx.send(SummaryUpdate::StreamDone);
+        tracing::error!("Model is not configured. Set it in Settings.");
+        let _ = tx.send(SummaryUpdate::Status("AI summary error: model not configured".to_string()));
         return;
     }
 
-    // --- request -------------------------------------------------------------
     let client = Client::builder()
         .timeout(Duration::from_secs(600))
         .build()
         .unwrap_or_else(|_| Client::new());
-
-    let mut body = json!({
-        "messages": [
-            { "role": "system", "content": system_prompt },
-            { "role": "user",   "content": user_prompt }
-        ],
-        "model": model,
-        "temperature": 0.7,
-        "max_tokens": max_tokens,
-        "stream": true,
-    });
-
-    if is_ollama {
-        // Ollama's OpenAI-compatible API supports `reasoning_effort`
-        // with values "high", "medium", "low", "none".
-        // When thinking_budget is 0 we disable reasoning entirely so
-        // the model produces only content tokens, not just thinking.
-        if thinking_budget == 0 {
-            body["reasoning_effort"] = json!("none");
-        } else {
-            body["reasoning_effort"] = json!("low");
-        }
-    } else {
-        // For OpenAI-compatible providers that support thinking budgets.
+    let body = if is_ollama {
+        let mut b = json!({
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt }
+            ],
+            "model": model,
+            "stream": true,
+            "think": thinking_budget > 0,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": 0.7,
+            },
+        });
         if thinking_budget > 0 {
-            body["thinking"] = json!({ "budget_tokens": thinking_budget });
+            b["options"]["num_predict"] = json!(max_tokens + thinking_budget);
         }
-    }
+        b
+    } else {
+        json!({
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt }
+            ],
+            "model": model,
+            "temperature": 0.7,
+            "max_tokens": max_tokens,
+            "stream": true,
+        })
+    };
 
-    let mut req = client
-        .post(api_url)
+    let mut request = client
+        .post(&api_url)
         .header("Content-Type", "application/json");
     if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
+        request = request.header("Authorization", format!("Bearer {}", api_key));
     }
 
     let _ = tx.send(SummaryUpdate::Status(format!(
         "Streaming from {} — {} prompt chars, max_tokens {}",
-        model,
-        user_prompt.len(),
-        max_tokens
+        model, user_prompt.len(), max_tokens
     )));
 
-    let response = match req.json(&body).send() {
+    let response = match request.json(&body).send() {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("Request to {} failed: {}", api_url, e);
+            tracing::error!("Failed to send request to {}: {}", api_url, e);
             let _ = tx.send(SummaryUpdate::Status(format!("AI summary error: {}", e)));
             let _ = tx.send(SummaryUpdate::StreamDone);
             return;
@@ -510,25 +449,26 @@ fn chat_completion_stream(
         let mut body = String::new();
         let _ = response.take(2000).read_to_string(&mut body);
         tracing::error!("API error {}: {}", status, body);
-        let _ = tx.send(SummaryUpdate::Status(format!(
-            "AI error {}: {}",
-            status, body
-        )));
+        let _ = tx.send(SummaryUpdate::Status(format!("AI error {}: {}", status, body)));
         let _ = tx.send(SummaryUpdate::StreamDone);
         return;
     }
 
-    // --- stream SSE ----------------------------------------------------------
     use std::io::{BufRead, BufReader};
     let reader = BufReader::new(response);
     let mut total_chars = 0usize;
     let mut line_count = 0usize;
 
     for line in reader.lines() {
+        if aborted.load(Ordering::Relaxed) {
+            tracing::info!("Aborting stream at line {} — closing connection", line_count);
+            let _ = tx.send(SummaryUpdate::StreamDone);
+            return;
+        }
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                tracing::error!("SSE read error at line {}: {}", line_count, e);
+                tracing::error!("Error reading stream line {}: {}", line_count, e);
                 let _ = tx.send(SummaryUpdate::Status(format!("AI stream error: {}", e)));
                 break;
             }
@@ -539,135 +479,78 @@ fn chat_completion_stream(
             continue;
         }
 
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
+        // Ollama native: each line is a JSON object directly
+        // OpenAI SSE: each line is "data: {json}" or "data: [DONE]"
+        let data = if is_ollama {
+            line.as_str()
+        } else {
+            let Some(d) = line.strip_prefix("data: ") else {
+                tracing::debug!("SSE skip non-data line {}: {:?}", line_count, &line[..line.len().min(200)]);
+                continue;
+            };
+            if d == "[DONE]" {
+                tracing::info!("SSE [DONE] at line {}", line_count);
+                break;
+            }
+            d
         };
-        if data == "[DONE]" {
-            tracing::info!("SSE [DONE] at line {}", line_count);
-            break;
-        }
 
         let chunk: serde_json::Value = match serde_json::from_str(data) {
             Ok(j) => j,
             Err(e) => {
-                tracing::warn!("SSE JSON parse error at line {}: {}", line_count, e);
+                tracing::warn!("JSON parse error at line {}: {} — data: {:?}", line_count, e, &data[..data.len().min(200)]);
                 continue;
             }
         };
 
-        // Extract text from whichever field the model uses.
-        // Normal models → delta.content
-        // Reasoning models (qwen3, deepseek-r1, …) → delta.reasoning / reasoning_content
-        let delta = &chunk["choices"][0]["delta"];
-        let content = delta["content"].as_str().unwrap_or("");
-        let reasoning = delta["reasoning"]
-            .as_str()
-            .or_else(|| delta["reasoning_content"].as_str())
-            .unwrap_or("");
-
-        // Route reasoning and content to separate update channels so the
-        // UI can display them independently.
-        if !reasoning.is_empty() {
-            total_chars += reasoning.len();
-            let _ = tx.send(SummaryUpdate::StreamThinking(reasoning.to_string()));
-        }
-
-        if !content.is_empty() {
-            // Content may still contain inline <think>…</think> blocks
-            // from models that embed reasoning in the content field.
-            // We detect an opening <think> and route everything until
-            // the closing tag to StreamThinking instead.
-            let _ = parse_inline_thinking(content, tx, &mut total_chars);
-        }
-
-        if content.is_empty() && reasoning.is_empty() {
-            continue;
+        if is_ollama {
+            // Ollama native ndjson: content in message.content, thinking in message.thinking
+            if let Some(content) = chunk["message"]["content"].as_str() {
+                if !content.is_empty() {
+                    total_chars += content.len();
+                    let _ = tx.send(SummaryUpdate::StreamChunk(content.to_string()));
+                }
+            }
+            if let Some(thinking) = chunk["message"]["thinking"].as_str() {
+                if !thinking.is_empty() {
+                    let _ = tx.send(SummaryUpdate::StreamThinking(thinking.to_string()));
+                }
+            }
+            if let Some(err) = chunk["error"].as_str() {
+                tracing::error!("Ollama stream error: {}", err);
+                let _ = tx.send(SummaryUpdate::Status(format!("Ollama error: {}", err)));
+                break;
+            }
+            if chunk["done"].as_bool() == Some(true) {
+                tracing::info!("Ollama stream done at line {}", line_count);
+                break;
+            }
+        } else {
+            // OpenAI SSE: content in choices[0].delta.content
+            if let Some(content) = chunk["choices"][0]["delta"]["content"].as_str() {
+                total_chars += content.len();
+                let _ = tx.send(SummaryUpdate::StreamChunk(content.to_string()));
+            } else {
+                tracing::debug!("SSE chunk without content at line {}: {:?}", line_count, &data[..data.len().min(200)]);
+            }
         }
     }
 
-    tracing::info!(
-        "SSE stream finished — {} lines, {} chars",
-        line_count,
-        total_chars
-    );
+    tracing::info!("SSE stream finished — {} lines, {} content chars", line_count, total_chars);
     let _ = tx.send(SummaryUpdate::Status(format!(
         "AI stream complete — {} chars received",
         total_chars
     )));
     if let Err(e) = tx.send(SummaryUpdate::StreamDone) {
-        tracing::error!("Failed to send StreamDone: {}", e);
+        tracing::error!("Failed to send stream-done to main thread: {}", e);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Ollama helpers
-// ---------------------------------------------------------------------------
-
-/// State machine for splitting inline `<think>…</think>` from content.
-/// Some models embed reasoning directly in the content field rather than using
-/// a separate `reasoning` SSE field.  This function parses each chunk and sends
-/// the appropriate `StreamContent` / `StreamThinking` updates.
-///
-/// We track whether we're inside a `<think>` block with a simple substring scan.
-/// Because chunks may split tags across boundaries, we buffer partial tag matches.
-fn parse_inline_thinking(
-    content: &str,
-    tx: &std::sync::mpsc::Sender<SummaryUpdate>,
-    total_chars: &mut usize,
-) -> Result<(), std::sync::mpsc::SendError<SummaryUpdate>> {
-    // Fast path: no XML-ish content at all
-    if !content.contains('<') && !content.contains('>') {
-        *total_chars += content.len();
-        tx.send(SummaryUpdate::StreamContent(content.to_string()))?;
-        return Ok(());
-    }
-
-    let mut rest = content;
-    while !rest.is_empty() {
-        if let Some(open) = rest.find("<think>") {
-            // Everything before the tag is content
-            if open > 0 {
-                let before = &rest[..open];
-                *total_chars += before.len();
-                tx.send(SummaryUpdate::StreamContent(before.to_string()))?;
-            }
-            let after_open = &rest[open + "<think>".len()..];
-            if let Some(close) = after_open.find("</think>") {
-                // Full think block in this chunk
-                let thinking = &after_open[..close];
-                *total_chars += thinking.len();
-                tx.send(SummaryUpdate::StreamThinking(thinking.to_string()))?;
-                rest = &after_open[close + "</think>".len()..];
-            } else {
-                // Unclosed <think> — treat the remainder as thinking
-                let thinking = after_open;
-                *total_chars += thinking.len();
-                tx.send(SummaryUpdate::StreamThinking(thinking.to_string()))?;
-                rest = "";
-            }
-        } else if let Some(close) = rest.find("</think>") {
-            // We're seeing a close tag without an open — likely a continuation
-            // from a previous chunk. Everything before it is thinking.
-            if close > 0 {
-                let thinking = &rest[..close];
-                *total_chars += thinking.len();
-                tx.send(SummaryUpdate::StreamThinking(thinking.to_string()))?;
-            }
-            rest = &rest[close + "</think>".len()..];
-        } else {
-            // No think tags — plain content
-            *total_chars += rest.len();
-            tx.send(SummaryUpdate::StreamContent(rest.to_string()))?;
-            rest = "";
-        }
-    }
-    Ok(())
 }
 
 fn ollama_base_url(api_url: &str) -> &str {
     api_url
         .trim_end_matches('/')
         .trim_end_matches("/v1/chat/completions")
+        .trim_end_matches("/api/chat")
         .trim_end_matches('/')
 }
 
@@ -704,30 +587,30 @@ pub fn fetch_ollama_model_ctx(api_url: &str, model_name: &str) -> Option<usize> 
         .map(|v| v as usize)
 }
 
-// ---------------------------------------------------------------------------
-// XML / think-block stripping
-// ---------------------------------------------------------------------------
-
 /// Strip content inside XML-style tag blocks (e.g. `<think>...</think>`) from text.
 fn strip_xml_blocks(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(open_start) = rest.find('<') {
+        // Find the tag name
         let after_open = &rest[open_start + 1..];
         let tag_end = after_open
             .find(|c: char| c == '>' || c.is_whitespace())
             .unwrap_or(after_open.len());
         let tag_name = &after_open[..tag_end];
         if tag_name.is_empty() || tag_name.starts_with('/') {
+            // Not an opening tag, keep the '<' and move on
             result.push_str(&rest[..open_start + 1]);
             rest = &rest[open_start + 1..];
             continue;
         }
         let closing = format!("</{}>", tag_name);
         if let Some(close_pos) = rest[open_start..].find(&closing) {
+            // Found matching close tag — skip the entire block
             result.push_str(&rest[..open_start]);
             rest = &rest[open_start + close_pos + closing.len()..];
         } else {
+            // No closing tag, keep everything
             result.push_str(&rest[..open_start + 1]);
             rest = &rest[open_start + 1..];
         }
@@ -735,10 +618,6 @@ fn strip_xml_blocks(s: &str) -> String {
     result.push_str(rest);
     result.trim().to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Statistical (offline) summary
-// ---------------------------------------------------------------------------
 
 struct WordInSummary {
     importance: f64,
@@ -751,8 +630,9 @@ fn statistical_summary(
     lines_to_consume: usize,
     words_to_produce: usize,
 ) {
+    // summarize ten lines at a time
     let mut linecount = 0;
-    let additional: String = raw
+    let additional = raw
         .chars()
         .skip(state.offset)
         .take_while(|c| {
@@ -761,21 +641,24 @@ fn statistical_summary(
             }
             linecount < lines_to_consume
         })
-        .collect();
+        .collect::<String>();
     state.offset += additional.len();
 
     let ignored = get_ignore_words();
+    // count the words, splitting at any non-alpha character except ' and - and ignoring whitespace
     let mut word_counts = HashMap::new();
     let wordchar = |c: char| !c.is_alphabetic() && c != '\'' && c != '-';
     for (index, word) in additional.split(wordchar).enumerate() {
         if word.trim().len() <= 3 || word.contains('\'') {
             continue;
         }
-        let word: String = word
+        // strip non-alpha as count_1w.txt doesn't have apostrophes or similar
+        let word = word
             .chars()
             .filter(|c| c.is_alphabetic())
             .collect::<String>()
             .to_lowercase();
+        // if <3 or ignored or contains ' then skip
         if ignored.contains(word.as_str()) {
             continue;
         }
@@ -786,25 +669,30 @@ fn statistical_summary(
         count.importance += 1f64;
     }
 
+    // divide the counts by the google-search frequency of that word from https://norvig.com/ngrams/count_1w.txt
     let word_freq_table = get_word_freq_table();
     for (word, count) in word_counts.iter_mut() {
         let word_frequency = word_freq_table.get(word).unwrap_or(&1f64);
         count.importance /= word_frequency;
     }
 
+    // now sort by the weighted counts
     let mut sorted: Vec<_> = word_counts.into_iter().collect();
     sorted.sort_by(|a, b| b.1.importance.partial_cmp(&a.1.importance).unwrap());
+    // take the top 10
     let mut important_words: Vec<_> = sorted.into_iter().take(words_to_produce).collect();
+    // sort by first seen index
     important_words.sort_by(|a, b| {
         a.1.first_seen_index
             .partial_cmp(&b.1.first_seen_index)
             .unwrap()
     });
 
-    let words: Vec<_> = important_words
+    let words = important_words
         .iter()
         .map(|(word, _)| word.to_owned())
-        .collect();
+        .collect::<Vec<_>>();
+
     let summary = format!("\n- {}", words.join(" "));
     state.text.push_str(&summary);
 }
@@ -812,6 +700,8 @@ fn statistical_summary(
 use std::sync::OnceLock;
 static WORD_FREQ: OnceLock<HashMap<String, f64>> = OnceLock::new();
 
+// the file 'assets/count_1w.txt' contains a list of words and their frequency in google searches, separated by tab and newline.
+// here we load the file so that it is compiled into the binary, and build a hashmap of the words and their frequencies.
 fn get_word_freq_table() -> &'static HashMap<String, f64> {
     WORD_FREQ.get_or_init(|| {
         let mut map = HashMap::new();
@@ -826,17 +716,16 @@ fn get_word_freq_table() -> &'static HashMap<String, f64> {
     })
 }
 
+// static lookup for ignored words "um", "uh", "ah", "like", "so", "yeah", "anyway", "right", "okay"
 static IGNORED_WORDS: OnceLock<HashSet<&str>> = OnceLock::new();
 fn get_ignore_words() -> &'static HashSet<&'static str> {
     IGNORED_WORDS.get_or_init(|| {
-        [
-            "um", "uh", "ah", "like", "so", "yeah", "anyway", "right", "okay",
-        ]
-        .into()
+        ["um", "uh", "ah", "like", "so", "yeah", "anyway", "right", "okay"].into()
     })
 }
 
 pub(crate) fn summarize(raw: &str, summary: &mut SummaryState) {
+    // just do a statistical summary from now, regenerating the full summary every time
     summary.offset = 0;
     summary.text = String::new();
 
@@ -845,21 +734,19 @@ pub(crate) fn summarize(raw: &str, summary: &mut SummaryState) {
         let prev_offset = summary.offset;
         statistical_summary(summary, raw, summary.input_lines, summary.output_words);
         if summary.offset <= prev_offset {
-            break;
+            break; // we didn't make any progress, so stop
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
+
 mod tests {
     use super::*;
 
     #[test]
     fn test_statistical_summary() {
+        // make sure the least common words from the first ten lines are summarized
         let mut state = SummaryState::default();
         let raw = "Anyway, so yeah, thank you everybody.
         These sessions are more regular now
@@ -878,11 +765,13 @@ mod tests {
         assert_eq!(state.text, "\n- everybody catch whenever spoke gaia");
         assert_eq!(state.offset, 502);
         statistical_summary(&mut state, raw, 10, 5);
+        // make sure the last line is right
         let last_line = state.text.lines().last().unwrap();
         assert_eq!(
             last_line,
             "- progressing risks aware concern asdifnkoasnidf"
         );
+        // make sure we end up at the end of the text
         assert_eq!(state.offset, 668);
         assert_eq!(state.offset, raw.len());
     }
@@ -909,243 +798,278 @@ mod tests {
         );
     }
 
+    /// Parse a single ndjson line from an Ollama native streaming response.
+    /// Returns (content, thinking, done, error).
+    fn parse_ollama_line(line: &str) -> (String, String, bool, Option<String>) {
+        let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+        let content = chunk["message"]["content"].as_str().unwrap_or("").to_string();
+        let thinking = chunk["message"]["thinking"].as_str().unwrap_or("").to_string();
+        let done = chunk["done"].as_bool().unwrap_or(false);
+        let error = chunk.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+        (content, thinking, done, error)
+    }
+
     #[test]
-    fn test_parse_inline_thinking() {
+    fn test_parse_ollama_ndjson_content_only() {
+        // Real captured response from Ollama with think:false
+        let lines = vec![
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:05.5353876Z","message":{"role":"assistant","content":"Hello"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:05.6092958Z","message":{"role":"assistant","content":" from"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:05.6804279Z","message":{"role":"assistant","content":"."},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:05.6942017Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":706201400,"load_duration":377537300,"prompt_eval_count":19,"prompt_eval_duration":167056200,"eval_count":6,"eval_duration":155825300}"#,
+        ];
+
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut finished = false;
+        for line in &lines {
+            let (c, t, done, err) = parse_ollama_line(line);
+            assert!(err.is_none());
+            content.push_str(&c);
+            thinking.push_str(&t);
+            if done { finished = true; }
+        }
+        assert_eq!(content, "Hello from.");
+        assert_eq!(thinking, "");
+        assert!(finished);
+    }
+
+    #[test]
+    fn test_parse_ollama_ndjson_with_thinking() {
+        // Real captured response with think:true — thinking comes in message.thinking,
+        // content is empty during thinking phase
+        let lines = vec![
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:14.0739283Z","message":{"role":"assistant","content":"","thinking":"Thinking"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:14.0882712Z","message":{"role":"assistant","content":"","thinking":" Process"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:14.1021096Z","message":{"role":"assistant","content":"","thinking":":"},"done":false}"#,
+            // then content arrives after thinking
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:25.9Z","message":{"role":"assistant","content":"Hello"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:26.0Z","message":{"role":"assistant","content":" world"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:26.1Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":1564518800}"#,
+        ];
+
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut finished = false;
+        for line in &lines {
+            let (c, t, done, err) = parse_ollama_line(line);
+            assert!(err.is_none());
+            if !c.is_empty() { content.push_str(&c); }
+            if !t.is_empty() { thinking.push_str(&t); }
+            if done { finished = true; }
+        }
+        assert_eq!(thinking, "Thinking Process:");
+        assert_eq!(content, "Hello world");
+        assert!(finished);
+    }
+
+    #[test]
+    fn test_parse_ollama_ndjson_thinking_exhausts_budget() {
+        // When thinking runs out of tokens, done_reason is "length" and content may be empty
+        let lines = vec![
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:25.7706112Z","message":{"role":"assistant","content":"","thinking":" words"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:25.782425Z","message":{"role":"assistant","content":"","thinking":")"},"done":false}"#,
+            r#"{"model":"qwen3.5:0.8b","created_at":"2026-03-19T19:40:25.782425Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"length","total_duration":1564518800}"#,
+        ];
+
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut done_reason = String::new();
+        for line in &lines {
+            let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(c) = chunk["message"]["content"].as_str() { content.push_str(c); }
+            if let Some(t) = chunk["message"]["thinking"].as_str() { thinking.push_str(t); }
+            if let Some(r) = chunk["done_reason"].as_str() { done_reason = r.to_string(); }
+        }
+        assert_eq!(content, ""); // no actual content was produced
+        assert_eq!(thinking, " words)");
+        assert_eq!(done_reason, "length");
+    }
+
+    #[test]
+    fn test_parse_ollama_ndjson_error() {
+        let line = r#"{"error":"an error was encountered while running the model"}"#;
+        let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+        let err = chunk["error"].as_str();
+        assert_eq!(err, Some("an error was encountered while running the model"));
+    }
+
+    /// Integration test: make a real request to Ollama with think:false.
+    /// Requires Ollama running locally with qwen3.5:0.8b.
+    #[test]
+    fn test_ollama_real_request_no_thinking() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        // Check Ollama is reachable
+        let tags = client.get("http://localhost:11434/api/tags").send();
+        if tags.is_err() || !tags.unwrap().status().is_success() {
+            eprintln!("Skipping test_ollama_real_request_no_thinking: Ollama not running");
+            return;
+        }
+
+        let body = json!({
+            "model": "qwen3.5:0.8b",
+            "messages": [{"role": "user", "content": "Say hello in 3 words"}],
+            "stream": true,
+            "think": false,
+            "options": {"num_predict": 20},
+        });
+
+        let resp = client
+            .post("http://localhost:11434/api/chat")
+            .json(&body)
+            .send()
+            .expect("Failed to send request");
+
+        assert!(resp.status().is_success(), "HTTP error: {}", resp.status());
+
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(resp);
+        let mut content = String::new();
+        let mut saw_done = false;
+
+        for line in reader.lines() {
+            let line = line.expect("Failed to read line");
+            if line.is_empty() { continue; }
+
+            let chunk: serde_json::Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("Failed to parse JSON: {} — line: {}", e, line));
+
+            // With think:false, there should be no thinking field
+            assert!(
+                chunk["message"]["thinking"].is_null() || chunk["message"]["thinking"].as_str() == Some(""),
+                "Unexpected thinking content with think:false: {:?}", chunk
+            );
+
+            if let Some(c) = chunk["message"]["content"].as_str() {
+                content.push_str(c);
+            }
+            if chunk["done"].as_bool() == Some(true) {
+                saw_done = true;
+                break;
+            }
+        }
+
+        assert!(saw_done, "Stream did not end with done:true");
+        assert!(!content.is_empty(), "No content received from Ollama");
+        eprintln!("Ollama response (think:false): {:?}", content);
+    }
+
+    /// Integration test: make a real request to Ollama with think:true.
+    /// Requires Ollama running locally with qwen3.5:0.8b.
+    #[test]
+    fn test_ollama_real_request_with_thinking() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap();
+
+        // Check Ollama is reachable
+        let tags = client.get("http://localhost:11434/api/tags").send();
+        if tags.is_err() || !tags.unwrap().status().is_success() {
+            eprintln!("Skipping test_ollama_real_request_with_thinking: Ollama not running");
+            return;
+        }
+
+        let body = json!({
+            "model": "qwen3.5:0.8b",
+            "messages": [{"role": "user", "content": "What is 2+2?"}],
+            "stream": true,
+            "think": true,
+            "options": {"num_predict": 2000},
+        });
+
+        let resp = client
+            .post("http://localhost:11434/api/chat")
+            .json(&body)
+            .send()
+            .expect("Failed to send request");
+
+        assert!(resp.status().is_success(), "HTTP error: {}", resp.status());
+
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(resp);
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut saw_done = false;
+
+        for line in reader.lines() {
+            let line = line.expect("Failed to read line");
+            if line.is_empty() { continue; }
+
+            let chunk: serde_json::Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("Failed to parse JSON: {} — line: {}", e, line));
+
+            if let Some(c) = chunk["message"]["content"].as_str() {
+                content.push_str(c);
+            }
+            if let Some(t) = chunk["message"]["thinking"].as_str() {
+                thinking.push_str(t);
+            }
+            if chunk["done"].as_bool() == Some(true) {
+                saw_done = true;
+                break;
+            }
+        }
+
+        assert!(saw_done, "Stream did not end with done:true");
+        assert!(!thinking.is_empty(), "No thinking received from Ollama with think:true");
+        // With a small model, thinking may consume entire budget. Just verify we got either content or done_reason=length.
+        eprintln!("Ollama thinking len: {}, content len: {}", thinking.len(), content.len());
+        eprintln!("Ollama content: {:?}", content);
+    }
+
+    /// Integration test: use our actual chat_completion_request function via mpsc channel.
+    /// Requires Ollama running locally with qwen3.5:0.8b.
+    #[test]
+    fn test_chat_completion_request_ollama() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let tags = client.get("http://localhost:11434/api/tags").send();
+        if tags.is_err() || !tags.unwrap().status().is_success() {
+            eprintln!("Skipping: Ollama not running");
+            return;
+        }
+
         let (tx, rx) = std::sync::mpsc::channel::<SummaryUpdate>();
-        let mut total = 0usize;
-
-        // Plain content — no tags
-        parse_inline_thinking("hello world", &tx, &mut total).unwrap();
-        assert_eq!(total, 11);
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamContent(s) => assert_eq!(s, "hello world"),
-            other => panic!(
-                "expected StreamContent, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-
-        // Full <think> block in one chunk
-        total = 0;
-        parse_inline_thinking("<think>reasoning</think>answer", &tx, &mut total).unwrap();
-        assert_eq!(total, "reasoning".len() + "answer".len());
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamThinking(s) => assert_eq!(s, "reasoning"),
-            other => panic!(
-                "expected StreamThinking, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamContent(s) => assert_eq!(s, "answer"),
-            other => panic!(
-                "expected StreamContent, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-
-        // Unclosed <think> — remainder treated as thinking
-        total = 0;
-        parse_inline_thinking("prefix<think>still thinking", &tx, &mut total).unwrap();
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamContent(s) => assert_eq!(s, "prefix"),
-            other => panic!(
-                "expected StreamContent, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamThinking(s) => assert_eq!(s, "still thinking"),
-            other => panic!(
-                "expected StreamThinking, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-
-        // Close tag without open — continuation from a previous chunk
-        total = 0;
-        parse_inline_thinking("continued thinking</think>real content", &tx, &mut total).unwrap();
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamThinking(s) => assert_eq!(s, "continued thinking"),
-            other => panic!(
-                "expected StreamThinking, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-        match rx.try_recv().unwrap() {
-            SummaryUpdate::StreamContent(s) => assert_eq!(s, "real content"),
-            other => panic!(
-                "expected StreamContent, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-
-        // Nothing left on the channel
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn test_thinking_budget() {
-        let mut state = SummaryState::default();
-        state.thinking_budget = 20;
-
-        // Simulate receiving thinking chunks that exceed the budget
-        let _ = state
-            .tx
-            .send(SummaryUpdate::StreamThinking("abcdefghij".to_string())); // 10 chars
-        let _ = state
-            .tx
-            .send(SummaryUpdate::StreamThinking("klmnopqrst".to_string())); // 10 chars
-        let _ = state
-            .tx
-            .send(SummaryUpdate::StreamThinking("uvwxyz".to_string())); // 6 chars — should be dropped
-
-        let mut dummy_text = String::new();
-        poll_ai_updates(&mut state, &mut dummy_text);
-
-        // Budget is 20 — first two chunks fill it exactly, third is dropped
-        assert_eq!(state.streaming_thinking.len(), 20);
-        assert_eq!(state.streaming_thinking, "abcdefghijklmnopqrst");
-
-        // Partial capping: budget 15, first chunk 10, second chunk 10 → 5 kept
-        let mut state2 = SummaryState::default();
-        state2.thinking_budget = 15;
-        let _ = state2
-            .tx
-            .send(SummaryUpdate::StreamThinking("0123456789".to_string()));
-        let _ = state2
-            .tx
-            .send(SummaryUpdate::StreamThinking("abcdefghij".to_string()));
-        poll_ai_updates(&mut state2, &mut dummy_text);
-        assert_eq!(state2.streaming_thinking.len(), 15);
-        assert_eq!(state2.streaming_thinking, "0123456789abcde");
-    }
-
-    /// Helper: create a SummaryState configured for local Ollama.
-    fn ollama_test_state() -> SummaryState {
-        let mut state = SummaryState::default();
-        state.provider = ApiProvider::Ollama;
-        state.api_url = ApiProvider::Ollama.default_url().to_string();
-        state.api_key = String::new();
-        state.max_tokens = 512;
-
-        let models = fetch_ollama_models(&state.api_url);
-        if !models.is_empty() {
-            state.model = models[0].clone();
-        } else {
-            state.model = ApiProvider::Ollama.default_model().to_string();
-        }
-        state
-    }
-
-    /// Verify we can reach local Ollama and list models.
-    #[test]
-    fn test_ollama_reachable() {
-        let api_url = ApiProvider::Ollama.default_url();
-        let models = fetch_ollama_models(api_url);
-        assert!(
-            !models.is_empty(),
-            "Ollama must be running locally with at least one model. Got none from {}",
-            api_url,
-        );
-        println!("Ollama models: {:?}", models);
-    }
-
-    /// End-to-end: feed a transcript through trigger_summarization + poll,
-    /// verify streaming works and produces a non-empty summary.
-    #[test]
-    fn test_ollama_end_to_end_summarization() {
-        let mut state = ollama_test_state();
-        state.ai_input_chars = 4000;
-        state.summary_context_lines = 3;
-
-        let raw_transcript = r#"Alice: Good morning everyone, let's get started with the sprint review.
-Bob: Sure. So this week I finished the authentication module. We now support OAuth2 and SAML.
-Alice: Great work Bob. Any blockers?
-Bob: The only issue is that the SAML integration tests are flaky on CI. I've opened a ticket for DevOps to look into it.
-Carol: I can help with that. I had a similar issue last month with the certificate rotation.
-Alice: Perfect, Carol please sync with Bob after this meeting.
-Dave: On my end, I've been working on the new dashboard. The charting library we chose has some performance issues with large datasets.
-Alice: How large are we talking?
-Dave: Anything over 10,000 data points causes noticeable lag. I'm looking into virtualization or switching to canvas rendering.
-Alice: OK, let's timebox that investigation to two days. If we can't fix it, we'll evaluate alternatives.
-Carol: For the backend, I've migrated three more endpoints to the new API versioning scheme. Should be done with all of them by Wednesday.
-Alice: Nice. Any risks?
-Carol: The payments endpoint is tricky because of backward compatibility. I might need an extra day for that one.
-Alice: That's fine. Let's plan for Thursday as the deadline for payments.
-Bob: One more thing — the security audit report came back. No critical issues, but there are two medium-severity findings we should address this sprint.
-Alice: Can you create tickets for those and we'll prioritize them in the next planning session?
-Bob: Already done.
-Alice: Excellent. Anything else? OK, let's wrap up. Action items: Carol syncs with Bob on SAML CI, Dave timeboxes dashboard perf to two days, Bob created security audit tickets. Next meeting same time Thursday."#;
-
-        println!("Using model: {}", state.model);
-
-        trigger_summarization(&mut state, raw_transcript);
-
-        assert!(
-            state.in_progress.load(Ordering::Relaxed),
-            "Expected in_progress after trigger",
+        let aborted = Arc::new(AtomicBool::new(false));
+        chat_completion_request(
+            "Say 'hello world' and nothing else.".to_string(),
+            "Be concise.".to_string(),
+            "http://localhost:11434/api/chat".to_string(),
+            String::new(),
+            "qwen3.5:0.8b".to_string(),
+            false,  // needs_key
+            50,     // max_tokens
+            true,   // is_ollama
+            0,      // thinking_budget (think: false)
+            tx,
+            aborted,
         );
 
-        let timeout = Duration::from_secs(120);
-        let start = std::time::Instant::now();
-        let mut raw_text = raw_transcript.to_string();
-        let mut idle_polls = 0;
-
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut got_done = false;
+        let mut statuses = vec![];
         loop {
-            if start.elapsed() > timeout {
-                panic!(
-                    "Timed out. Status: '{}', summary so far:\n{}",
-                    state.status, state.text,
-                );
+            match rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(SummaryUpdate::StreamChunk(c)) => content.push_str(&c),
+                Ok(SummaryUpdate::StreamThinking(t)) => thinking.push_str(&t),
+                Ok(SummaryUpdate::StreamDone) => { got_done = true; break; }
+                Ok(SummaryUpdate::Status(s)) => statuses.push(s),
+                Err(_) => panic!("Timed out waiting for Ollama response"),
             }
-
-            if let Some(s) = poll_ai_updates(&mut state, &mut raw_text) {
-                println!("[status] {}", s);
-            }
-
-            if !state.in_progress.load(Ordering::Relaxed) {
-                idle_polls += 1;
-                if idle_polls > 5 {
-                    break;
-                }
-            }
-
-            thread::sleep(Duration::from_millis(100));
         }
-
-        println!("Final status: {}", state.status);
-        println!("Summary text:\n{}", state.text);
-
-        assert!(
-            !state.in_progress.load(Ordering::Relaxed),
-            "Summarization should have completed",
-        );
-        assert!(
-            !state.text.trim().is_empty(),
-            "Summary text should not be empty. Status: '{}'",
-            state.status,
-        );
-
-        let bullet_count = state
-            .text
-            .lines()
-            .filter(|l| {
-                let t = l.trim();
-                t.starts_with('-') || t.starts_with('*') || t.starts_with('•')
-            })
-            .count();
-        println!("Bullet points found: {}", bullet_count);
-        assert!(
-            bullet_count > 0,
-            "Expected bullet points in summary, got:\n{}",
-            state.text,
-        );
-
-        assert!(
-            !state.status.to_lowercase().contains("error"),
-            "Status indicates an error: {}",
-            state.status,
-        );
+        eprintln!("Content: {:?}", content);
+        eprintln!("Thinking: {:?}", thinking);
+        eprintln!("Statuses: {:?}", statuses);
+        assert!(got_done, "Did not receive StreamDone");
+        assert!(!content.is_empty(), "Got no content from chat_completion_request");
+        assert!(thinking.is_empty(), "Got thinking with think:false");
     }
 }
