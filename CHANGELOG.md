@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.5 (2026-03-20)
+ - AI summarization: Ollama, OpenAI, or custom API endpoint
+ - Streaming summary output (SSE / ndjson)
+ - Incremental chunked summarization for long transcripts
+ - Auto-detect Ollama models and context length
+ - Abort actually cancels the HTTP stream and stops generation
+ - Configurable system/user prompts, thinking budget, max tokens
+ - Summary blocks separated by newlines
+
+## 2.4 (2026-03-04)
+ - Switch audio devices without stopping transcription
+
+## 2.3 (2026-02-19)
+ - Fix autotype
+ - Split file transcription at silence boundaries instead of fixed 30s chunks
+
 ## 2.2 (2026-02-13)
  - File transcription: transcribe audio files (wav, mp3, flac, ogg, m4a, aac, wma)
 

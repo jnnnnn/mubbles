@@ -38,17 +38,30 @@ Also, if you don't have cuda but do have an intel cpu, use --features mkl.
 
 https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html?operatingsystem=linux&linux-install=apt
 
+## Features
+
+- Real-time transcription from microphone or speaker loopback
+- Switch audio devices without stopping transcription
+- File transcription (wav, mp3, flac, ogg, m4a, aac, wma) with silence-based splitting
+- AI summarization via Ollama, OpenAI, or any OpenAI-compatible API
+  - Streaming output, incremental chunking, configurable prompts
+  - Auto-detects local Ollama models and context length
+- Statistical summary (most unusual words per section)
+- Autotype: types transcript into the foreground application
+- Word-level timestamps and alignment
+- Model selection (tiny, base, small, medium, large, distil variants)
+- CUDA and Intel MKL acceleration
+- Transcription history with per-word accuracy
+- Monthly log files
+
 ## Roadmap
 
-1. Summarization should use a standard configurable endpoint
-2. UI is a bit crowded, simplify
-3. fix autotype
-4. fix partials to show the mel spectrogram in real time
+1. UI is a bit crowded, simplify
+2. fix partials to show the mel spectrogram in real time
    - last attempt at this failed, wrangling texture memory is a little complex in egui
-5. fix input file transcription
-6. implement snippet saving, where you can click on a fragment and hear it / save the audio file.
-7. figure out why the accuracy for the first and last word is so bad
-8. implement a better speech detection / segmenting algorithm. 
+3. implement snippet saving, where you can click on a fragment and hear it / save the audio file.
+4. figure out why the accuracy for the first and last word is so bad
+5. implement a better speech detection / segmenting algorithm. 
     - I've had a go with silero and:
     - couldn't get the model to download automatically / easily and
     - I don't like onnx because it's not super transparent and

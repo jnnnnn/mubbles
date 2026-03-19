@@ -16,7 +16,9 @@ The transcription is performed using OpenAI's Whisper model, running locally. Th
 
 ## Summarization
 
-The transcribed text (or whatever is in the trancription window/textbox) can be summarized using a statistical summary (just picking out the least common words), or by passing the text to a Large Language Model that conforms to OpenAI's chatgpt API.
+The transcribed text (or whatever is in the transcription window/textbox) can be summarized using a statistical summary (just picking out the least common words), or by passing the text to a Large Language Model.
+
+AI summarization supports three providers: Ollama (local), OpenAI, or any custom endpoint conforming to the OpenAI chat completions API. Long transcripts are split into chunks and summarized incrementally, with the most recent summary lines passed as context to each chunk. Results are streamed in real time. The user can abort mid-stream, which closes the HTTP connection and stops the provider from generating further tokens.
 
 ## Threading
 

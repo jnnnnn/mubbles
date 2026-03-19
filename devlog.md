@@ -936,6 +936,28 @@ https://github.com/ufal/whisper_streaming
 
 > we consecutively process new audio chunks, emit the transcripts that are confirmed by 2 iterations, and scroll the audio processing buffer on a timestamp of a confirmed complete sentence. The processing audio buffer is not too long and the processing is fast.
 >
+
+## 2026-03-20
+
+2.5.0: AI summarization.
+
+Added AI-powered summarization using Ollama, OpenAI, or any custom endpoint
+that conforms to the OpenAI chat completions API. The summary panel streams
+results in real time using SSE (OpenAI) or ndjson (Ollama).
+
+Long transcripts are summarized incrementally in chunks, with configurable
+chunk size and context window so local models with small context lengths
+can still produce useful output.
+
+Ollama models are listed automatically from the local server, and model
+context length is fetched to set sensible defaults.
+
+Abort now actually cancels the HTTP stream (previously it only discarded
+received chunks on the UI side, wasting Ollama compute). The aborted flag
+is checked in the streaming loop so dropping the connection stops generation.
+
+Also fixed summary blocks running together — each block now starts on a
+new line.
 > In more detail: we use the init prompt, we handle the inaccurate timestamps, we re-process confirmed sentence prefixes and skip them, making sure they don't overlap, and we limit the processing buffer window.
 
 ## 2025-05-12
