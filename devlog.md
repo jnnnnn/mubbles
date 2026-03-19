@@ -1461,3 +1461,6 @@ disable reasoning in api
 limit num_ctx
 
 todo: limit thinking tokens
+
+
+todo: Add some overlap between chunks to help with a more accurate summary

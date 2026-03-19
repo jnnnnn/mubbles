@@ -387,6 +387,7 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
     let api_key = summary.api_key.clone();
     let model = summary.model.clone();
     let needs_key = summary.provider.needs_key();
+    let is_ollama = summary.provider == ApiProvider::Ollama;
     let max_tokens = summary.max_tokens;
     let thinking_budget = summary.thinking_budget;
 
@@ -398,6 +399,7 @@ fn trigger_summarization(summary: &mut SummaryState, raw: &str) {
             &api_key,
             &model,
             needs_key,
+            is_ollama,
             max_tokens,
             thinking_budget,
             &tx,
@@ -412,6 +414,7 @@ fn chat_completion_stream(
     api_key: &str,
     model: &str,
     needs_key: bool,
+    is_ollama: bool,
     max_tokens: usize,
     thinking_budget: usize,
     tx: &std::sync::mpsc::Sender<SummaryUpdate>,
@@ -458,11 +461,22 @@ fn chat_completion_stream(
         "max_tokens": max_tokens,
         "stream": true,
     });
-    // Hint the thinking budget to providers that support it.
-    // Ollama / OpenAI-compatible APIs with reasoning models may honour
-    // `thinking.budget_tokens` or similar — harmless if unsupported.
-    if thinking_budget > 0 {
-        body["thinking"] = json!({ "budget_tokens": thinking_budget });
+
+    if is_ollama {
+        // Ollama's OpenAI-compatible API supports `reasoning_effort`
+        // with values "high", "medium", "low", "none".
+        // When thinking_budget is 0 we disable reasoning entirely so
+        // the model produces only content tokens, not just thinking.
+        if thinking_budget == 0 {
+            body["reasoning_effort"] = json!("none");
+        } else {
+            body["reasoning_effort"] = json!("low");
+        }
+    } else {
+        // For OpenAI-compatible providers that support thinking budgets.
+        if thinking_budget > 0 {
+            body["thinking"] = json!({ "budget_tokens": thinking_budget });
+        }
     }
 
     let mut req = client
