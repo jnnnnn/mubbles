@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.6 (2026-03-23)
+ - Option to pause whisper and free GPU memory during AI summarization (for local Ollama)
+ - Whisper thread drops and reloads model on pause/resume, buffering audio in the channel
+
 ## 2.5 (2026-03-20)
  - AI summarization: Ollama, OpenAI, or custom API endpoint
  - Streaming summary output (SSE / ndjson)
