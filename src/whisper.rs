@@ -1,5 +1,6 @@
 use std::{
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender},
         Arc,
     },
@@ -289,10 +290,11 @@ pub fn start_whisper_thread(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
+    paused: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("whisper".to_string())
-        .spawn(move || match whisper_loop(app, filtered_rx, params) {
+        .spawn(move || match whisper_loop(app, filtered_rx, params, paused) {
             Ok(_) => tracing::info!("Whisper thread finished successfully"),
             Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
         });
@@ -303,16 +305,29 @@ fn whisper_loop(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
+    paused: Arc<AtomicBool>,
 ) -> Result<(), anyhow::Error> {
     app.send(WhisperUpdate::Status(
         "Loading whisper model...".to_string(),
     ))?;
     let app_status = app.clone();
-    let mut ctx: WhisperContext = load_whisper_model(params.model, move |s| {
+    let mut ctx: Option<WhisperContext> = Some(load_whisper_model(params.model, move |s| {
         app_status.send(WhisperUpdate::Status(s)).ok();
-    })?;
+    })?);
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
+        // When paused, drop the model and stop reading audio (channel buffers it)
+        while paused.load(Ordering::Relaxed) {
+            if ctx.is_some() {
+                tracing::info!("Whisper paused — dropping model to free GPU memory");
+                ctx = None;
+                app.send(WhisperUpdate::Status("Model unloaded (GPU freed)".to_string()))?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        ensure_model_loaded(&mut ctx, &params, &app)?;
+
         // first recv needs to be blocking to prevent the thread from spinning
         let PcmAudio {
             data: mut aggregated,
@@ -324,19 +339,34 @@ fn whisper_loop(
                 return Ok(());
             }
         };
-        // because whisper processes audio in chunks of 30 seconds (and takes a while to do so), it's
-        // worth aggregating several chunks of audio before sending it to whisper (in the rare case that they are available)
+        // Aggregate up to 30s of audio before processing
         while aggregated.len() < sample_rate * 30 {
             match filtered_rx.try_recv() {
                 Ok(pcm) => aggregated.extend(pcm.data),
                 Err(_) => break,
             }
         }
-        let result = whisperize(&mut ctx, &aggregated, &app);
+        let result = whisperize(ctx.as_mut().unwrap(), &aggregated, &app);
         if !result.is_ok() {
             tracing::error!("Failed to perform partial transcription: {:?}", result);
         }
     }
+}
+
+fn ensure_model_loaded(
+    ctx: &mut Option<WhisperContext>,
+    params: &WhisperParams,
+    app: &Sender<WhisperUpdate>,
+) -> Result<(), anyhow::Error> {
+    if ctx.is_none() {
+        app.send(WhisperUpdate::Status("Reloading whisper model...".to_string()))?;
+        let app_status = app.clone();
+        *ctx = Some(load_whisper_model(params.model, move |s| {
+            app_status.send(WhisperUpdate::Status(s)).ok();
+        })?);
+        app.send(WhisperUpdate::Status("Model reloaded".to_string()))?;
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip(state, resampled, app))]

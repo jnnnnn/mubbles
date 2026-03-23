@@ -181,6 +181,8 @@ pub struct MubblesApp {
     #[serde(skip)]
     worker: Option<Worker>,
     #[serde(skip)]
+    whisper_paused: Arc<AtomicBool>,
+    #[serde(skip)]
     from_whisper: mpsc::Receiver<WhisperUpdate>,
     #[serde(skip)]
     whisper_tx: mpsc::Sender<WhisperUpdate>,
@@ -264,6 +266,7 @@ impl Default for MubblesApp {
 
             // Worker threads
             worker: None,
+            whisper_paused: Arc::new(AtomicBool::new(false)),
             from_whisper: rx,
             whisper_tx: tx,
 
@@ -509,6 +512,7 @@ impl MubblesApp {
     fn toggle_recording(&mut self) {
         if self.worker.is_some() {
             self.worker = None;
+            self.ai_summary.whisper_paused = None;
         } else {
             let device_refs: Vec<&AppDevice> = self
                 .devices
@@ -528,9 +532,11 @@ impl MubblesApp {
                     model: WhichModel::from(self.selected_model),
                     partials: self.partials,
                 },
+                self.whisper_paused.clone(),
             ) {
                 Ok(new_worker) => {
                     self.worker = Some(new_worker);
+                    self.ai_summary.whisper_paused = Some(self.whisper_paused.clone());
                 }
                 Err(e) => {
                     tracing::error!("Failed to start listening: {}", e);
@@ -935,6 +941,11 @@ impl MubblesApp {
                     egui::Slider::new(&mut self.ai_summary.thinking_budget, 0..=8192)
                         .text("Thinking budget (chars, 0 = disable)")
                         .logarithmic(true),
+                );
+
+                ui.checkbox(
+                    &mut self.ai_summary.free_gpu,
+                    "Pause whisper during AI summary (free GPU for Ollama)",
                 );
 
                 ui.add_space(10.0);
@@ -1431,6 +1442,7 @@ fn start_listening(
     app: &Sender<WhisperUpdate>,
     devices: &[&AppDevice],
     params: WhisperParams,
+    paused: Arc<AtomicBool>,
 ) -> Result<Worker, anyhow::Error> {
     // Start partial transcription thread if enabled
     let (partial_thread, partial_tx) = if params.partials {
@@ -1455,7 +1467,7 @@ fn start_listening(
     }
 
     // Start whisper transcription thread
-    let whisper_thread = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params)?;
+    let whisper_thread = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params, paused)?;
 
     Ok(Worker {
         audio_streams,

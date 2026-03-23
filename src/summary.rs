@@ -62,12 +62,15 @@ pub struct SummaryState {
     pub summary_context_lines: usize,
     pub max_tokens: usize,
     pub thinking_budget: usize,
+    pub free_gpu: bool,
     output_words: usize,
     input_lines: usize,
     #[serde(skip)]
     pub ollama_models: Vec<String>,
     #[serde(skip)]
     pub ollama_model_ctx: Option<usize>,
+    #[serde(skip)]
+    pub whisper_paused: Option<Arc<AtomicBool>>,
     #[serde(skip)]
     pub in_progress: Arc<AtomicBool>,
     #[serde(skip)]
@@ -126,10 +129,12 @@ impl Default for SummaryState {
             summary_context_lines: 5,
             max_tokens: 4096,
             thinking_budget: 0,
+            free_gpu: false,
             output_words: 5,
             input_lines: 7,
             ollama_models: Vec::new(),
             ollama_model_ctx: None,
+            whisper_paused: None,
             in_progress: Arc::new(AtomicBool::new(false)),
             aborted: Arc::new(AtomicBool::new(false)),
             status: String::new(),
@@ -138,6 +143,16 @@ impl Default for SummaryState {
             streaming_raw: String::new(),
             tx,
             rx,
+        }
+    }
+}
+
+impl SummaryState {
+    pub fn set_whisper_paused(&self, paused: bool) {
+        if self.free_gpu {
+            if let Some(ref flag) = self.whisper_paused {
+                flag.store(paused, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -175,6 +190,7 @@ pub fn ai_ui(summary: &mut SummaryState, ui: &mut egui::Ui, text: &mut String) {
             if ui.button("❌ Abort").clicked() {
                 summary.aborted.store(true, Ordering::Relaxed);
                 summary.in_progress.store(false, Ordering::Relaxed);
+                summary.set_whisper_paused(false);
                 summary.status = "Aborted".to_string();
             }
         }
@@ -241,12 +257,14 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
                 if summary.aborted.load(Ordering::Relaxed) {
                     summary.streaming_raw.clear();
                     summary.in_progress.store(false, Ordering::Relaxed);
+                    summary.set_whisper_paused(false);
                     continue;
                 }
                 if summary.streaming_raw.is_empty() {
                     // Stream produced no content (error or empty response)
                     tracing::warn!("StreamDone with no content — stopping");
                     summary.in_progress.store(false, Ordering::Relaxed);
+                    summary.set_whisper_paused(false);
                     continue;
                 }
                 // Replace the raw streamed text with the XML-stripped version
@@ -275,6 +293,7 @@ pub fn poll_ai_updates(summary: &mut SummaryState, text: &mut String) -> Option<
 }
 
 fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
+    summary.set_whisper_paused(true);
     let additional = raw
         .chars()
         .skip(summary.offset)
@@ -287,6 +306,7 @@ fn trigger_summarization_request(summary: &mut SummaryState, raw: &str) {
         );
         let remaining = raw.len().saturating_sub(summary.offset);
         summary.in_progress.store(false, Ordering::Relaxed);
+        summary.set_whisper_paused(false);
         let _ = summary.tx.send(SummaryUpdate::Status(format!(
             "Done — {} summary lines, {} remaining chars too short to summarize",
             summary.text.lines().count(),
