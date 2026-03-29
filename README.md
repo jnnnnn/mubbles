@@ -41,6 +41,8 @@ https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.h
 ## Features
 
 - Real-time transcription from microphone or speaker loopback
+- Echo cancellation: mic is muted while speaker output is active (prevents double transcription)
+- Per-device audio level monitoring with logarithmic (dB) scale
 - Switch audio devices without stopping transcription
 - File transcription (wav, mp3, flac, ogg, m4a, aac, wma) with silence-based splitting
 - AI summarization via Ollama, OpenAI, or any OpenAI-compatible API

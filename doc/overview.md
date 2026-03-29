@@ -8,7 +8,9 @@ The UI is built using egui and eframe. This is an immediate-mode GUI -- the whol
 
 ## Audio
 
-Audio is recorded via the `cpal` library. The various audio devices (microphones and speakers) are listed, and the user chooses one to transcribe from. The speakers are transcribed using Windows' audio loopback functionality.
+Audio is recorded via the `cpal` library (or PipeWire on Linux). The various audio devices (microphones and speakers) are listed, and the user chooses which to transcribe from. The speakers are captured using Windows' audio loopback functionality or PipeWire monitor sources on Linux.
+
+Echo cancellation is implemented by muting microphone input whenever speaker output is active. A shared `AtomicBool` flag is set by output device threads when audio exceeds a threshold, and input device threads skip their audio while the flag is set. Per-device audio levels are tracked and displayed with a logarithmic (dB) scale.
 
 ## Transcribe
 
