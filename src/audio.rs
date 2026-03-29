@@ -5,7 +5,11 @@
 
 use rubato::Resampler;
 use std::{
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+        Arc,
+    },
     thread,
 };
 
@@ -48,6 +52,9 @@ pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
     filtered_tx: Sender<PcmAudio>,
+    device_name: String,
+    is_output: bool,
+    output_active: Arc<AtomicBool>,
 ) -> Result<(), anyhow::Error> {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
@@ -77,7 +84,28 @@ pub fn filter_audio_loop(
                 max = *sample;
             }
         }
-        app.send(WhisperUpdate::Level(max))?;
+
+        // Output devices: signal when active so input devices can mute
+        if is_output {
+            output_active.store(max > threshold, Ordering::Relaxed);
+            app.send(WhisperUpdate::Level {
+                device: device_name.clone(),
+                level: max,
+                muted: false,
+            })?;
+            continue; // Output devices don't need speech detection / whisper
+        }
+
+        // Input devices: skip audio when output is active (echo cancellation)
+        let muted = output_active.load(Ordering::Relaxed);
+        app.send(WhisperUpdate::Level {
+            device: device_name.clone(),
+            level: max,
+            muted,
+        })?;
+        if muted {
+            continue;
+        }
 
         if max > threshold {
             if under_threshold_count > 100 {
@@ -148,6 +176,7 @@ mod platform {
     /// Unified audio device representation
     pub struct AppDevice {
         pub name: String,
+        pub is_output: bool,
         pub(crate) inner: PwDevice,
     }
 
@@ -177,6 +206,7 @@ mod platform {
             .into_iter()
             .map(|pw| AppDevice {
                 name: pw.name.clone(),
+                is_output: pw.is_monitor,
                 inner: pw,
             })
             .collect();
@@ -195,6 +225,7 @@ mod platform {
                             .into_iter()
                             .map(|pw| AppDevice {
                                 name: pw.name.clone(),
+                                is_output: pw.is_monitor,
                                 inner: pw,
                             })
                             .collect(),
@@ -217,6 +248,7 @@ mod platform {
         app_device: &AppDevice,
         filtered_tx: Sender<PcmAudio>,
         partial_tx: Option<Sender<PcmAudio>>,
+        output_active: Arc<AtomicBool>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!("Starting PipeWire audio capture on: {}", app_device.name);
 
@@ -232,8 +264,10 @@ mod platform {
 
         // Start the filter thread
         let app2 = app.clone();
+        let device_name = app_device.name.clone();
+        let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx) {
+            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }
@@ -251,6 +285,7 @@ mod platform {
     /// Unified audio device representation
     pub struct AppDevice {
         pub name: String,
+        pub is_output: bool,
         pub(crate) device: cpal::Device,
         pub(crate) config: cpal::SupportedStreamConfig,
     }
@@ -294,6 +329,7 @@ mod platform {
             let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
             all.push(AppDevice {
                 name,
+                is_output: false,
                 device,
                 config,
             });
@@ -318,6 +354,7 @@ mod platform {
             let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
             all.push(AppDevice {
                 name,
+                is_output: true,
                 device,
                 config,
             });
@@ -338,6 +375,7 @@ mod platform {
         app_device: &AppDevice,
         filtered_tx: Sender<PcmAudio>,
         partial_tx: Option<Sender<PcmAudio>>,
+        output_active: Arc<AtomicBool>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!(
             "Listening on device: {}",
@@ -384,8 +422,10 @@ mod platform {
         stream.play()?;
 
         let app2 = app.clone();
+        let device_name = app_device.name.clone();
+        let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx) {
+            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }

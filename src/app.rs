@@ -191,6 +191,10 @@ pub struct MubblesApp {
     #[serde(skip)]
     level: VecDeque<f32>,
     #[serde(skip)]
+    device_levels: HashMap<String, VecDeque<f32>>,
+    #[serde(skip)]
+    device_muted: HashMap<String, bool>,
+    #[serde(skip)]
     mel: DisplayMel,
 
     // UI state
@@ -272,6 +276,8 @@ impl Default for MubblesApp {
 
             // Visualization state
             level: VecDeque::with_capacity(LEVEL_BUFFER_SIZE),
+            device_levels: HashMap::new(),
+            device_muted: HashMap::new(),
             mel: DisplayMel::new(),
 
             // UI state
@@ -382,11 +388,22 @@ impl MubblesApp {
                 }
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
-                WhisperUpdate::Level(l) => {
+                WhisperUpdate::Level { device, level, muted } => {
                     if self.level.len() >= LEVEL_BUFFER_SIZE {
                         self.level.pop_front();
                     }
-                    self.level.push_back(l);
+                    self.level.push_back(level);
+
+                    // Track per-device levels
+                    let dev_level = self
+                        .device_levels
+                        .entry(device.clone())
+                        .or_insert_with(|| VecDeque::with_capacity(LEVEL_BUFFER_SIZE));
+                    if dev_level.len() >= LEVEL_BUFFER_SIZE {
+                        dev_level.pop_front();
+                    }
+                    dev_level.push_back(level);
+                    self.device_muted.insert(device, muted);
                 }
                 WhisperUpdate::Alignment(a) => {
                     self.word_history.push(a.clone());
@@ -1116,27 +1133,52 @@ impl MubblesApp {
         ui.separator();
         ui.add_space(5.0);
 
-        let device_names: Vec<String> = self.devices.iter().map(|d| d.name.clone()).collect();
+        let device_names: Vec<(String, bool)> = self
+            .devices
+            .iter()
+            .map(|d| (d.name.clone(), d.is_output))
+            .collect();
 
-        for name in &device_names {
-            let mut selected = self.selected_device_names.contains(name);
-            if ui.checkbox(&mut selected, name.as_str()).changed() {
-                if selected {
-                    self.selected_device_names.insert(name.clone());
-                    // Start audio stream if worker is running
-                    if let Some(worker) = &mut self.worker {
-                        if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                            worker.add_device(device);
+        for (name, is_output) in &device_names {
+            ui.horizontal(|ui| {
+                let mut selected = self.selected_device_names.contains(name);
+                let label = if *is_output {
+                    format!("{} [output]", name)
+                } else {
+                    name.clone()
+                };
+                if ui.checkbox(&mut selected, label).changed() {
+                    if selected {
+                        self.selected_device_names.insert(name.clone());
+                        if let Some(worker) = &mut self.worker {
+                            if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
+                                worker.add_device(device);
+                            }
+                        }
+                    } else {
+                        self.selected_device_names.remove(name);
+                        if let Some(worker) = &mut self.worker {
+                            worker.remove_device(name);
                         }
                     }
-                } else {
-                    self.selected_device_names.remove(name);
-                    // Stop audio stream if worker is running
-                    if let Some(worker) = &mut self.worker {
-                        worker.remove_device(name);
+                }
+
+                // Muted indicator
+                if let Some(&muted) = self.device_muted.get(name.as_str()) {
+                    if muted {
+                        ui.label(
+                            egui::RichText::new("MUTED")
+                                .color(egui::Color32::from_rgb(255, 100, 100))
+                                .strong(),
+                        );
                     }
                 }
-            }
+
+                // Per-device level chart
+                if let Some(dev_level) = self.device_levels.get(name.as_str()) {
+                    plot_level_log(dev_level, ui);
+                }
+            });
         }
     }
 
@@ -1211,7 +1253,7 @@ pub enum WhisperUpdate {
     Transcribing(bool),
     Transcription(String),
     Alignment(Vec<AlignedWord>),
-    Level(f32),
+    Level { device: String, level: f32, muted: bool },
     Mel(Tensor),
     Status(String),
     MelFrame(Vec<f32>),
@@ -1331,18 +1373,51 @@ fn draw_aligned_words(
     }
 }
 
-/// Plot audio level over time
+/// Convert linear amplitude (0.0..1.0) to logarithmic dB scale (0.0..1.0)
+/// Maps -60 dB to 0 dB range into 0.0..1.0
+fn amplitude_to_log(v: f32) -> f64 {
+    if v <= 0.0 {
+        return 0.0;
+    }
+    // 20*log10(v) gives dB, range is roughly -60..0 for 0.001..1.0
+    let db = 20.0 * (v as f64).log10();
+    // Map -60..0 to 0..1
+    ((db + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+/// Plot audio level over time (logarithmic scale)
 fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     let points: PlotPoints<'_> = level
         .iter()
         .enumerate()
-        .map(|(i, v)| [i as f64, *v as f64])
+        .map(|(i, v)| [i as f64, amplitude_to_log(*v)])
         .collect();
 
     let line = Line::new("level", points);
 
     ui.add_enabled_ui(false, |ui| {
         Plot::new("level_plot")
+            .width(LEVEL_PLOT_WIDTH)
+            .height(LEVEL_PLOT_HEIGHT)
+            .include_y(0.0)
+            .include_y(1.0)
+            .view_aspect(2.0)
+            .show(ui, |plot_ui| plot_ui.line(line));
+    });
+}
+
+/// Plot audio level for a specific device (logarithmic scale, smaller)
+fn plot_level_log(level: &VecDeque<f32>, ui: &mut egui::Ui) {
+    let points: PlotPoints<'_> = level
+        .iter()
+        .enumerate()
+        .map(|(i, v)| [i as f64, amplitude_to_log(*v)])
+        .collect();
+
+    let line = Line::new("dev_level", points);
+
+    ui.add_enabled_ui(false, |ui| {
+        Plot::new(format!("dev_level_{}", level.as_slices().0.as_ptr() as usize))
             .width(LEVEL_PLOT_WIDTH)
             .height(LEVEL_PLOT_HEIGHT)
             .include_y(0.0)
@@ -1397,6 +1472,7 @@ struct Worker {
     filtered_tx: Sender<crate::audio::PcmAudio>,
     partial_tx: Option<Sender<crate::audio::PcmAudio>>,
     app_tx: Sender<WhisperUpdate>,
+    output_active: Arc<AtomicBool>,
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
 }
@@ -1418,6 +1494,7 @@ impl Worker {
             device,
             self.filtered_tx.clone(),
             ptx,
+            self.output_active.clone(),
         ) {
             Ok(stream) => {
                 tracing::info!("Started audio stream for: {}", device.name);
@@ -1456,13 +1533,16 @@ fn start_listening(
     // Start filtered audio channel (shared by all devices)
     let (filtered_tx, filtered_rx) = mpsc::channel();
 
+    // Shared flag: set by output device threads when audio is playing
+    let output_active = Arc::new(AtomicBool::new(false));
+
     // Start an audio stream for each selected device
     let mut audio_streams = HashMap::new();
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
         let stream =
-            crate::audio::start_audio_thread(app.clone(), device, filtered_tx.clone(), ptx)?;
+            crate::audio::start_audio_thread(app.clone(), device, filtered_tx.clone(), ptx, output_active.clone())?;
         audio_streams.insert(device.name.clone(), stream);
     }
 
@@ -1474,6 +1554,7 @@ fn start_listening(
         filtered_tx,
         partial_tx,
         app_tx: app.clone(),
+        output_active,
         partial_thread,
         whisper_thread: Some(whisper_thread),
     })
