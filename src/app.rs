@@ -189,8 +189,6 @@ pub struct MubblesApp {
 
     // Visualization state
     #[serde(skip)]
-    level: VecDeque<f32>,
-    #[serde(skip)]
     device_levels: HashMap<String, VecDeque<f32>>,
     #[serde(skip)]
     device_muted: HashMap<String, bool>,
@@ -275,7 +273,6 @@ impl Default for MubblesApp {
             whisper_tx: tx,
 
             // Visualization state
-            level: VecDeque::with_capacity(LEVEL_BUFFER_SIZE),
             device_levels: HashMap::new(),
             device_muted: HashMap::new(),
             mel: DisplayMel::new(),
@@ -389,12 +386,6 @@ impl MubblesApp {
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
                 WhisperUpdate::Level { device, level, muted } => {
-                    if self.level.len() >= LEVEL_BUFFER_SIZE {
-                        self.level.pop_front();
-                    }
-                    self.level.push_back(level);
-
-                    // Track per-device levels
                     let dev_level = self
                         .device_levels
                         .entry(device.clone())
@@ -499,7 +490,7 @@ impl MubblesApp {
                 .with_main_wrap(true)
                 .with_cross_align(egui::Align::TOP),
             |ui| {
-                plot_level(&self.level, ui);
+                plot_levels(&self.device_levels, ui);
 
                 // Start/Stop button
                 let started = self.worker.is_some();
@@ -1385,16 +1376,18 @@ fn amplitude_to_log(v: f32) -> f64 {
     ((db + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
-/// Plot audio level over time (logarithmic scale)
-fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
-    let points: PlotPoints<'_> = level
-        .iter()
-        .enumerate()
-        .map(|(i, v)| [i as f64, amplitude_to_log(*v)])
-        .collect();
+/// Distinct colors for device lines
+const DEVICE_COLORS: &[egui::Color32] = &[
+    egui::Color32::from_rgb(100, 180, 255),
+    egui::Color32::from_rgb(255, 150, 80),
+    egui::Color32::from_rgb(100, 220, 100),
+    egui::Color32::from_rgb(220, 100, 220),
+    egui::Color32::from_rgb(255, 220, 80),
+    egui::Color32::from_rgb(80, 220, 220),
+];
 
-    let line = Line::new("level", points);
-
+/// Plot all device levels as separate colored lines (logarithmic scale)
+fn plot_levels(device_levels: &HashMap<String, VecDeque<f32>>, ui: &mut egui::Ui) {
     ui.add_enabled_ui(false, |ui| {
         Plot::new("level_plot")
             .width(LEVEL_PLOT_WIDTH)
@@ -1402,11 +1395,22 @@ fn plot_level(level: &VecDeque<f32>, ui: &mut egui::Ui) {
             .include_y(0.0)
             .include_y(1.0)
             .view_aspect(2.0)
-            .show(ui, |plot_ui| plot_ui.line(line));
+            .show(ui, |plot_ui| {
+                for (i, (name, level)) in device_levels.iter().enumerate() {
+                    let points: PlotPoints<'_> = level
+                        .iter()
+                        .enumerate()
+                        .map(|(j, v)| [j as f64, amplitude_to_log(*v)])
+                        .collect();
+                    let color = DEVICE_COLORS[i % DEVICE_COLORS.len()];
+                    let line = Line::new(name.as_str(), points).color(color);
+                    plot_ui.line(line);
+                }
+            });
     });
 }
 
-/// Plot audio level for a specific device (logarithmic scale, smaller)
+/// Plot audio level for a single device (logarithmic scale)
 fn plot_level_log(level: &VecDeque<f32>, ui: &mut egui::Ui) {
     let points: PlotPoints<'_> = level
         .iter()
