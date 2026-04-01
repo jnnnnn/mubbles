@@ -1,7 +1,12 @@
 # Changelog
 
+## 2.8 (2026-04-01)
+ - Echo cancellation (optional): mute mic input while speaker output is active, preventing double transcription
+ - Output devices now go through speech detection and transcription (previously skipped)
+ - Per-device configurable trigger level with logarithmic slider
+ - Trigger level shown as threshold line on per-device level charts
+
 ## 2.7 (2026-03-30)
- - Echo cancellation: mic input is muted while speaker output is active, preventing double transcription
  - Per-device audio level charts in the Devices tab with muted indicator
  - Multi-line level plot in the control bar (one line per device)
  - Logarithmic (dB) level scale so quiet signals are visible
