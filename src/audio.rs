@@ -6,7 +6,7 @@
 use rubato::Resampler;
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, Sender},
         Arc,
     },
@@ -55,16 +55,14 @@ pub fn filter_audio_loop(
     device_name: String,
     is_output: bool,
     output_active: Arc<AtomicBool>,
+    echo_cancel: Arc<AtomicBool>,
+    threshold_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
     // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
     // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
     // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
     let mut under_threshold_count = 101;
     let mut recording_buffer: Vec<f32> = Vec::new();
-
-    // a dynamic threshold (or something like silero-vad) would be better
-    // something like, threshold = 2 * lowest-level-in-last-ten-seconds
-    let threshold = 0.05f32;
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
@@ -78,6 +76,8 @@ pub fn filter_audio_loop(
             }
         };
 
+        let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
+
         let mut max = 0.0;
         for sample in data.iter() {
             if *sample > max {
@@ -88,16 +88,10 @@ pub fn filter_audio_loop(
         // Output devices: signal when active so input devices can mute
         if is_output {
             output_active.store(max > threshold, Ordering::Relaxed);
-            app.send(WhisperUpdate::Level {
-                device: device_name.clone(),
-                level: max,
-                muted: false,
-            })?;
-            continue; // Output devices don't need speech detection / whisper
         }
 
         // Input devices: skip audio when output is active (echo cancellation)
-        let muted = output_active.load(Ordering::Relaxed);
+        let muted = !is_output && echo_cancel.load(Ordering::Relaxed) && output_active.load(Ordering::Relaxed);
         app.send(WhisperUpdate::Level {
             device: device_name.clone(),
             level: max,
@@ -249,6 +243,8 @@ mod platform {
         filtered_tx: Sender<PcmAudio>,
         partial_tx: Option<Sender<PcmAudio>>,
         output_active: Arc<AtomicBool>,
+        echo_cancel: Arc<AtomicBool>,
+        threshold_bits: Arc<AtomicU32>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!("Starting PipeWire audio capture on: {}", app_device.name);
 
@@ -267,7 +263,7 @@ mod platform {
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active) {
+            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active, echo_cancel, threshold_bits) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }
@@ -376,6 +372,8 @@ mod platform {
         filtered_tx: Sender<PcmAudio>,
         partial_tx: Option<Sender<PcmAudio>>,
         output_active: Arc<AtomicBool>,
+        echo_cancel: Arc<AtomicBool>,
+        threshold_bits: Arc<AtomicU32>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!(
             "Listening on device: {}",
@@ -425,7 +423,7 @@ mod platform {
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active) {
+            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active, echo_cancel, threshold_bits) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }

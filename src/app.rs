@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Sender, TryRecvError},
         Arc,
     },
@@ -11,7 +11,7 @@ use std::{
 
 use candle_core::Tensor;
 use egui_extras::{Column, TableBuilder};
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{HLine, Line, Plot, PlotPoints};
 
 use crate::{
     audio::{
@@ -33,6 +33,7 @@ const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
 const WORD_CHAR_WIDTH: f32 = 7.0;
+const DEFAULT_THRESHOLD: f32 = 0.05;
 
 /// Application tab selection
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -174,6 +175,7 @@ pub struct MubblesApp {
     // Feature flags
     autotype: bool,
     partials: bool,
+    echo_cancel: bool,
     #[serde(skip)]
     always_on_top: bool,
 
@@ -192,6 +194,7 @@ pub struct MubblesApp {
     device_levels: HashMap<String, VecDeque<f32>>,
     #[serde(skip)]
     device_muted: HashMap<String, bool>,
+    device_thresholds: HashMap<String, f32>,
     #[serde(skip)]
     mel: DisplayMel,
 
@@ -264,6 +267,7 @@ impl Default for MubblesApp {
             // Feature flags
             autotype: false,
             partials: false,
+            echo_cancel: false,
             always_on_top: false,
 
             // Worker threads
@@ -275,6 +279,7 @@ impl Default for MubblesApp {
             // Visualization state
             device_levels: HashMap::new(),
             device_muted: HashMap::new(),
+            device_thresholds: HashMap::new(),
             mel: DisplayMel::new(),
 
             // UI state
@@ -541,6 +546,8 @@ impl MubblesApp {
                     partials: self.partials,
                 },
                 self.whisper_paused.clone(),
+                self.echo_cancel,
+                &self.device_thresholds,
             ) {
                 Ok(new_worker) => {
                     self.worker = Some(new_worker);
@@ -1120,6 +1127,16 @@ impl MubblesApp {
             ui.label(format!("{} devices found", self.devices.len()));
         });
 
+        if ui
+            .checkbox(&mut self.echo_cancel, "Echo cancellation")
+            .on_hover_text("Mute mic input while speaker output is active")
+            .changed()
+        {
+            if let Some(worker) = &self.worker {
+                worker.echo_cancel.store(self.echo_cancel, Ordering::Relaxed);
+            }
+        }
+
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(5.0);
@@ -1143,7 +1160,8 @@ impl MubblesApp {
                         self.selected_device_names.insert(name.clone());
                         if let Some(worker) = &mut self.worker {
                             if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                                worker.add_device(device);
+                                let threshold = self.device_thresholds.get(name).copied().unwrap_or(DEFAULT_THRESHOLD);
+                                worker.add_device(device, threshold);
                             }
                         }
                     } else {
@@ -1165,9 +1183,23 @@ impl MubblesApp {
                     }
                 }
 
-                // Per-device level chart
+                // Per-device trigger level slider
+                let threshold = self.device_thresholds.entry(name.clone()).or_insert(DEFAULT_THRESHOLD);
+                if ui
+                    .add(egui::Slider::new(threshold, 0.001..=0.5).logarithmic(true).text("trigger"))
+                    .changed()
+                {
+                    // Push updated threshold to the running audio thread
+                    if let Some(worker) = &self.worker {
+                        if let Some(atom) = worker.device_threshold_atoms.get(name.as_str()) {
+                            atom.store(threshold.to_bits(), Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                // Per-device level chart with threshold line
                 if let Some(dev_level) = self.device_levels.get(name.as_str()) {
-                    plot_level_log(dev_level, ui);
+                    plot_level_with_threshold(dev_level, *threshold, ui, name);
                 }
             });
         }
@@ -1410,8 +1442,8 @@ fn plot_levels(device_levels: &HashMap<String, VecDeque<f32>>, ui: &mut egui::Ui
     });
 }
 
-/// Plot audio level for a single device (logarithmic scale)
-fn plot_level_log(level: &VecDeque<f32>, ui: &mut egui::Ui) {
+/// Plot audio level for a single device (logarithmic scale) with threshold line
+fn plot_level_with_threshold(level: &VecDeque<f32>, threshold: f32, ui: &mut egui::Ui, name: &str) {
     let points: PlotPoints<'_> = level
         .iter()
         .enumerate()
@@ -1419,15 +1451,22 @@ fn plot_level_log(level: &VecDeque<f32>, ui: &mut egui::Ui) {
         .collect();
 
     let line = Line::new("dev_level", points);
+    let thresh_y = amplitude_to_log(threshold);
+    let thresh_line = HLine::new("threshold", thresh_y)
+        .color(egui::Color32::from_rgb(255, 80, 80))
+        .style(egui_plot::LineStyle::Dashed { length: 4.0 });
 
     ui.add_enabled_ui(false, |ui| {
-        Plot::new(format!("dev_level_{}", level.as_slices().0.as_ptr() as usize))
+        Plot::new(format!("dev_level_{}", name))
             .width(LEVEL_PLOT_WIDTH)
             .height(LEVEL_PLOT_HEIGHT)
             .include_y(0.0)
             .include_y(1.0)
             .view_aspect(2.0)
-            .show(ui, |plot_ui| plot_ui.line(line));
+            .show(ui, |plot_ui| {
+                plot_ui.line(line);
+                plot_ui.hline(thresh_line);
+            });
     });
 }
 
@@ -1477,13 +1516,15 @@ struct Worker {
     partial_tx: Option<Sender<crate::audio::PcmAudio>>,
     app_tx: Sender<WhisperUpdate>,
     output_active: Arc<AtomicBool>,
+    echo_cancel: Arc<AtomicBool>,
+    device_threshold_atoms: HashMap<String, Arc<AtomicU32>>,
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     /// Add an audio stream for a device
-    fn add_device(&mut self, device: &AppDevice) {
+    fn add_device(&mut self, device: &AppDevice, threshold: f32) {
         if self.audio_streams.contains_key(&device.name) {
             return;
         }
@@ -1493,16 +1534,20 @@ impl Worker {
         } else {
             None
         };
+        let threshold_atom = Arc::new(AtomicU32::new(threshold.to_bits()));
         match crate::audio::start_audio_thread(
             self.app_tx.clone(),
             device,
             self.filtered_tx.clone(),
             ptx,
             self.output_active.clone(),
+            self.echo_cancel.clone(),
+            threshold_atom.clone(),
         ) {
             Ok(stream) => {
                 tracing::info!("Started audio stream for: {}", device.name);
                 self.audio_streams.insert(device.name.clone(), stream);
+                self.device_threshold_atoms.insert(device.name.clone(), threshold_atom);
             }
             Err(e) => {
                 tracing::error!("Failed to start audio for {}: {}", device.name, e);
@@ -1524,6 +1569,8 @@ fn start_listening(
     devices: &[&AppDevice],
     params: WhisperParams,
     paused: Arc<AtomicBool>,
+    echo_cancel_enabled: bool,
+    device_thresholds: &HashMap<String, f32>,
 ) -> Result<Worker, anyhow::Error> {
     // Start partial transcription thread if enabled
     let (partial_thread, partial_tx) = if params.partials {
@@ -1539,15 +1586,22 @@ fn start_listening(
 
     // Shared flag: set by output device threads when audio is playing
     let output_active = Arc::new(AtomicBool::new(false));
+    let echo_cancel = Arc::new(AtomicBool::new(echo_cancel_enabled));
 
     // Start an audio stream for each selected device
     let mut audio_streams = HashMap::new();
+    let mut device_threshold_atoms = HashMap::new();
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
-        let stream =
-            crate::audio::start_audio_thread(app.clone(), device, filtered_tx.clone(), ptx, output_active.clone())?;
+        let threshold = device_thresholds.get(&device.name).copied().unwrap_or(DEFAULT_THRESHOLD);
+        let threshold_atom = Arc::new(AtomicU32::new(threshold.to_bits()));
+        let stream = crate::audio::start_audio_thread(
+            app.clone(), device, filtered_tx.clone(), ptx,
+            output_active.clone(), echo_cancel.clone(), threshold_atom.clone(),
+        )?;
         audio_streams.insert(device.name.clone(), stream);
+        device_threshold_atoms.insert(device.name.clone(), threshold_atom);
     }
 
     // Start whisper transcription thread
@@ -1559,6 +1613,8 @@ fn start_listening(
         partial_tx,
         app_tx: app.clone(),
         output_active,
+        echo_cancel,
+        device_threshold_atoms,
         partial_thread,
         whisper_thread: Some(whisper_thread),
     })
