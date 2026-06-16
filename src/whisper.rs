@@ -128,13 +128,6 @@ impl WhichModel {
 
 const FIRST_TIMESTAMP_TOKEN: usize = 50364; // <|0.00|>
 
-#[derive(Default)]
-pub struct DisplayMel {
-    pub mel: Arc<Vec<f32>>,
-    pub num_bins: usize,
-    pub num_frames: usize,
-}
-
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
     pub model: WhichModel,
@@ -427,10 +420,10 @@ pub fn whisperize(
 
     for segment in segments_results.iter() {
         let text = &segment.dr.text;
-        app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
         for phrase in text {
             app.send(WhisperUpdate::Transcription(phrase.clone()))?;
         }
+        app.send(WhisperUpdate::Alignment(segment.dr.alignment.clone()))?;
         tracing::info!("Whisper segment: {:?}", segment.dr);
 
         #[cfg(debug_assertions)]

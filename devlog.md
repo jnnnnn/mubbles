@@ -1486,3 +1486,13 @@ todo: limit thinking tokens
 
 
 todo: Add some overlap between chunks to help with a more accurate summary
+
+## 2026-06-16
+
+
+I want to get the mel rendering clean and useful. When partials are enabled, the UI bar should always be 30 seconds wide, sized to fit. The internal resolution should be 1 pixel per mel frame / bin. It should start out black, and then fill in from the left as audio is recorded and reset when audio is transcribed. I want this to be very efficient, with the same texture reused and updated.
+
+Simplify as you go. Start by deleting any of the mel rendering partial stuff that is wrong, then talk through a good design.
+
+Fixed partial mel display: texture widened to 3000x80 (30s at 100Hz), no more scrolling UV math — shows full texture sized to fit available width, fills left-to-right via set_partial. Dead DisplayMel in whisper.rs removed. Alignment/transcription race fixed: full thread sends Transcription before Alignment so words aren't instantly cleared.
+

@@ -28,7 +28,7 @@ use crate::{
 const LEVEL_PLOT_WIDTH: f32 = 100.0;
 const LEVEL_PLOT_HEIGHT: f32 = 30.0;
 const LEVEL_BUFFER_SIZE: usize = 100;
-const MEL_UPDATE_HZ: f32 = 100.0; // Mel frames per second (10ms per frame)
+const MEL_DISPLAY_SECS: f32 = 30.0;
 const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
@@ -48,8 +48,7 @@ enum AppTab {
     Log,
 }
 
-// Maximum mel frames to display (5 seconds at 100 Hz)
-const MAX_MEL_FRAMES: usize = 500;
+const MAX_MEL_FRAMES: usize = 3000; // 30 seconds at 100 Hz
 
 /// Mel spectrogram display state with pre-allocated texture
 struct DisplayMel {
@@ -384,9 +383,7 @@ impl MubblesApp {
                     if self.autotype {
                         crate::autotype::type_text(&trimmed);
                     }
-                    // Reset mel display when final transcription arrives
                     self.mel.reset();
-                    self.aligned_words.clear();
                 }
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
@@ -1343,22 +1340,14 @@ fn draw_aligned_words(
     aligned_words: &[AlignedWord],
     ui: &mut egui::Ui,
     mel_response: egui::InnerResponse<()>,
-    display: &DisplayMel,
+    _display: &DisplayMel,
 ) {
-    // Use frame_count for actual content, not texture size
-    if display.frame_count == 0 {
-        return;
-    }
-
-    // Each frame is 10ms (100 Hz)
-    let mel_seconds = display.frame_count as f32 / MEL_UPDATE_HZ;
-
-    if mel_seconds < 0.1 {
+    if aligned_words.is_empty() {
         return;
     }
 
     let rx = mel_response.response.rect;
-    let seconds_to_pixels = rx.width() / mel_seconds;
+    let seconds_to_pixels = rx.width() / MEL_DISPLAY_SECS;
 
     for (i, word) in aligned_words.iter().enumerate() {
         let row = (i % ALIGNED_WORD_ROWS) as f32 * ALIGNED_WORD_ROW_HEIGHT;
@@ -1470,39 +1459,18 @@ fn plot_level_with_threshold(level: &VecDeque<f32>, threshold: f32, ui: &mut egu
     });
 }
 
-/// Draw mel spectrogram from pre-allocated texture with scrolling
-fn draw_mel(mel: &mut DisplayMel, ui: &mut egui::Ui) {
-    if let Some(tex) = &mel.texture {
-        // Fixed display width, spectrogram scrolls within
-        const DISPLAY_WIDTH: f32 = 400.0;
-        const DISPLAY_HEIGHT: f32 = 80.0;
-
-        // Calculate visible portion (scroll to show most recent frames)
-        let total_frames = MAX_MEL_FRAMES as f32;
-        let visible_frames = DISPLAY_WIDTH; // 1 pixel per frame
-
-        // UV coordinates for scrolling: show the rightmost portion
-        let start_frame = if mel.frame_count as f32 > visible_frames {
-            (mel.frame_count as f32 - visible_frames) / total_frames
-        } else {
-            0.0
-        };
-        let end_frame = mel.frame_count as f32 / total_frames;
-
-        // Create UV rect to show scrolled portion
-        let uv = egui::Rect::from_min_max(
-            egui::pos2(start_frame, 0.0),
-            egui::pos2(end_frame.max(0.01), 1.0), // Ensure non-zero width
-        );
-
-        ui.add(
-            egui::Image::from_texture(egui::load::SizedTexture::from_handle(tex))
-                .uv(uv)
-                .corner_radius(5.0)
-                .maintain_aspect_ratio(false)
-                .fit_to_exact_size(egui::vec2(DISPLAY_WIDTH, DISPLAY_HEIGHT)),
-        );
-    }
+/// Draw mel spectrogram from pre-allocated texture, sized to fit available width
+fn draw_mel(mel: &DisplayMel, ui: &mut egui::Ui) {
+    let tex = match &mel.texture {
+        Some(t) => t,
+        None => return,
+    };
+    let width = ui.available_width().max(1.0);
+    ui.add(
+        egui::Image::from_texture(egui::load::SizedTexture::from_handle(tex))
+            .maintain_aspect_ratio(false)
+            .fit_to_exact_size(egui::vec2(width, PARTIAL_MEL_BINS as f32)),
+    );
 }
 
 // =============================================================================
