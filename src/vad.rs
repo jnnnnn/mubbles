@@ -14,14 +14,12 @@ use std::path::PathBuf;
 pub const FRAME_SIZE: usize = 512;
 /// Context overlap between consecutive frames (64 samples = 4ms)
 const CONTEXT_SIZE: usize = 64;
-/// Minimum speech duration in frames (~96ms = 3 frames)
-const MIN_SPEECH_FRAMES: usize = 3;
-/// Frames of silence before ending a speech segment (~128ms = 4 frames)
-const MIN_SILENCE_FRAMES: usize = 4;
+/// Minimum speech duration in frames (2s = 63 frames at 32ms/frame)
+const MIN_SPEECH_FRAMES: usize = 63;
+/// Frames of silence before ending a speech segment (256ms = 8 frames)
+const MIN_SILENCE_FRAMES: usize = 8;
 /// Maximum speech duration in frames before forced split (30s)
 const MAX_SPEECH_FRAMES: usize = (30 * 16000) / FRAME_SIZE;
-/// Frames of silence at max speech before forced split (~100ms)
-const MIN_SILENCE_AT_MAX_FRAMES: usize = 3;
 
 /// Per-frame decision from the VAD state machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,14 +27,17 @@ pub enum VadDecision {
     Silence,
     Speech,
     SpeechStart,
+    /// Valid utterance ended — flush to transcription.
     SpeechEnd,
+    /// False trigger (keystroke, too-short utterance) — discard buffer, don't transcribe.
+    SpeechRejected,
 }
 
 /// Streaming Silero VAD session with hysteresis state machine.
 ///
 /// Feed 512-sample f32 frames at 16kHz via [`process_frame`](VadSession::process_frame).
-/// The state machine handles trigger/release hysteresis, minimum speech/silence
-/// durations, speech padding, and forced splits on long utterances.
+/// Speech must persist for [`MIN_SPEECH_FRAMES`] (2s) to be considered valid.
+/// Silence for [`MIN_SILENCE_FRAMES`] (256ms) ends a speech segment.
 pub struct VadSession {
     model: ModelProto,
     sample_rate_tensor: Tensor,
@@ -44,14 +45,13 @@ pub struct VadSession {
     context: Tensor,
     device: Device,
 
-    // Hysteresis state machine (ported from VadIter)
+    // State machine
     current_sample: usize,
     triggered: bool,
+    /// Sample index where the current silence period began
     temp_end: usize,
-    prev_end: usize,
-    next_start: usize,
+    /// Sample index where speech started
     current_speech_start: i64,
-    to_take: bool,
 }
 
 impl VadSession {
@@ -72,17 +72,12 @@ impl VadSession {
             current_sample: 0,
             triggered: false,
             temp_end: 0,
-            prev_end: 0,
-            next_start: 0,
             current_speech_start: 0,
-            to_take: false,
         })
     }
 
     /// Process one frame of 16kHz audio (must be exactly FRAME_SIZE samples).
     /// `threshold` is the speech probability threshold (0.1–0.9, default 0.5).
-    /// Lower values are more sensitive (catch whispers), higher values
-    /// require clearer speech.
     /// Returns the raw speech probability [0.0, 1.0] and the VAD decision.
     pub fn process_frame(&mut self, frame: &[f32], threshold: f32) -> Result<(f32, VadDecision)> {
         assert_eq!(
@@ -93,17 +88,13 @@ impl VadSession {
         );
 
         let speech_prob = self.run_model(frame)?;
-        let neg_threshold = threshold - 0.15;
-
         self.current_sample += FRAME_SIZE;
 
         let decision = if speech_prob > threshold {
-            // Speech detected
+            // ── Speech frame ──────────────────────────────
             if self.temp_end != 0 {
+                // Speech resumed after silence — reset the silence counter
                 self.temp_end = 0;
-                if self.next_start < self.prev_end {
-                    self.next_start = self.current_sample.saturating_sub(FRAME_SIZE);
-                }
             }
             if !self.triggered {
                 self.triggered = true;
@@ -112,59 +103,40 @@ impl VadSession {
             } else {
                 VadDecision::Speech
             }
-        } else {
-            // Silence (or below threshold)
-            if self.triggered
-                && (self.current_sample as i64 - self.current_speech_start) as usize
-                    > MAX_SPEECH_FRAMES * FRAME_SIZE
-            {
-                // Forced split at max speech duration
-                if self.prev_end > 0 {
-                    self.end_speech(self.prev_end);
-                    if self.next_start < self.prev_end {
-                        self.triggered = false;
-                    } else {
-                        self.current_speech_start = self.next_start as i64;
-                    }
-                } else {
-                    self.end_speech(self.current_sample);
-                    self.prev_end = 0;
-                    self.next_start = 0;
-                    self.temp_end = 0;
-                    self.triggered = false;
-                }
-                self.to_take = true;
-            } else if self.triggered && speech_prob < neg_threshold {
-                // End of speech
-                if self.temp_end == 0 {
-                    self.temp_end = self.current_sample;
-                }
-                if self.current_sample.saturating_sub(self.temp_end)
-                    > MIN_SILENCE_AT_MAX_FRAMES * FRAME_SIZE
-                {
-                    self.prev_end = self.temp_end;
-                }
-                if self.current_sample.saturating_sub(self.temp_end)
-                    >= MIN_SILENCE_FRAMES * FRAME_SIZE
-                {
-                    let speech_duration = self.temp_end as i64 - self.current_speech_start;
-                    if speech_duration > (MIN_SPEECH_FRAMES * FRAME_SIZE) as i64 {
-                        self.end_speech(self.temp_end);
-                        self.prev_end = 0;
-                        self.next_start = 0;
-                        self.temp_end = 0;
-                        self.triggered = false;
-                        self.to_take = true;
-                    }
-                }
+        } else if self.triggered {
+            // ── Silence while triggered ───────────────────
+            if self.temp_end == 0 {
+                // First silence frame after speech — mark the boundary
+                self.temp_end = self.current_sample;
             }
 
-            if self.to_take {
-                self.to_take = false;
+            let total_duration = (self.current_sample as i64 - self.current_speech_start) as usize;
+
+            if total_duration > MAX_SPEECH_FRAMES * FRAME_SIZE {
+                // Forced split at 30s max speech
+                self.reset_state();
                 VadDecision::SpeechEnd
+            } else if self.current_sample.saturating_sub(self.temp_end)
+                >= MIN_SILENCE_FRAMES * FRAME_SIZE
+            {
+                // Enough consecutive silence — evaluate the utterance
+                let speech_duration = self.temp_end as i64 - self.current_speech_start;
+                if speech_duration > (MIN_SPEECH_FRAMES * FRAME_SIZE) as i64 {
+                    // Valid utterance (≥ 2s speech)
+                    self.reset_state();
+                    VadDecision::SpeechEnd
+                } else {
+                    // False trigger (< 2s speech) — discard
+                    self.reset_state();
+                    VadDecision::SpeechRejected
+                }
             } else {
+                // Still waiting for enough silence
                 VadDecision::Silence
             }
+        } else {
+            // ── Silence, not triggered ────────────────────
+            VadDecision::Silence
         };
 
         Ok((speech_prob, decision))
@@ -177,10 +149,7 @@ impl VadSession {
         self.current_sample = 0;
         self.triggered = false;
         self.temp_end = 0;
-        self.prev_end = 0;
-        self.next_start = 0;
         self.current_speech_start = 0;
-        self.to_take = false;
         Ok(())
     }
 
@@ -193,6 +162,11 @@ impl VadSession {
 // ── Internal helpers ──────────────────────────────────────────
 
 impl VadSession {
+    fn reset_state(&mut self) {
+        self.temp_end = 0;
+        self.triggered = false;
+    }
+
     fn download_model() -> Result<PathBuf> {
         let api = hf_hub::api::sync::Api::new()?;
         let model = api
@@ -232,11 +206,6 @@ impl VadSession {
 
         let prob = output.flatten_all()?.to_vec1::<f32>()?;
         Ok(prob[0])
-    }
-
-    fn end_speech(&mut self, _end_sample: usize) {
-        // State machine transition marker — the actual padding and boundary
-        // logic is handled by the caller via SpeechStart/SpeechEnd decisions.
     }
 }
 

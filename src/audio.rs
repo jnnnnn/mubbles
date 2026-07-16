@@ -17,7 +17,7 @@ use crate::app::WhisperUpdate;
 
 // whisper is trained on 16kHz audio
 pub(crate) const TARGET_SAMPLE_RATE: usize = crate::mel::SAMPLE_RATE;
-const MINIMUM_AUDIO_LENGTH: usize = 3; // 3 seconds
+const MINIMUM_AUDIO_LENGTH: f32 = 0.3; // 300ms — enough to reject keystroke false triggers (< 96ms speech)
 
 /// Audio data with sample rate information
 pub struct PcmAudio {
@@ -86,7 +86,7 @@ pub fn filter_audio_loop(
     let mut vad_buffer: Vec<f32> = Vec::new(); // 16kHz samples waiting to be framed
     let mut was_speaking = false;
     let mut silence_since_speech: usize = 0; // native-rate samples of silence after last speech
-    const SILENCE_FLUSH_SAMPLES: usize = 50; // chunks before flushing (mapped from old code)
+    const SILENCE_FLUSH_SAMPLES: usize = 10;
 
     loop {
         let PcmAudio { data, sample_rate } = match audio_rx.recv() {
@@ -121,14 +121,18 @@ pub fn filter_audio_loop(
         let downsampled = vad::downsample_to_16k(&data, sample_rate);
         vad_buffer.extend_from_slice(&downsampled);
 
-        // Process complete VAD frames, tracking state transitions
+        // Process complete VAD frames, tracking end/reject transitions
         let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
-        let mut speech_transition = false;
+        let mut speech_end = false;
+        let mut speech_rejected = false;
         while vad_buffer.len() >= vad::FRAME_SIZE {
             let frame: Vec<f32> = vad_buffer.drain(..vad::FRAME_SIZE).collect();
             let (_prob, decision) = vad.process_frame(&frame, threshold)?;
-            if decision == VadDecision::SpeechStart || decision == VadDecision::SpeechEnd {
-                speech_transition = true;
+            match decision {
+                VadDecision::SpeechEnd => speech_end = true,
+                VadDecision::SpeechRejected => speech_rejected = true,
+                VadDecision::SpeechStart => {}
+                _ => {}
             }
         }
         let is_speaking = vad.is_speaking();
@@ -141,24 +145,26 @@ pub fn filter_audio_loop(
             }
             recording_buffer.extend_from_slice(&data);
             silence_since_speech = 0;
-        } else if was_speaking && speech_transition {
-            // Just stopped speaking — flush the buffer immediately
+        } else if was_speaking && speech_end {
+            // Valid utterance ended (≥ 2s speech) — always transcribe
             app.send(WhisperUpdate::Recording(false))?;
-            if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
-                let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                filtered_tx.send(PcmAudio {
-                    data: resampled,
-                    sample_rate: TARGET_SAMPLE_RATE,
-                })?;
-            }
+            let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+            filtered_tx.send(PcmAudio {
+                data: resampled,
+                sample_rate: TARGET_SAMPLE_RATE,
+            })?;
+            recording_buffer.clear();
+        } else if was_speaking && speech_rejected {
+            // False trigger (< 2s speech) — discard, don't transcribe
+            app.send(WhisperUpdate::Recording(false))?;
             recording_buffer.clear();
         } else if !recording_buffer.is_empty() {
-            // Still in silence after speech — hold for a bit and then flush
+            // Safety net: buffer has data but VAD hasn't signaled end
             silence_since_speech += 1;
             recording_buffer.extend_from_slice(&data);
             if silence_since_speech >= SILENCE_FLUSH_SAMPLES {
                 app.send(WhisperUpdate::Recording(false))?;
-                if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
+                if recording_buffer.len() >= (MINIMUM_AUDIO_LENGTH * sample_rate as f32) as usize {
                     let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
                     filtered_tx.send(PcmAudio {
                         data: resampled,
@@ -179,10 +185,12 @@ pub fn filter_audio_loop(
                 .chunks(chunk_size)
                 .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
                 .collect::<Vec<f32>>();
+            // Skip the first 300ms to avoid cutting mid-transient
+            let skip_chunks = (0.3 * sample_rate as f32 / chunk_size as f32) as usize;
             let low_energy_index = energies
                 .iter()
                 .enumerate()
-                .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
+                .skip(skip_chunks)
                 .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -246,7 +254,7 @@ fn filter_audio_loop_output(
             recording_buffer.extend_from_slice(&data);
         } else if !recording_buffer.is_empty() {
             app.send(WhisperUpdate::Recording(false))?;
-            if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
+            if recording_buffer.len() >= (MINIMUM_AUDIO_LENGTH * sample_rate as f32) as usize {
                 let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
                 filtered_tx.send(PcmAudio {
                     data: resampled,
@@ -267,7 +275,7 @@ fn filter_audio_loop_output(
             let low_energy_index = energies
                 .iter()
                 .enumerate()
-                .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
+                .skip((MINIMUM_AUDIO_LENGTH * sample_rate as f32 / chunk_size as f32) as usize)
                 .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap_or(0);
