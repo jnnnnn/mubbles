@@ -48,6 +48,11 @@ pub(crate) fn convert_sample_rate(
 
 /// Filter audio to detect speech and accumulate non-silent segments.
 /// This is shared across all platforms.
+///
+/// Uses adaptive noise floor tracking: computes RMS energy per chunk,
+/// tracks ambient noise level via exponential moving average during silence,
+/// and detects speech when energy exceeds the noise floor by the configured
+/// SNR ratio. This handles low-volume mics far better than a fixed amplitude threshold.
 pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
@@ -58,11 +63,15 @@ pub fn filter_audio_loop(
     echo_cancel: Arc<AtomicBool>,
     threshold_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
-    // here's the basic idea: receive 480 samples at a time (48000 / 100 = 480). If the max value
-    // of the samples is above a threshold, then we know that there is a sound. If there is a sound,
-    // then we can start recording the audio. Once we stop recording, we can send the recorded audio to Whisper.
-    let mut under_threshold_count = 101;
+    // Noise floor estimation constants
+    const NOISE_FLOOR_EMA_ALPHA: f32 = 0.02; // smoothing factor for noise floor tracking
+    const MIN_ABSOLUTE_FLOOR: f32 = 0.0001; // absolute minimum to avoid detecting circuit noise
+    const SILENCE_HOLD_COUNT: usize = 50; // chunks of silence before ending a speech segment
+    const SILENCE_START_COUNT: usize = 100; // chunks of silence before considering "not speaking"
+
+    let mut under_threshold_count = SILENCE_START_COUNT + 1;
     let mut recording_buffer: Vec<f32> = Vec::new();
+    let mut noise_floor: f32 = 0.001; // initial noise floor estimate
 
     // accumulate data until we've been under the threshold for 100 samples
     loop {
@@ -76,33 +85,47 @@ pub fn filter_audio_loop(
             }
         };
 
-        let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
+        // The threshold control from the UI represents the SNR ratio:
+        // a value of 1.0 means speech must be 2x noise floor (3 dB above),
+        // a value of 3.0 means speech must be 8x noise floor (9 dB above).
+        // Scale: 0.001..=0.5 in old UI maps to ~0.1..=50.0 SNR ratio.
+        let snr_ratio = f32::from_bits(threshold_bits.load(Ordering::Relaxed)) * 100.0;
 
-        let mut max = 0.0;
-        for sample in data.iter() {
-            if *sample > max {
-                max = *sample;
-            }
+        // Compute RMS energy (more robust than peak amplitude for speech detection)
+        let rms = if data.is_empty() {
+            0.0
+        } else {
+            let sum_sq: f32 = data.iter().map(|s| s * s).sum();
+            (sum_sq / data.len() as f32).sqrt()
+        };
+
+        // Update noise floor estimate during silence (when below the adaptive threshold)
+        let adaptive_threshold = (noise_floor * snr_ratio).max(MIN_ABSOLUTE_FLOOR);
+        if rms < adaptive_threshold {
+            // Slowly adapt noise floor toward current ambient level
+            noise_floor = (1.0 - NOISE_FLOOR_EMA_ALPHA) * noise_floor + NOISE_FLOOR_EMA_ALPHA * rms;
         }
 
         // Output devices: signal when active so input devices can mute
         if is_output {
-            output_active.store(max > threshold, Ordering::Relaxed);
+            output_active.store(rms > adaptive_threshold, Ordering::Relaxed);
         }
 
         // Input devices: skip audio when output is active (echo cancellation)
-        let muted = !is_output && echo_cancel.load(Ordering::Relaxed) && output_active.load(Ordering::Relaxed);
+        let muted = !is_output
+            && echo_cancel.load(Ordering::Relaxed)
+            && output_active.load(Ordering::Relaxed);
         app.send(WhisperUpdate::Level {
             device: device_name.clone(),
-            level: max,
+            level: rms,
             muted,
         })?;
         if muted {
             continue;
         }
 
-        if max > threshold {
-            if under_threshold_count > 100 {
+        if rms > adaptive_threshold {
+            if under_threshold_count > SILENCE_START_COUNT {
                 // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
                 app.send(WhisperUpdate::Recording(true))?;
             }
@@ -111,7 +134,7 @@ pub fn filter_audio_loop(
         } else if !recording_buffer.is_empty() {
             // the incoming audio is back under the threshold. Check how long it's been silent for.
             under_threshold_count += 1;
-            if under_threshold_count < 50
+            if under_threshold_count < SILENCE_HOLD_COUNT
                 || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate
             {
                 // not long enough, keep listening
@@ -251,19 +274,24 @@ mod platform {
         let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
 
         // Start the PipeWire stream
-        let pw_state = start_pipewire_stream(
-            app.clone(),
-            &app_device.inner,
-            audio_tx,
-            partial_tx.clone(),
-        )?;
+        let pw_state =
+            start_pipewire_stream(app.clone(), &app_device.inner, audio_tx, partial_tx.clone())?;
 
         // Start the filter thread
         let app2 = app.clone();
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active, echo_cancel, threshold_bits) {
+            match filter_audio_loop(
+                app2,
+                audio_rx,
+                filtered_tx,
+                device_name,
+                is_output,
+                output_active,
+                echo_cancel,
+                threshold_bits,
+            ) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }
@@ -377,7 +405,10 @@ mod platform {
     ) -> anyhow::Result<StreamState> {
         tracing::info!(
             "Listening on device: {}",
-            app_device.device.name().unwrap_or_else(|_| "Unknown".to_string())
+            app_device
+                .device
+                .name()
+                .unwrap_or_else(|_| "Unknown".to_string())
         );
 
         let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
@@ -423,7 +454,16 @@ mod platform {
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
         thread::spawn(move || {
-            match filter_audio_loop(app2, audio_rx, filtered_tx, device_name, is_output, output_active, echo_cancel, threshold_bits) {
+            match filter_audio_loop(
+                app2,
+                audio_rx,
+                filtered_tx,
+                device_name,
+                is_output,
+                output_active,
+                echo_cancel,
+                threshold_bits,
+            ) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
             }

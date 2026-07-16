@@ -44,6 +44,7 @@ enum AppTab {
     AISummary,
     FileTranscription,
     Devices,
+    IgnoredPhrases,
     Settings,
     Log,
 }
@@ -233,6 +234,11 @@ pub struct MubblesApp {
     transcription_folder: String,
     #[serde(skip)]
     transcription_logger: crate::log_capture::TranscriptionLogger,
+
+    // Ignored phrases
+    ignored_phrases: Vec<String>,
+    #[serde(skip)]
+    new_ignored_phrase: String,
 }
 
 impl Default for MubblesApp {
@@ -306,6 +312,10 @@ impl Default for MubblesApp {
             // Monthly transcription file settings
             transcription_folder: String::new(),
             transcription_logger: crate::log_capture::TranscriptionLogger::new(),
+
+            // Ignored phrases
+            ignored_phrases: Vec::new(),
+            new_ignored_phrase: String::new(),
         }
     }
 }
@@ -375,19 +385,32 @@ impl MubblesApp {
             match update {
                 WhisperUpdate::Transcription(t) => {
                     let trimmed = t.trim().to_string();
-                    self.text.push_str(&trimmed);
-                    self.text.push('\n');
-                    self.changed = true;
-                    self.transcription_logger
-                        .append(&self.transcription_folder, &trimmed);
-                    if self.autotype {
-                        crate::autotype::type_text(&trimmed);
+                    // Skip ignored phrases (case-insensitive comparison)
+                    let is_ignored = self
+                        .ignored_phrases
+                        .iter()
+                        .any(|ignored| trimmed.eq_ignore_ascii_case(ignored.trim()));
+                    if is_ignored {
+                        tracing::debug!("Ignored phrase: {}", trimmed);
+                    } else {
+                        self.text.push_str(&trimmed);
+                        self.text.push('\n');
+                        self.changed = true;
+                        self.transcription_logger
+                            .append(&self.transcription_folder, &trimmed);
+                        if self.autotype {
+                            crate::autotype::type_text(&trimmed);
+                        }
                     }
                     self.mel.reset();
                 }
                 WhisperUpdate::Recording(r) => self.recording = r,
                 WhisperUpdate::Transcribing(t) => self.transcribing = t,
-                WhisperUpdate::Level { device, level, muted } => {
+                WhisperUpdate::Level {
+                    device,
+                    level,
+                    muted,
+                } => {
                     let dev_level = self
                         .device_levels
                         .entry(device.clone())
@@ -758,6 +781,7 @@ impl MubblesApp {
             ui.selectable_value(&mut self.tab, AppTab::AISummary, "AI Summary");
             ui.selectable_value(&mut self.tab, AppTab::FileTranscription, "File");
             ui.selectable_value(&mut self.tab, AppTab::Devices, "Devices");
+            ui.selectable_value(&mut self.tab, AppTab::IgnoredPhrases, "Filters");
             ui.selectable_value(&mut self.tab, AppTab::Settings, "Settings");
             ui.selectable_value(&mut self.tab, AppTab::Log, "Log");
         });
@@ -1062,6 +1086,58 @@ impl MubblesApp {
             AppTab::Devices => {
                 self.render_devices_tab(ui);
             }
+            AppTab::IgnoredPhrases => {
+                ui.heading("Ignored Phrases");
+                ui.add_space(5.0);
+                ui.label("Transcriptions matching these phrases will be silently discarded (case-insensitive).");
+                ui.add_space(10.0);
+
+                // Add new phrase row
+                ui.horizontal(|ui| {
+                    let response = ui.add_sized(
+                        egui::vec2(ui.available_width() - 80.0, 20.0),
+                        egui::TextEdit::singleline(&mut self.new_ignored_phrase)
+                            .hint_text("e.g., Thank you."),
+                    );
+                    let add_clicked = ui.button("Add").clicked();
+                    let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (add_clicked || enter_pressed) && !self.new_ignored_phrase.trim().is_empty() {
+                        let phrase = self.new_ignored_phrase.trim().to_string();
+                        if !self.ignored_phrases.contains(&phrase) {
+                            self.ignored_phrases.push(phrase);
+                            tracing::info!("Added ignored phrase: {}", self.new_ignored_phrase.trim());
+                        }
+                        self.new_ignored_phrase.clear();
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(5.0);
+
+                if self.ignored_phrases.is_empty() {
+                    ui.label("No ignored phrases yet. Add one above.");
+                } else {
+                    ui.label(format!("{} phrase(s) ignored:", self.ignored_phrases.len()));
+                    ui.add_space(5.0);
+
+                    let mut remove_idx: Option<usize> = None;
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (i, phrase) in self.ignored_phrases.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(phrase);
+                                if ui.button("✕").clicked() {
+                                    remove_idx = Some(i);
+                                }
+                            });
+                        }
+                    });
+                    if let Some(i) = remove_idx {
+                        let removed = self.ignored_phrases.remove(i);
+                        tracing::info!("Removed ignored phrase: {}", removed);
+                    }
+                }
+            }
             AppTab::Log => {
                 ui.heading("Application Logs");
                 ui.add_space(10.0);
@@ -1130,7 +1206,9 @@ impl MubblesApp {
             .changed()
         {
             if let Some(worker) = &self.worker {
-                worker.echo_cancel.store(self.echo_cancel, Ordering::Relaxed);
+                worker
+                    .echo_cancel
+                    .store(self.echo_cancel, Ordering::Relaxed);
             }
         }
 
@@ -1157,7 +1235,11 @@ impl MubblesApp {
                         self.selected_device_names.insert(name.clone());
                         if let Some(worker) = &mut self.worker {
                             if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                                let threshold = self.device_thresholds.get(name).copied().unwrap_or(DEFAULT_THRESHOLD);
+                                let threshold = self
+                                    .device_thresholds
+                                    .get(name)
+                                    .copied()
+                                    .unwrap_or(DEFAULT_THRESHOLD);
                                 worker.add_device(device, threshold);
                             }
                         }
@@ -1180,10 +1262,17 @@ impl MubblesApp {
                     }
                 }
 
-                // Per-device trigger level slider
-                let threshold = self.device_thresholds.entry(name.clone()).or_insert(DEFAULT_THRESHOLD);
+                // Per-device SNR ratio slider (higher = needs louder speech vs. noise floor)
+                let threshold = self
+                    .device_thresholds
+                    .entry(name.clone())
+                    .or_insert(DEFAULT_THRESHOLD);
                 if ui
-                    .add(egui::Slider::new(threshold, 0.001..=0.5).logarithmic(true).text("trigger"))
+                    .add(
+                        egui::Slider::new(threshold, 0.001..=0.5)
+                            .logarithmic(true)
+                            .text("SNR ratio"),
+                    )
                     .changed()
                 {
                     // Push updated threshold to the running audio thread
@@ -1273,7 +1362,11 @@ pub enum WhisperUpdate {
     Transcribing(bool),
     Transcription(String),
     Alignment(Vec<AlignedWord>),
-    Level { device: String, level: f32, muted: bool },
+    Level {
+        device: String,
+        level: f32,
+        muted: bool,
+    },
     Mel(Tensor),
     Status(String),
     MelFrame(Vec<f32>),
@@ -1515,7 +1608,8 @@ impl Worker {
             Ok(stream) => {
                 tracing::info!("Started audio stream for: {}", device.name);
                 self.audio_streams.insert(device.name.clone(), stream);
-                self.device_threshold_atoms.insert(device.name.clone(), threshold_atom);
+                self.device_threshold_atoms
+                    .insert(device.name.clone(), threshold_atom);
             }
             Err(e) => {
                 tracing::error!("Failed to start audio for {}: {}", device.name, e);
@@ -1562,18 +1656,27 @@ fn start_listening(
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
-        let threshold = device_thresholds.get(&device.name).copied().unwrap_or(DEFAULT_THRESHOLD);
+        let threshold = device_thresholds
+            .get(&device.name)
+            .copied()
+            .unwrap_or(DEFAULT_THRESHOLD);
         let threshold_atom = Arc::new(AtomicU32::new(threshold.to_bits()));
         let stream = crate::audio::start_audio_thread(
-            app.clone(), device, filtered_tx.clone(), ptx,
-            output_active.clone(), echo_cancel.clone(), threshold_atom.clone(),
+            app.clone(),
+            device,
+            filtered_tx.clone(),
+            ptx,
+            output_active.clone(),
+            echo_cancel.clone(),
+            threshold_atom.clone(),
         )?;
         audio_streams.insert(device.name.clone(), stream);
         device_threshold_atoms.insert(device.name.clone(), threshold_atom);
     }
 
     // Start whisper transcription thread
-    let whisper_thread = crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params, paused)?;
+    let whisper_thread =
+        crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params, paused)?;
 
     Ok(Worker {
         audio_streams,
