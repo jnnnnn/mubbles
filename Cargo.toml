@@ -65,6 +65,9 @@ bitcode = "0.6.7"
 rfd = "0.15.4"
 shellexpand = "3"
 
+[build-dependencies]
+protoc-bin-vendored = "3"
+
 [features]
 default = ["candle-core", "candle-transformers", "candle-nn", "candle-onnx"]
 cuda = [
