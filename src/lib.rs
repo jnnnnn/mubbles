@@ -5,17 +5,18 @@
 mod app;
 pub use app::MubblesApp;
 
+mod mel;
+mod multilingual;
 mod whisper;
 mod whisper_model;
-mod multilingual;
-mod mel;
 mod whisper_word_align;
 
-mod summary;
 mod audio;
 #[cfg(target_os = "linux")]
 mod audio_pipewire;
 mod autotype;
-mod partial;
 mod file_transcription;
 pub mod log_capture;
+mod partial;
+mod summary;
+pub mod vad;

@@ -33,7 +33,7 @@ const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
 const WORD_CHAR_WIDTH: f32 = 7.0;
-const DEFAULT_THRESHOLD: f32 = 0.05;
+const DEFAULT_THRESHOLD: f32 = 0.5; // Silero VAD speech probability threshold
 
 /// Application tab selection
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -1262,17 +1262,13 @@ impl MubblesApp {
                     }
                 }
 
-                // Per-device SNR ratio slider (higher = needs louder speech vs. noise floor)
+                // Per-device VAD sensitivity slider (speech probability threshold)
                 let threshold = self
                     .device_thresholds
                     .entry(name.clone())
                     .or_insert(DEFAULT_THRESHOLD);
                 if ui
-                    .add(
-                        egui::Slider::new(threshold, 0.001..=0.5)
-                            .logarithmic(true)
-                            .text("SNR ratio"),
-                    )
+                    .add(egui::Slider::new(threshold, 0.1..=0.9).text("VAD sensitivity"))
                     .changed()
                 {
                     // Push updated threshold to the running audio thread

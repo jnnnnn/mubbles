@@ -49,10 +49,10 @@ pub(crate) fn convert_sample_rate(
 /// Filter audio to detect speech and accumulate non-silent segments.
 /// This is shared across all platforms.
 ///
-/// Uses adaptive noise floor tracking: computes RMS energy per chunk,
-/// tracks ambient noise level via exponential moving average during silence,
-/// and detects speech when energy exceeds the noise floor by the configured
-/// SNR ratio. This handles low-volume mics far better than a fixed amplitude threshold.
+/// Uses Silero VAD (candle-onnx) for neural speech detection, which
+/// reliably distinguishes speech from keystrokes, chair noises, and
+/// other transient sounds that fool energy-based detectors.
+/// Output devices fall back to a simple energy gate.
 pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
@@ -63,35 +63,42 @@ pub fn filter_audio_loop(
     echo_cancel: Arc<AtomicBool>,
     threshold_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
-    // Noise floor estimation constants
-    const NOISE_FLOOR_EMA_ALPHA: f32 = 0.02; // smoothing factor for noise floor tracking
-    const MIN_ABSOLUTE_FLOOR: f32 = 0.0001; // absolute minimum to avoid detecting circuit noise
-    const SILENCE_HOLD_COUNT: usize = 50; // chunks of silence before ending a speech segment
-    const SILENCE_START_COUNT: usize = 100; // chunks of silence before considering "not speaking"
+    use crate::vad::{self, VadDecision, VadSession};
+    use candle_core::Device;
 
-    let mut under_threshold_count = SILENCE_START_COUNT + 1;
+    // Output devices use a simple energy gate (VAD is overkill for speakers)
+    if is_output {
+        return filter_audio_loop_output(
+            app,
+            audio_rx,
+            filtered_tx,
+            device_name,
+            output_active,
+            echo_cancel,
+            threshold_bits,
+        );
+    }
+
+    // ── Input devices: Silero VAD gated buffer ─────────────
+
+    let mut vad = VadSession::new(&Device::Cpu)?;
     let mut recording_buffer: Vec<f32> = Vec::new();
-    let mut noise_floor: f32 = 0.001; // initial noise floor estimate
+    let mut vad_buffer: Vec<f32> = Vec::new(); // 16kHz samples waiting to be framed
+    let mut was_speaking = false;
+    let mut silence_since_speech: usize = 0; // native-rate samples of silence after last speech
+    const SILENCE_FLUSH_SAMPLES: usize = 50; // chunks before flushing (mapped from old code)
 
-    // accumulate data until we've been under the threshold for 100 samples
     loop {
         let PcmAudio { data, sample_rate } = match audio_rx.recv() {
             Ok(pcmaudio) => pcmaudio,
             Err(_) => {
                 tracing::info!("Audio stream closed");
-                // end thread because there's no more work to do
                 app.send(WhisperUpdate::Recording(false))?;
                 return Ok(());
             }
         };
 
-        // The threshold control from the UI represents the SNR ratio:
-        // a value of 1.0 means speech must be 2x noise floor (3 dB above),
-        // a value of 3.0 means speech must be 8x noise floor (9 dB above).
-        // Scale: 0.001..=0.5 in old UI maps to ~0.1..=50.0 SNR ratio.
-        let snr_ratio = f32::from_bits(threshold_bits.load(Ordering::Relaxed)) * 100.0;
-
-        // Compute RMS energy (more robust than peak amplitude for speech detection)
+        // Compute RMS for the level display
         let rms = if data.is_empty() {
             0.0
         } else {
@@ -99,22 +106,8 @@ pub fn filter_audio_loop(
             (sum_sq / data.len() as f32).sqrt()
         };
 
-        // Update noise floor estimate during silence (when below the adaptive threshold)
-        let adaptive_threshold = (noise_floor * snr_ratio).max(MIN_ABSOLUTE_FLOOR);
-        if rms < adaptive_threshold {
-            // Slowly adapt noise floor toward current ambient level
-            noise_floor = (1.0 - NOISE_FLOOR_EMA_ALPHA) * noise_floor + NOISE_FLOOR_EMA_ALPHA * rms;
-        }
-
-        // Output devices: signal when active so input devices can mute
-        if is_output {
-            output_active.store(rms > adaptive_threshold, Ordering::Relaxed);
-        }
-
-        // Input devices: skip audio when output is active (echo cancellation)
-        let muted = !is_output
-            && echo_cancel.load(Ordering::Relaxed)
-            && output_active.load(Ordering::Relaxed);
+        // Echo cancellation: skip when output is active
+        let muted = echo_cancel.load(Ordering::Relaxed) && output_active.load(Ordering::Relaxed);
         app.send(WhisperUpdate::Level {
             device: device_name.clone(),
             level: rms,
@@ -124,37 +117,149 @@ pub fn filter_audio_loop(
             continue;
         }
 
-        if rms > adaptive_threshold {
-            if under_threshold_count > SILENCE_START_COUNT {
-                // we've been listening to silence for a while, so we stopped recording. Indicate that we're listening again.
+        // Downsample chunk to 16kHz and feed into VAD frame buffer
+        let downsampled = vad::downsample_to_16k(&data, sample_rate);
+        vad_buffer.extend_from_slice(&downsampled);
+
+        // Process complete VAD frames, tracking state transitions
+        let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
+        let mut speech_transition = false;
+        while vad_buffer.len() >= vad::FRAME_SIZE {
+            let frame: Vec<f32> = vad_buffer.drain(..vad::FRAME_SIZE).collect();
+            let (_prob, decision) = vad.process_frame(&frame, threshold)?;
+            if decision == VadDecision::SpeechStart || decision == VadDecision::SpeechEnd {
+                speech_transition = true;
+            }
+        }
+        let is_speaking = vad.is_speaking();
+
+        // Gate: buffer audio when speaking, flush on silence after speech
+        if is_speaking {
+            if !was_speaking {
+                // Just started speaking
                 app.send(WhisperUpdate::Recording(true))?;
             }
             recording_buffer.extend_from_slice(&data);
-            under_threshold_count = 0;
-        } else if !recording_buffer.is_empty() {
-            // the incoming audio is back under the threshold. Check how long it's been silent for.
-            under_threshold_count += 1;
-            if under_threshold_count < SILENCE_HOLD_COUNT
-                || recording_buffer.len() < MINIMUM_AUDIO_LENGTH * sample_rate
-            {
-                // not long enough, keep listening
-                recording_buffer.extend_from_slice(&data);
-            } else {
-                app.send(WhisperUpdate::Recording(false))?;
+            silence_since_speech = 0;
+        } else if was_speaking && speech_transition {
+            // Just stopped speaking — flush the buffer immediately
+            app.send(WhisperUpdate::Recording(false))?;
+            if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
                 let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
                 filtered_tx.send(PcmAudio {
                     data: resampled,
                     sample_rate: TARGET_SAMPLE_RATE,
                 })?;
+            }
+            recording_buffer.clear();
+        } else if !recording_buffer.is_empty() {
+            // Still in silence after speech — hold for a bit and then flush
+            silence_since_speech += 1;
+            recording_buffer.extend_from_slice(&data);
+            if silence_since_speech >= SILENCE_FLUSH_SAMPLES {
+                app.send(WhisperUpdate::Recording(false))?;
+                if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
+                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                    filtered_tx.send(PcmAudio {
+                        data: resampled,
+                        sample_rate: TARGET_SAMPLE_RATE,
+                    })?;
+                }
                 recording_buffer.clear();
             }
         }
+        was_speaking = is_speaking;
 
         // if we've got more than 15 seconds of audio, find the lowest-energy point and send everything up to that point
         let full_whisper_buffer = 15/*seconds*/ * sample_rate /*samples per second*/;
         if recording_buffer.len() > full_whisper_buffer {
             let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE; // 160 resamples per chunk (1 mel frame)
 
+            let energies = recording_buffer
+                .chunks(chunk_size)
+                .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
+                .collect::<Vec<f32>>();
+            let low_energy_index = energies
+                .iter()
+                .enumerate()
+                .skip(MINIMUM_AUDIO_LENGTH * sample_rate / chunk_size)
+                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let start_index = low_energy_index * chunk_size;
+            let resampled =
+                convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
+            filtered_tx.send(PcmAudio {
+                data: resampled,
+                sample_rate: TARGET_SAMPLE_RATE,
+            })?;
+            recording_buffer = recording_buffer[start_index..].to_vec();
+        }
+    }
+}
+
+/// Simple energy-gate filter for output devices (speakers).
+/// VAD is unnecessary for speaker output — a basic amplitude threshold suffices
+/// to detect when audio is playing through the device.
+fn filter_audio_loop_output(
+    app: Sender<WhisperUpdate>,
+    audio_rx: Receiver<PcmAudio>,
+    filtered_tx: Sender<PcmAudio>,
+    device_name: String,
+    output_active: Arc<AtomicBool>,
+    echo_cancel: Arc<AtomicBool>,
+    threshold_bits: Arc<AtomicU32>,
+) -> Result<(), anyhow::Error> {
+    let mut recording_buffer: Vec<f32> = Vec::new();
+
+    loop {
+        let PcmAudio { data, sample_rate } = match audio_rx.recv() {
+            Ok(pcmaudio) => pcmaudio,
+            Err(_) => {
+                tracing::info!("Audio stream closed");
+                app.send(WhisperUpdate::Recording(false))?;
+                return Ok(());
+            }
+        };
+
+        let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
+
+        let rms = if data.is_empty() {
+            0.0
+        } else {
+            let sum_sq: f32 = data.iter().map(|s| s * s).sum();
+            (sum_sq / data.len() as f32).sqrt()
+        };
+
+        let active = rms > threshold;
+        output_active.store(active, Ordering::Relaxed);
+
+        let muted = echo_cancel.load(Ordering::Relaxed) && active;
+        app.send(WhisperUpdate::Level {
+            device: device_name.clone(),
+            level: rms,
+            muted,
+        })?;
+
+        if active {
+            app.send(WhisperUpdate::Recording(true))?;
+            recording_buffer.extend_from_slice(&data);
+        } else if !recording_buffer.is_empty() {
+            app.send(WhisperUpdate::Recording(false))?;
+            if recording_buffer.len() >= MINIMUM_AUDIO_LENGTH * sample_rate {
+                let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
+                filtered_tx.send(PcmAudio {
+                    data: resampled,
+                    sample_rate: TARGET_SAMPLE_RATE,
+                })?;
+            }
+            recording_buffer.clear();
+        }
+
+        // 15-second max buffer split
+        let full_whisper_buffer = 15 * sample_rate;
+        if recording_buffer.len() > full_whisper_buffer {
+            let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE;
             let energies = recording_buffer
                 .chunks(chunk_size)
                 .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
