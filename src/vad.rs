@@ -14,8 +14,9 @@ use std::path::PathBuf;
 pub const FRAME_SIZE: usize = 512;
 /// Context overlap between consecutive frames (64 samples = 4ms)
 const CONTEXT_SIZE: usize = 64;
-/// Minimum speech duration in frames (2s = 63 frames at 32ms/frame)
-const MIN_SPEECH_FRAMES: usize = 63;
+/// Minimum speech duration in frames (192ms = 6 frames) — rejects keystroke transients
+/// but accepts single words like "yes" or "no".
+const MIN_SPEECH_FRAMES: usize = 6;
 /// Frames of silence before ending a speech segment (256ms = 8 frames)
 const MIN_SILENCE_FRAMES: usize = 8;
 /// Maximum speech duration in frames before forced split (30s)
