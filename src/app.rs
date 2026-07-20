@@ -203,6 +203,10 @@ pub struct MubblesApp {
     changed: bool,
     #[serde(skip)]
     tab: AppTab,
+    #[serde(skip)]
+    was_focused: bool,
+    #[serde(skip)]
+    last_device_refresh: std::time::Instant,
 
     // Summary state
     statistical_summary: summary::SummaryState,
@@ -290,6 +294,8 @@ impl Default for MubblesApp {
             // UI state
             changed: false,
             tab: AppTab::Transcript,
+            was_focused: false,
+            last_device_refresh: std::time::Instant::now(),
 
             // Summary state
             statistical_summary: summary::SummaryState::default(),
@@ -495,6 +501,22 @@ impl MubblesApp {
 
             self.status = format!("Found {} audio devices", self.devices.len());
         }
+    }
+
+    /// Re-enumerate audio devices. On Windows/macOS this is synchronous; on
+    /// Linux it kicks off async PipeWire enumeration (results arrive via
+    /// `check_device_enumeration`). Does not interrupt an active recording.
+    /// Skips if a previous enumeration is still in flight.
+    fn refresh_devices(&mut self) {
+        // Don't start a new enumeration if one is already pending (Linux)
+        if self.device_enumeration_rx.is_some() {
+            return;
+        }
+        let (devices, rx) = get_devices();
+        self.devices = devices;
+        self.device_enumeration_rx = rx;
+        self.last_device_refresh = std::time::Instant::now();
+        tracing::info!("Device refresh triggered, {} devices", self.devices.len());
     }
 
     /// Render the top panel with controls
@@ -1189,9 +1211,7 @@ impl MubblesApp {
 
         ui.horizontal(|ui| {
             if ui.button("Refresh Devices").clicked() {
-                let (devices, rx) = get_devices();
-                self.devices = devices;
-                self.device_enumeration_rx = rx;
+                self.refresh_devices();
                 if self.worker.is_some() {
                     self.worker = None;
                     self.status = "Stopped: devices refreshed".to_string();
@@ -1386,6 +1406,31 @@ impl eframe::App for MubblesApp {
 
         // Check if device enumeration completed
         self.check_device_enumeration();
+
+        // Auto-refresh devices on window focus gain or periodically
+        let focused = ctx.input(|i| i.focused);
+        let focus_gained = focused && !self.was_focused;
+        self.was_focused = focused;
+        let refresh_interval = Duration::from_secs(30);
+        let interval_elapsed = self.last_device_refresh.elapsed() >= refresh_interval;
+        if focus_gained || interval_elapsed {
+            self.refresh_devices();
+            // If focus gained, also re-sync selected devices with worker
+            if focus_gained {
+                if let Some(worker) = &mut self.worker {
+                    for name in &self.selected_device_names {
+                        if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
+                            let threshold = self
+                                .device_thresholds
+                                .get(name)
+                                .copied()
+                                .unwrap_or(DEFAULT_THRESHOLD);
+                            worker.add_device(device, threshold);
+                        }
+                    }
+                }
+            }
+        }
 
         // Process updates from Whisper thread
         self.process_whisper_updates(ctx);
