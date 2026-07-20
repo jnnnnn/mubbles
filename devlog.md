@@ -1509,3 +1509,15 @@ Simplify as you go. Start by deleting any of the mel rendering partial stuff tha
 
 Fixed partial mel display: texture widened to 3000x80 (30s at 100Hz), no more scrolling UV math — shows full texture sized to fit available width, fills left-to-right via set_partial. Dead DisplayMel in whisper.rs removed. Alignment/transcription race fixed: full thread sends Transcription before Alignment so words aren't instantly cleared.
 
+## 2026-07-21
+
+Integrated Silero VAD then replaced with [earshot](https://github.com/pykeio/earshot) submodule.
+Default threshold 0.75, minimum utterance 2s. VAD triggers transcription
+even if utterance < 2s once speech is detected. CPU usage ~3-4% constant.
+
+Added Ignored Phrases tab for filtering common false positives like
+"Thank you."
+
+Audio devices now auto-refresh on window focus gain and poll every 30s.
+No more manual "Refresh Devices" button clicking when plugging/unplugging
+headsets.
