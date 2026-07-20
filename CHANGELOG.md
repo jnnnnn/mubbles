@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0 (2026-07-21)
+ - Neural VAD via Earshot — no more ONNX, better speech detection
+ - Ignored Phrases tab to filter common false positives ("Thank you." etc.)
+ - Audio devices auto-refresh on window focus and poll every 30s
+ - AI Summary moved to its own dedicated tab
+ - Audio pipeline refactored and documented
+
 ## 2.8 (2026-04-01)
  - Echo cancellation (optional): mute mic input while speaker output is active, preventing double transcription
  - Output devices now go through speech detection and transcription (previously skipped)
