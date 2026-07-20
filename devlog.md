@@ -375,15 +375,15 @@ Ugh. Search my disk for `Nvda.Build.CudaTasks.`, I just installed it a couple of
 
 Ah, it's installed for V140:
 
-    â”‚              â”Œâ”€ Nvda.Build.CudaTasks.v10.2.dll
-    â”‚           â”Œâ”€ BuildCustomizations
-    â”‚           â”‚     â”Œâ”€ Nvda.Build.CudaTasks.v10.2.dll
-    â”‚           â”‚  â”Œâ”€ BuildCustomizations
-    â”‚           â”œâ”€ V140
-    â”‚        â”Œâ”€ v4.0
-    â”‚     â”Œâ”€ Microsoft.Cpp
-    â”‚  â”Œâ”€ MSBuild
-    â”œâ”€ Program Files (x86)
+    │              ┌─ Nvda.Build.CudaTasks.v10.2.dll
+    │           ┌─ BuildCustomizations
+    │           │     ┌─ Nvda.Build.CudaTasks.v10.2.dll
+    │           │  ┌─ BuildCustomizations
+    │           ├─ V140
+    │        ┌─ v4.0
+    │     ┌─ Microsoft.Cpp
+    │  ┌─ MSBuild
+    ├─ Program Files (x86)
     \\?\C:\
 
 Remove V140 and install cuda again. Ah, uninstall Visual Studio Code 2015. That
@@ -397,19 +397,6 @@ It's still using whisper-rs-sys-0.6.0. SHould be 0.8 ? Try `cargo clean`, wait t
 Ah, looks like they forgot something. They've "included" [some files](https://github.com/tazz4843/whisper-rs/commit/31845bbe942e3c7e453ef9e46fee53b798f05bcb) in the crate, but missed the .cu files. Patch. OK, that's fixed. Next error:
 
     cannot open input file 'cublas.lib'
-
-## 2026-07-21
-
-Integrated Silero VAD via [earshot](https://github.com/pykeio/earshot) submodule.
-Default threshold 0.75, minimum utterance 2s. VAD triggers transcription
-even if utterance < 2s once speech is detected. CPU usage ~3-4% constant.
-
-Added Ignored Phrases tab for filtering common false positives like
-"Thank you."
-
-Audio devices now auto-refresh on window focus gain and poll every 30s.
-No more manual "Refresh Devices" button clicking when plugging/unplugging
-headsets.
 
 This is starting to get frustrating.
 
@@ -969,7 +956,7 @@ Abort now actually cancels the HTTP stream (previously it only discarded
 received chunks on the UI side, wasting Ollama compute). The aborted flag
 is checked in the streaming loop so dropping the connection stops generation.
 
-Also fixed summary blocks running together â€” each block now starts on a
+Also fixed summary blocks running together — each block now starts on a
 new line.
 > In more detail: we use the init prompt, we handle the inaccurate timestamps, we re-process confirmed sentence prefixes and skip them, making sure they don't overlap, and we limit the processing buffer window.
 
@@ -1185,15 +1172,15 @@ ok, spectrogram working now. It's upside down and the default value should be -1
 
 Tomorrow Corporation Game Devs post about how this works:
 
-> The act of going forward and back is not itself recorded â€“ just the evolution of the gameâ€™s state.
+> The act of going forward and back is not itself recorded – just the evolution of the game’s state.
 >
-> The snapshots happen according to 2 different schedules â€“ a coarse grain schedule that records a new snapshot every so often based on time (we do every 2 minutes currently) and a fine grain limited set of snapshots that move around depending on where you are currently working on the timeline. Thatâ€™s why the initial reverse debugger step causes a brief pause and then becomes fast â€“ the first one seeks back to the most recent coarse grain snapshot, simulates forward creating fine grained snapshots that are exponentially spaced out backwards from your seek target, and then the subsequent steps will tend to have a snapshot that is right on the frame you need (or very close â€“ unless you step back far enough to need to go create more snapshots but that is the rare case.)
+> The snapshots happen according to 2 different schedules – a coarse grain schedule that records a new snapshot every so often based on time (we do every 2 minutes currently) and a fine grain limited set of snapshots that move around depending on where you are currently working on the timeline. That’s why the initial reverse debugger step causes a brief pause and then becomes fast – the first one seeks back to the most recent coarse grain snapshot, simulates forward creating fine grained snapshots that are exponentially spaced out backwards from your seek target, and then the subsequent steps will tend to have a snapshot that is right on the frame you need (or very close – unless you step back far enough to need to go create more snapshots but that is the rare case.)
 >
-> The state capture is mostly just a memcpy of the gameâ€™s heap (snapshots only happen on frame boundaries so the stack is never needed.) It for sure could be too big to keep as many snapshots as we currently do â€“ that will just be game dependent. Something to use to calibrate what you expect is possible though is to remember that games like Metroid Prime, LOZ The Wind Waker, RE4, Mario Sunshine, etc. all ran on a system that basically had 24MB of RAM to use for your game. And it wasnâ€™t just game state filling up that 24MB, it was your code and other read only resources â€“ the kind of stuff that we donâ€™t have to include in our snapshots. So while itâ€™s true that this system is not a general purpose solution for any and all kinds of games, itâ€™s also true that you can make some pretty incredible games with not a ton of actual game state.
+> The state capture is mostly just a memcpy of the game’s heap (snapshots only happen on frame boundaries so the stack is never needed.) It for sure could be too big to keep as many snapshots as we currently do – that will just be game dependent. Something to use to calibrate what you expect is possible though is to remember that games like Metroid Prime, LOZ The Wind Waker, RE4, Mario Sunshine, etc. all ran on a system that basically had 24MB of RAM to use for your game. And it wasn’t just game state filling up that 24MB, it was your code and other read only resources – the kind of stuff that we don’t have to include in our snapshots. So while it’s true that this system is not a general purpose solution for any and all kinds of games, it’s also true that you can make some pretty incredible games with not a ton of actual game state.
 >
-> Yes in theory you could totally fork the timeline in the past and create a new session based off of the old one up to that point. That is a feature that I had in the reverse engineering debugger I made before this because it was good for creating what were basically tool assisted speed run videos for code coverage purposes. For our current system though it hasnâ€™t been something that I thought we would actually use enough to justify spending the time to implement it.
+> Yes in theory you could totally fork the timeline in the past and create a new session based off of the old one up to that point. That is a feature that I had in the reverse engineering debugger I made before this because it was good for creating what were basically tool assisted speed run videos for code coverage purposes. For our current system though it hasn’t been something that I thought we would actually use enough to justify spending the time to implement it.
 >
-> The code gen is totally custom but keep in mind that this toolchain only needs to run on our development platform which is Windows. To ship the finished game we will transpile the code to C and then compile it with the native toolchains on whatever platforms weâ€™re targeting.
+> The code gen is totally custom but keep in mind that this toolchain only needs to run on our development platform which is Windows. To ship the finished game we will transpile the code to C and then compile it with the native toolchains on whatever platforms we’re targeting.
 
 The main trick here is replaying inputs (deterministically) to recreate the state of the program. Dumping the heap is an optimization to avoid having to replay from the beginning.
 
@@ -1241,7 +1228,7 @@ the large model is working well, but the tiny model just keeps spitting out `.co
 
 Ah the tiny model really likes starting with token 13, `.`. And then `com` is 785 and I guess that really often comes after `.`. So maybe the suppress prefix thing is important.
 
-oh, I was thinking of `append_punctuations = "'.ã€‚,ï¼Œ!ï¼?ï¼Ÿ:ï¼šâ€)]}ã€` which is only used for merging during word alignment.
+oh, I was thinking of `append_punctuations = "'.。,，!！?？:：”)]}、` which is only used for merging during word alignment.
 
 when repetitions happen, actually log the words the tokens represent
 
@@ -1284,7 +1271,7 @@ Partials are working well now (still with full mel, that's for later) but now lo
 ```log
 
 2025-06-12T22:35:42.694242Z DEBUG whisperize:decode{mel=Tensor[dims 1, 80, 1500; f32, cuda:0] temperature=0.0}: mubbles::whisper_model: performing alignment...
-2025-06-12T22:35:42.694659Z  INFO whisperize:decode{mel=Tensor[dims 1, 80, 1500; f32, cuda:0] temperature=0.0}:align{text_tokens=6}: mubbles::whisper_word_align: close time.busy=236Âµs time.idle=6.40Âµs
+2025-06-12T22:35:42.694659Z  INFO whisperize:decode{mel=Tensor[dims 1, 80, 1500; f32, cuda:0] temperature=0.0}:align{text_tokens=6}: mubbles::whisper_word_align: close time.busy=236µs time.idle=6.40µs
 ```
 
 weird that there's no error in the log. the audio thread is definitely dying, because levels updates stop.
@@ -1323,7 +1310,7 @@ Looked at CTranslate2's beam-search decoder. It's pretty complex, several hundre
 def simple_beam_search(model, start_ids, end_id, beam_size=5, max_length=50):
     """This code does not implement penalties, patience, or attention tracking.
     `model()` returns [(token, logprob)]
-    logprob maps 0..1 to -âˆž..0, making all scores negative, with each additional token reducing the score.
+    logprob maps 0..1 to -∞..0, making all scores negative, with each additional token reducing the score.
     Logprob is good because unlikely tokens rule out a sequence.
     It's bad because it requires some sort of short sequence penalty.
     """
@@ -1507,7 +1494,7 @@ I want to get the mel rendering clean and useful. When partials are enabled, the
 
 Simplify as you go. Start by deleting any of the mel rendering partial stuff that is wrong, then talk through a good design.
 
-Fixed partial mel display: texture widened to 3000x80 (30s at 100Hz), no more scrolling UV math — shows full texture sized to fit available width, fills left-to-right via set_partial. Dead DisplayMel in whisper.rs removed. Alignment/transcription race fixed: full thread sends Transcription before Alignment so words aren't instantly cleared.
+Fixed partial mel display: texture widened to 3000x80 (30s at 100Hz), no more scrolling UV math � shows full texture sized to fit available width, fills left-to-right via set_partial. Dead DisplayMel in whisper.rs removed. Alignment/transcription race fixed: full thread sends Transcription before Alignment so words aren't instantly cleared.
 
 ## 2026-07-21
 
