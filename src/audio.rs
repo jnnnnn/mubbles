@@ -1,7 +1,36 @@
-//! Audio capture module with platform-specific backends.
+//! Audio capture and filtering module.
 //!
-//! On Linux, this uses PipeWire for better support of monitor sources (desktop audio capture).
-//! On other platforms, it uses cpal.
+//! ## Pipeline
+//!
+//! ```text
+//! OS audio (cpal / PipeWire)
+//!   │  data_callback: raw f32, first channel → PcmAudio on mpsc
+//!   ▼
+//! filter_audio_loop (input devices)
+//!   │  1. Receive native-rate chunk
+//!   │  2. RMS → Level update to UI
+//!   │  3. Echo cancel: skip if output device is active
+//!   │  4. downsample_to_16k (nearest-neighbor) → accumulate in vad_buffer
+//!   │  5. Drain 256-sample frames → VadSession.process_frame
+//!   │  6. VAD hysteresis: SpeechStart / SpeechEnd / SpeechRejected
+//!   │  7. Gate: buffer native-rate audio while speaking
+//!   │  8. On SpeechEnd: sinc-resample to 16kHz → filtered_tx
+//!   │  9. On SpeechRejected: discard (< 192ms utterance)
+//!   │ 10. split_long_buffer: if >15s, cut at quietest point
+//!   ▼
+//! filter_audio_loop_output (output devices)
+//!   │  Simple energy gate — VAD is overkill for speaker output.
+//!   │  Sets output_active flag for echo cancellation on input devices.
+//!   ▼
+//! filtered_tx → Whisper thread → transcription → UI
+//! ```
+//!
+//! Two resamplers are used:
+//! - `downsample_to_16k`: nearest-neighbor, cheap, for VAD only
+//! - `convert_sample_rate`: rubato sinc, high quality, for transcription audio
+//!
+//! On Linux this uses PipeWire (better monitor source support).
+//! On other platforms it uses cpal.
 
 use rubato::Resampler;
 use std::{
@@ -84,8 +113,6 @@ pub fn filter_audio_loop(
     let mut recording_buffer: Vec<f32> = Vec::new();
     let mut vad_buffer: Vec<f32> = Vec::new(); // 16kHz samples waiting to be framed
     let mut was_speaking = false;
-    let mut silence_since_speech: usize = 0; // native-rate samples of silence after last speech
-    const SILENCE_FLUSH_SAMPLES: usize = 10;
 
     loop {
         let PcmAudio { data, sample_rate } = match audio_rx.recv() {
@@ -142,9 +169,8 @@ pub fn filter_audio_loop(
                 app.send(WhisperUpdate::Recording(true))?;
             }
             recording_buffer.extend_from_slice(&data);
-            silence_since_speech = 0;
         } else if was_speaking && speech_end {
-            // Valid utterance ended (≥ 2s speech) — always transcribe
+            // Valid utterance ended (≥ 192ms speech) — always transcribe
             app.send(WhisperUpdate::Recording(false))?;
             let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
             filtered_tx.send(PcmAudio {
@@ -153,24 +179,9 @@ pub fn filter_audio_loop(
             })?;
             recording_buffer.clear();
         } else if was_speaking && speech_rejected {
-            // False trigger (< 2s speech) — discard, don't transcribe
+            // False trigger (< 192ms speech) — discard, don't transcribe
             app.send(WhisperUpdate::Recording(false))?;
             recording_buffer.clear();
-        } else if !recording_buffer.is_empty() {
-            // Safety net: buffer has data but VAD hasn't signaled end
-            silence_since_speech += 1;
-            recording_buffer.extend_from_slice(&data);
-            if silence_since_speech >= SILENCE_FLUSH_SAMPLES {
-                app.send(WhisperUpdate::Recording(false))?;
-                if recording_buffer.len() >= (MINIMUM_AUDIO_LENGTH * sample_rate as f32) as usize {
-                    let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                    filtered_tx.send(PcmAudio {
-                        data: resampled,
-                        sample_rate: TARGET_SAMPLE_RATE,
-                    })?;
-                }
-                recording_buffer.clear();
-            }
         }
         was_speaking = is_speaking;
 
