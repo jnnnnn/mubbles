@@ -145,20 +145,3 @@ impl VadSession {
         self.triggered = false;
     }
 }
-
-/// Downsample audio from any source rate to 16kHz for VAD processing.
-/// Uses simple nearest-neighbor sampling — quality is sufficient for VAD
-/// (the actual transcription audio goes through proper sinc resampling).
-pub fn downsample_to_16k(audio: &[f32], src_rate: usize) -> Vec<f32> {
-    if src_rate == 16000 {
-        return audio.to_vec();
-    }
-    let ratio = src_rate as f64 / 16000.0;
-    let out_len = (audio.len() as f64 / ratio).ceil() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let src_idx = (i as f64 * ratio) as usize;
-        out.push(audio.get(src_idx).copied().unwrap_or(0.0));
-    }
-    out
-}

@@ -117,7 +117,7 @@ pub fn filter_audio_loop(
         }
 
         // Downsample chunk to 16kHz and feed into VAD frame buffer
-        let downsampled = vad::downsample_to_16k(&data, sample_rate);
+        let downsampled = downsample_to_16k(&data, sample_rate);
         vad_buffer.extend_from_slice(&downsampled);
 
         let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
@@ -174,34 +174,64 @@ pub fn filter_audio_loop(
         }
         was_speaking = is_speaking;
 
-        // if we've got more than 15 seconds of audio, find the lowest-energy point and send everything up to that point
-        let full_whisper_buffer = 15/*seconds*/ * sample_rate /*samples per second*/;
-        if recording_buffer.len() > full_whisper_buffer {
-            let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE; // 160 resamples per chunk (1 mel frame)
-
-            let energies = recording_buffer
-                .chunks(chunk_size)
-                .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
-                .collect::<Vec<f32>>();
-            // Skip the first 300ms to avoid cutting mid-transient
-            let skip_chunks = (0.3 * sample_rate as f32 / chunk_size as f32) as usize;
-            let low_energy_index = energies
-                .iter()
-                .enumerate()
-                .skip(skip_chunks)
-                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let start_index = low_energy_index * chunk_size;
-            let resampled =
-                convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
-            filtered_tx.send(PcmAudio {
-                data: resampled,
-                sample_rate: TARGET_SAMPLE_RATE,
-            })?;
-            recording_buffer = recording_buffer[start_index..].to_vec();
-        }
+        split_long_buffer(&mut recording_buffer, sample_rate, &filtered_tx)?;
     }
+}
+
+/// Downsample audio from any source rate to 16kHz for VAD processing.
+/// Uses simple nearest-neighbor sampling — quality is sufficient for VAD
+/// (the actual transcription audio goes through proper sinc resampling).
+fn downsample_to_16k(audio: &[f32], src_rate: usize) -> Vec<f32> {
+    if src_rate == 16000 {
+        return audio.to_vec();
+    }
+    let ratio = src_rate as f64 / 16000.0;
+    let out_len = (audio.len() as f64 / ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_idx = (i as f64 * ratio) as usize;
+        out.push(audio.get(src_idx).copied().unwrap_or(0.0));
+    }
+    out
+}
+
+/// Split a long recording buffer at the lowest-energy point and send the prefix to transcription.
+/// Returns the remaining suffix (after the split point) to continue accumulating.
+fn split_long_buffer(
+    recording_buffer: &mut Vec<f32>,
+    sample_rate: usize,
+    filtered_tx: &Sender<PcmAudio>,
+) -> Result<(), anyhow::Error> {
+    const MAX_BUFFER_SECS: usize = 15;
+    let max_samples = MAX_BUFFER_SECS * sample_rate;
+    if recording_buffer.len() <= max_samples {
+        return Ok(());
+    }
+
+    let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE;
+    let skip_chunks = (MINIMUM_AUDIO_LENGTH * sample_rate as f32 / chunk_size as f32) as usize;
+
+    let energies: Vec<f32> = recording_buffer
+        .chunks(chunk_size)
+        .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
+        .collect();
+
+    let low_energy_index = energies
+        .iter()
+        .enumerate()
+        .skip(skip_chunks)
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    let start_index = low_energy_index * chunk_size;
+    let resampled = convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
+    filtered_tx.send(PcmAudio {
+        data: resampled,
+        sample_rate: TARGET_SAMPLE_RATE,
+    })?;
+    *recording_buffer = recording_buffer[start_index..].to_vec();
+    Ok(())
 }
 
 /// Simple energy-gate filter for output devices (speakers).
@@ -262,30 +292,7 @@ fn filter_audio_loop_output(
             recording_buffer.clear();
         }
 
-        // 15-second max buffer split
-        let full_whisper_buffer = 15 * sample_rate;
-        if recording_buffer.len() > full_whisper_buffer {
-            let chunk_size = crate::mel::FFT_STEP * sample_rate / TARGET_SAMPLE_RATE;
-            let energies = recording_buffer
-                .chunks(chunk_size)
-                .map(|chunk| chunk.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
-                .collect::<Vec<f32>>();
-            let low_energy_index = energies
-                .iter()
-                .enumerate()
-                .skip((MINIMUM_AUDIO_LENGTH * sample_rate as f32 / chunk_size as f32) as usize)
-                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let start_index = low_energy_index * chunk_size;
-            let resampled =
-                convert_sample_rate(&recording_buffer[..start_index], sample_rate).unwrap();
-            filtered_tx.send(PcmAudio {
-                data: resampled,
-                sample_rate: TARGET_SAMPLE_RATE,
-            })?;
-            recording_buffer = recording_buffer[start_index..].to_vec();
-        }
+        split_long_buffer(&mut recording_buffer, sample_rate, &filtered_tx)?;
     }
 }
 
