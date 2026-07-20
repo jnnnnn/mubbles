@@ -48,7 +48,8 @@ byteorder = "1.5.0"
 candle-core = { version = "0.9.1", features = [], optional = true }
 candle-transformers = { version = "0.9.1", features = [], optional = true }
 candle-nn = { version = "0.9.1", features = [], optional = true }
-candle-onnx = { version = "0.9.1", features = [], optional = true }
+earshot = { path = "earshot" }
+
 
 hf-hub = { version = "0.4.3", default-features = false, features = [
     "ureq",
@@ -66,7 +67,7 @@ rfd = "0.15.4"
 shellexpand = "3"
 
 [features]
-default = ["candle-core", "candle-transformers", "candle-nn", "candle-onnx"]
+default = ["candle-core", "candle-transformers", "candle-nn"]
 cuda = [
     "candle-core/cuda",
     "candle-transformers/cuda",
@@ -106,5 +107,5 @@ opt-level = 2
 [patch.crates-io]
 candle-core = { path = "candle/candle-core" }
 candle-nn = { path = "candle/candle-nn" }
-candle-onnx = { path = "candle/candle-onnx" }
+
 candle-transformers = { path = "candle/candle-transformers" }

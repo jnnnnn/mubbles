@@ -49,9 +49,9 @@ pub(crate) fn convert_sample_rate(
 /// Filter audio to detect speech and accumulate non-silent segments.
 /// This is shared across all platforms.
 ///
-/// Uses Silero VAD (candle-onnx) for neural speech detection, which
-/// reliably distinguishes speech from keystrokes, chair noises, and
-/// other transient sounds that fool energy-based detectors.
+/// Uses Earshot neural VAD for speech detection, which reliably
+/// distinguishes speech from keystrokes, chair noises, and other
+/// transient sounds that fool energy-based detectors.
 /// Output devices fall back to a simple energy gate.
 pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
@@ -64,7 +64,6 @@ pub fn filter_audio_loop(
     threshold_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
     use crate::vad::{self, VadDecision, VadSession};
-    use candle_core::Device;
 
     // Output devices use a simple energy gate (VAD is overkill for speakers)
     if is_output {
@@ -79,9 +78,9 @@ pub fn filter_audio_loop(
         );
     }
 
-    // ── Input devices: Silero VAD gated buffer ─────────────
+    // ── Input devices: Earshot VAD gated buffer ────────────
 
-    let mut vad = VadSession::new(&Device::Cpu)?;
+    let mut vad = VadSession::new();
     let mut recording_buffer: Vec<f32> = Vec::new();
     let mut vad_buffer: Vec<f32> = Vec::new(); // 16kHz samples waiting to be framed
     let mut was_speaking = false;
@@ -121,13 +120,12 @@ pub fn filter_audio_loop(
         let downsampled = vad::downsample_to_16k(&data, sample_rate);
         vad_buffer.extend_from_slice(&downsampled);
 
-        // Process complete VAD frames, tracking end/reject transitions
         let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
         let mut speech_end = false;
         let mut speech_rejected = false;
         while vad_buffer.len() >= vad::FRAME_SIZE {
             let frame: Vec<f32> = vad_buffer.drain(..vad::FRAME_SIZE).collect();
-            let (_prob, decision) = vad.process_frame(&frame, threshold)?;
+            let (_prob, decision) = vad.process_frame(&frame, threshold);
             match decision {
                 VadDecision::SpeechEnd => speech_end = true,
                 VadDecision::SpeechRejected => speech_rejected = true,

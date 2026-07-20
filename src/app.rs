@@ -33,7 +33,7 @@ const REPAINT_INTERVAL_MS: u64 = 100;
 const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
 const WORD_CHAR_WIDTH: f32 = 7.0;
-const DEFAULT_THRESHOLD: f32 = 0.5; // Silero VAD speech probability threshold
+const DEFAULT_THRESHOLD: f32 = 0.75; // Earshot VAD speech probability threshold
 
 /// Application tab selection
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]

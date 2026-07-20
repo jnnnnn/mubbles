@@ -4,3 +4,6 @@
 [submodule "candle"]
 	path = candle
 	url = https://github.com/jnnnnn/candle.git
+[submodule "earshot"]
+	path = earshot
+	url = https://github.com/pykeio/earshot.git

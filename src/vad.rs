@@ -1,24 +1,19 @@
-//! Silero Voice Activity Detection using candle-onnx.
+//! Earshot Voice Activity Detection.
 //!
-//! Downloads the `onnx-community/silero-vad` model from HuggingFace Hub on first use
-//! and runs inference via candle-onnx for neural speech probability estimation.
+//! Uses the `earshot` crate for blazingly-fast neural VAD (40x faster than Silero).
+//! Weights are embedded in the binary — no model download needed, no ONNX runtime.
 //! Includes a hysteresis state machine for robust speech segment detection
 //! that rejects short transients (keystrokes, chair squeaks, etc.).
 
-use anyhow::Result;
-use candle_core::{DType, Device, Tensor};
-use candle_onnx::onnx::ModelProto;
-use std::path::PathBuf;
+use earshot::Detector;
 
-/// Number of 16kHz samples per VAD frame (32ms)
-pub const FRAME_SIZE: usize = 512;
-/// Context overlap between consecutive frames (64 samples = 4ms)
-const CONTEXT_SIZE: usize = 64;
-/// Minimum speech duration in frames (192ms = 6 frames) — rejects keystroke transients
+/// Number of 16kHz samples per VAD frame (16ms)
+pub const FRAME_SIZE: usize = 256;
+/// Minimum speech duration in frames (192ms = 12 frames) — rejects keystroke transients
 /// but accepts single words like "yes" or "no".
-const MIN_SPEECH_FRAMES: usize = 6;
-/// Frames of silence before ending a speech segment (256ms = 8 frames)
-const MIN_SILENCE_FRAMES: usize = 8;
+const MIN_SPEECH_FRAMES: usize = 12;
+/// Frames of silence before ending a speech segment (256ms = 16 frames)
+const MIN_SILENCE_FRAMES: usize = 16;
 /// Maximum speech duration in frames before forced split (30s)
 const MAX_SPEECH_FRAMES: usize = (30 * 16000) / FRAME_SIZE;
 
@@ -34,17 +29,13 @@ pub enum VadDecision {
     SpeechRejected,
 }
 
-/// Streaming Silero VAD session with hysteresis state machine.
+/// Streaming Earshot VAD session with hysteresis state machine.
 ///
-/// Feed 512-sample f32 frames at 16kHz via [`process_frame`](VadSession::process_frame).
-/// Speech must persist for [`MIN_SPEECH_FRAMES`] (2s) to be considered valid.
+/// Feed 256-sample f32 frames at 16kHz via [`process_frame`](VadSession::process_frame).
+/// Speech must persist for [`MIN_SPEECH_FRAMES`] (192ms) to be considered valid.
 /// Silence for [`MIN_SILENCE_FRAMES`] (256ms) ends a speech segment.
 pub struct VadSession {
-    model: ModelProto,
-    sample_rate_tensor: Tensor,
-    state: Tensor,
-    context: Tensor,
-    device: Device,
+    detector: Detector,
 
     // State machine
     current_sample: usize,
@@ -56,31 +47,21 @@ pub struct VadSession {
 }
 
 impl VadSession {
-    /// Download (if needed) and load the Silero VAD ONNX model.
-    pub fn new(device: &Device) -> Result<Self> {
-        let model_path = Self::download_model()?;
-        let model = candle_onnx::read_file(model_path)?;
-        let sample_rate_tensor = Tensor::new(16000i64, device)?;
-        let state = Tensor::zeros((2, 1, 128), DType::F32, device)?;
-        let context = Tensor::zeros((1, CONTEXT_SIZE), DType::F32, device)?;
-
-        Ok(Self {
-            model,
-            sample_rate_tensor,
-            state,
-            context,
-            device: device.clone(),
+    /// Create a new VAD session. No model download — weights are embedded.
+    pub fn new() -> Self {
+        Self {
+            detector: Detector::default(),
             current_sample: 0,
             triggered: false,
             temp_end: 0,
             current_speech_start: 0,
-        })
+        }
     }
 
     /// Process one frame of 16kHz audio (must be exactly FRAME_SIZE samples).
     /// `threshold` is the speech probability threshold (0.1–0.9, default 0.5).
     /// Returns the raw speech probability [0.0, 1.0] and the VAD decision.
-    pub fn process_frame(&mut self, frame: &[f32], threshold: f32) -> Result<(f32, VadDecision)> {
+    pub fn process_frame(&mut self, frame: &[f32], threshold: f32) -> (f32, VadDecision) {
         assert_eq!(
             frame.len(),
             FRAME_SIZE,
@@ -88,7 +69,7 @@ impl VadSession {
             FRAME_SIZE
         );
 
-        let speech_prob = self.run_model(frame)?;
+        let speech_prob = self.detector.predict_f32(frame);
         self.current_sample += FRAME_SIZE;
 
         let decision = if speech_prob > threshold {
@@ -123,11 +104,11 @@ impl VadSession {
                 // Enough consecutive silence — evaluate the utterance
                 let speech_duration = self.temp_end as i64 - self.current_speech_start;
                 if speech_duration > (MIN_SPEECH_FRAMES * FRAME_SIZE) as i64 {
-                    // Valid utterance (≥ 2s speech)
+                    // Valid utterance (≥ 192ms speech)
                     self.reset_state();
                     VadDecision::SpeechEnd
                 } else {
-                    // False trigger (< 2s speech) — discard
+                    // False trigger (< 192ms speech) — discard
                     self.reset_state();
                     VadDecision::SpeechRejected
                 }
@@ -140,18 +121,16 @@ impl VadSession {
             VadDecision::Silence
         };
 
-        Ok((speech_prob, decision))
+        (speech_prob, decision)
     }
 
     /// Reset the VAD state for a new audio stream.
-    pub fn reset(&mut self) -> Result<()> {
-        self.state = Tensor::zeros((2, 1, 128), DType::F32, &self.device)?;
-        self.context = Tensor::zeros((1, CONTEXT_SIZE), DType::F32, &self.device)?;
+    pub fn reset(&mut self) {
+        self.detector.reset();
         self.current_sample = 0;
         self.triggered = false;
         self.temp_end = 0;
         self.current_speech_start = 0;
-        Ok(())
     }
 
     /// Returns whether the VAD is currently in a triggered (speaking) state.
@@ -160,53 +139,10 @@ impl VadSession {
     }
 }
 
-// ── Internal helpers ──────────────────────────────────────────
-
 impl VadSession {
     fn reset_state(&mut self) {
         self.temp_end = 0;
         self.triggered = false;
-    }
-
-    fn download_model() -> Result<PathBuf> {
-        let api = hf_hub::api::sync::Api::new()?;
-        let model = api
-            .model("onnx-community/silero-vad".into())
-            .get("onnx/model.onnx")?;
-        Ok(model)
-    }
-
-    fn run_model(&mut self, frame: &[f32]) -> Result<f32> {
-        // Build input: concatenate context with new frame
-        let frame_tensor = Tensor::from_slice(frame, (1, FRAME_SIZE), &self.device)?;
-        let input = Tensor::cat(&[&self.context, &frame_tensor], 1)?;
-        // Update context for next frame
-        self.context = Tensor::from_slice(
-            &frame[FRAME_SIZE - CONTEXT_SIZE..],
-            (1, CONTEXT_SIZE),
-            &self.device,
-        )?;
-
-        let inputs = std::collections::HashMap::from_iter([
-            ("input".to_string(), input),
-            ("sr".to_string(), self.sample_rate_tensor.clone()),
-            ("state".to_string(), self.state.clone()),
-        ]);
-        let out = candle_onnx::simple_eval(&self.model, inputs)
-            .map_err(|e| anyhow::anyhow!("VAD model inference failed: {e}"))?;
-
-        let out_names = &self.model.graph.as_ref().unwrap().output;
-        let output = out
-            .get(&out_names[0].name)
-            .ok_or_else(|| anyhow::anyhow!("VAD model missing output node"))?
-            .clone();
-        self.state = out
-            .get(&out_names[1].name)
-            .ok_or_else(|| anyhow::anyhow!("VAD model missing state node"))?
-            .clone();
-
-        let prob = output.flatten_all()?.to_vec1::<f32>()?;
-        Ok(prob[0])
     }
 }
 
