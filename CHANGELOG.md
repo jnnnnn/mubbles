@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1 (2026-07-21)
+ - Audio devices auto-refresh on focus gain + 30s polling
+ - AI Summary moved to own tab
+ - Updated to Rust 1.97.1
+
 ## 3.0 (2026-07-21)
  - Neural VAD via Earshot — no more ONNX, better speech detection
  - Ignored Phrases tab to filter common false positives ("Thank you." etc.)

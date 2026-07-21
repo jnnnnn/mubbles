@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "mubbles"
-version = "2.9.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "bitcode",
