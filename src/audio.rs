@@ -6,7 +6,7 @@
 //! OS audio (cpal / PipeWire)
 //!   │  data_callback: raw f32, first channel → PcmAudio on mpsc
 //!   ▼
-//! filter_audio_loop (input devices)
+//! filter_audio_loop (all devices)
 //!   │  1. Receive native-rate chunk
 //!   │  2. RMS → Level update to UI
 //!   │  3. Echo cancel: skip if output device is active
@@ -17,10 +17,7 @@
 //!   │  8. On SpeechEnd: sinc-resample to 16kHz → filtered_tx
 //!   │  9. On SpeechRejected: discard (< 192ms utterance)
 //!   │ 10. split_long_buffer: if >15s, cut at quietest point
-//!   ▼
-//! filter_audio_loop_output (output devices)
-//!   │  Simple energy gate — VAD is overkill for speaker output.
-//!   │  Sets output_active flag for echo cancellation on input devices.
+//!   │ 11. Output devices also set output_active for echo cancellation
 //!   ▼
 //! filtered_tx → Whisper thread → transcription → UI
 //! ```
@@ -78,10 +75,9 @@ pub(crate) fn convert_sample_rate(
 /// Filter audio to detect speech and accumulate non-silent segments.
 /// This is shared across all platforms.
 ///
-/// Uses Earshot neural VAD for speech detection, which reliably
+/// Uses Earshot neural VAD for speech detection on all devices, which reliably
 /// distinguishes speech from keystrokes, chair noises, and other
 /// transient sounds that fool energy-based detectors.
-/// Output devices fall back to a simple energy gate.
 pub fn filter_audio_loop(
     app: Sender<WhisperUpdate>,
     audio_rx: Receiver<PcmAudio>,
@@ -94,21 +90,6 @@ pub fn filter_audio_loop(
     silence_timeout_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
     use crate::vad::{self, VadDecision, VadSession};
-
-    // Output devices use a simple energy gate (VAD is overkill for speakers)
-    if is_output {
-        return filter_audio_loop_output(
-            app,
-            audio_rx,
-            filtered_tx,
-            device_name,
-            output_active,
-            echo_cancel,
-            threshold_bits,
-        );
-    }
-
-    // ── Input devices: Earshot VAD gated buffer ────────────
 
     let timeout_ms = f32::from_bits(silence_timeout_bits.load(Ordering::Relaxed));
     let silence_frames = if timeout_ms > 0.0 {
@@ -173,11 +154,17 @@ pub fn filter_audio_loop(
         if is_speaking {
             if !was_speaking {
                 // Just started speaking
+                if is_output {
+                    output_active.store(true, Ordering::Relaxed);
+                }
                 app.send(WhisperUpdate::Recording(true))?;
             }
             recording_buffer.extend_from_slice(&data);
         } else if was_speaking && speech_end {
             // Valid utterance ended (≥ 192ms speech) — always transcribe
+            if is_output {
+                output_active.store(false, Ordering::Relaxed);
+            }
             app.send(WhisperUpdate::Recording(false))?;
             let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
             filtered_tx.send(PcmAudio {
@@ -187,6 +174,9 @@ pub fn filter_audio_loop(
             recording_buffer.clear();
         } else if was_speaking && speech_rejected {
             // False trigger (< 192ms speech) — discard, don't transcribe
+            if is_output {
+                output_active.store(false, Ordering::Relaxed);
+            }
             app.send(WhisperUpdate::Recording(false))?;
             recording_buffer.clear();
         }
@@ -250,68 +240,6 @@ fn split_long_buffer(
     })?;
     *recording_buffer = recording_buffer[start_index..].to_vec();
     Ok(())
-}
-
-/// Simple energy-gate filter for output devices (speakers).
-/// VAD is unnecessary for speaker output — a basic amplitude threshold suffices
-/// to detect when audio is playing through the device.
-fn filter_audio_loop_output(
-    app: Sender<WhisperUpdate>,
-    audio_rx: Receiver<PcmAudio>,
-    filtered_tx: Sender<PcmAudio>,
-    device_name: String,
-    output_active: Arc<AtomicBool>,
-    echo_cancel: Arc<AtomicBool>,
-    threshold_bits: Arc<AtomicU32>,
-) -> Result<(), anyhow::Error> {
-    let mut recording_buffer: Vec<f32> = Vec::new();
-
-    loop {
-        let PcmAudio { data, sample_rate } = match audio_rx.recv() {
-            Ok(pcmaudio) => pcmaudio,
-            Err(_) => {
-                tracing::info!("Audio stream closed");
-                app.send(WhisperUpdate::Recording(false))?;
-                return Ok(());
-            }
-        };
-
-        let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
-
-        let rms = if data.is_empty() {
-            0.0
-        } else {
-            let sum_sq: f32 = data.iter().map(|s| s * s).sum();
-            (sum_sq / data.len() as f32).sqrt()
-        };
-
-        let active = rms > threshold;
-        output_active.store(active, Ordering::Relaxed);
-
-        let muted = echo_cancel.load(Ordering::Relaxed) && active;
-        app.send(WhisperUpdate::Level {
-            device: device_name.clone(),
-            level: rms,
-            muted,
-        })?;
-
-        if active {
-            app.send(WhisperUpdate::Recording(true))?;
-            recording_buffer.extend_from_slice(&data);
-        } else if !recording_buffer.is_empty() {
-            app.send(WhisperUpdate::Recording(false))?;
-            if recording_buffer.len() >= (MINIMUM_AUDIO_LENGTH * sample_rate as f32) as usize {
-                let resampled = convert_sample_rate(&recording_buffer, sample_rate).unwrap();
-                filtered_tx.send(PcmAudio {
-                    data: resampled,
-                    sample_rate: TARGET_SAMPLE_RATE,
-                })?;
-            }
-            recording_buffer.clear();
-        }
-
-        split_long_buffer(&mut recording_buffer, sample_rate, &filtered_tx)?;
-    }
 }
 
 // ============================================================================
