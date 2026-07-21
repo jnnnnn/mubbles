@@ -198,6 +198,8 @@ pub struct MubblesApp {
     #[serde(skip)]
     device_levels: HashMap<String, VecDeque<f32>>,
     #[serde(skip)]
+    device_vad_levels: HashMap<String, VecDeque<f32>>,
+    #[serde(skip)]
     device_muted: HashMap<String, bool>,
     device_thresholds: HashMap<String, f32>,
     #[serde(default = "default_silence_timeout")]
@@ -294,6 +296,7 @@ impl Default for MubblesApp {
 
             // Visualization state
             device_levels: HashMap::new(),
+            device_vad_levels: HashMap::new(),
             device_muted: HashMap::new(),
             device_thresholds: HashMap::new(),
             silence_timeout_ms: DEFAULT_SILENCE_TIMEOUT_MS,
@@ -423,6 +426,7 @@ impl MubblesApp {
                 WhisperUpdate::Level {
                     device,
                     level,
+                    vad_prob,
                     muted,
                 } => {
                     let dev_level = self
@@ -433,6 +437,14 @@ impl MubblesApp {
                         dev_level.pop_front();
                     }
                     dev_level.push_back(level);
+                    let dev_vad = self
+                        .device_vad_levels
+                        .entry(device.clone())
+                        .or_insert_with(|| VecDeque::with_capacity(LEVEL_BUFFER_SIZE));
+                    if dev_vad.len() >= LEVEL_BUFFER_SIZE {
+                        dev_vad.pop_front();
+                    }
+                    dev_vad.push_back(vad_prob);
                     self.device_muted.insert(device, muted);
                 }
                 WhisperUpdate::Alignment(a) => {
@@ -1250,12 +1262,7 @@ impl MubblesApp {
         for (name, is_output) in &device_names {
             ui.horizontal(|ui| {
                 let mut selected = self.selected_device_names.contains(name);
-                let label = if *is_output {
-                    format!("{} [output]", name)
-                } else {
-                    name.clone()
-                };
-                if ui.checkbox(&mut selected, label).changed() {
+                if ui.checkbox(&mut selected, "").changed() {
                     if selected {
                         self.selected_device_names.insert(name.clone());
                         if let Some(worker) = &mut self.worker {
@@ -1304,10 +1311,18 @@ impl MubblesApp {
                     }
                 }
 
-                // Per-device level chart with threshold line
-                if let Some(dev_level) = self.device_levels.get(name.as_str()) {
-                    plot_level_with_threshold(dev_level, *threshold, ui, name);
-                }
+                // Per-device chart: bars = audio level, line = VAD probability
+                let dev_level = self.device_levels.get(name.as_str());
+                let dev_vad = self.device_vad_levels.get(name.as_str());
+                plot_level_with_vad(dev_level, dev_vad, *threshold, ui, name);
+
+                // Device name comes last so varying lengths don't misalign controls
+                let label = if *is_output {
+                    format!("{} [output]", name)
+                } else {
+                    name.clone()
+                };
+                ui.label(label);
             });
         }
     }
@@ -1386,6 +1401,7 @@ pub enum WhisperUpdate {
     Level {
         device: String,
         level: f32,
+        vad_prob: f32,
         muted: bool,
     },
     Mel(Tensor),
@@ -1400,8 +1416,14 @@ impl eframe::App for MubblesApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Keep the UI responsive with periodic repaints
-        ctx.request_repaint_after(Duration::from_millis(REPAINT_INTERVAL_MS));
+        // Keep the UI responsive with periodic repaints.
+        // Use a faster rate on the Devices tab so charts look smooth.
+        let interval = if self.tab == AppTab::Devices {
+            16
+        } else {
+            REPAINT_INTERVAL_MS
+        };
+        ctx.request_repaint_after(Duration::from_millis(interval));
 
         // Check for thread panics
         if let Some(worker) = &mut self.worker {
@@ -1570,20 +1592,15 @@ fn plot_levels(device_levels: &HashMap<String, VecDeque<f32>>, ui: &mut egui::Ui
     });
 }
 
-/// Plot audio level for a single device (logarithmic scale) with threshold line
-fn plot_level_with_threshold(level: &VecDeque<f32>, threshold: f32, ui: &mut egui::Ui, name: &str) {
-    let points: PlotPoints<'_> = level
-        .iter()
-        .enumerate()
-        .map(|(i, v)| [i as f64, amplitude_to_log(*v)])
-        .collect();
-
-    let line = Line::new("dev_level", points);
-    let thresh_y = amplitude_to_log(threshold);
-    let thresh_line = HLine::new("threshold", thresh_y)
-        .color(egui::Color32::from_rgb(255, 80, 80))
-        .style(egui_plot::LineStyle::Dashed { length: 4.0 });
-
+/// Plot audio level (bars) + VAD probability (line) with threshold marker.
+/// Audio level is log-scaled like a traditional meter; VAD prob is linear [0,1].
+fn plot_level_with_vad(
+    level: Option<&VecDeque<f32>>,
+    vad: Option<&VecDeque<f32>>,
+    threshold: f32,
+    ui: &mut egui::Ui,
+    name: &str,
+) {
     ui.add_enabled_ui(false, |ui| {
         Plot::new(format!("dev_level_{}", name))
             .width(LEVEL_PLOT_WIDTH)
@@ -1592,7 +1609,38 @@ fn plot_level_with_threshold(level: &VecDeque<f32>, threshold: f32, ui: &mut egu
             .include_y(1.0)
             .view_aspect(2.0)
             .show(ui, |plot_ui| {
-                plot_ui.line(line);
+                // Audio level as bars — discrete, chunky, like a traditional meter
+                if let Some(level) = level {
+                    let bars: Vec<egui_plot::Bar> = level
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            egui_plot::Bar::new(i as f64, amplitude_to_log(*v))
+                                .fill(egui::Color32::from_rgba_premultiplied(100, 180, 255, 120))
+                                .width(0.9)
+                        })
+                        .collect();
+                    let bar_chart = egui_plot::BarChart::new("level", bars);
+                    plot_ui.bar_chart(bar_chart);
+                }
+
+                // VAD probability as a line — smooth, continuous, visually distinct from bars
+                if let Some(vad) = vad {
+                    let vad_points: egui_plot::PlotPoints<'_> = vad
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| [i as f64, *v as f64])
+                        .collect();
+                    let vad_line = Line::new("vad", vad_points)
+                        .color(egui::Color32::from_rgb(255, 200, 60))
+                        .width(1.5_f32);
+                    plot_ui.line(vad_line);
+                }
+
+                // Threshold line
+                let thresh_line = HLine::new("threshold", threshold as f64)
+                    .color(egui::Color32::from_rgb(255, 80, 80))
+                    .style(egui_plot::LineStyle::Dashed { length: 4.0 });
                 plot_ui.hline(thresh_line);
             });
     });

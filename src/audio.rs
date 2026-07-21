@@ -122,12 +122,13 @@ pub fn filter_audio_loop(
 
         // Echo cancellation: skip when output is active
         let muted = echo_cancel.load(Ordering::Relaxed) && output_active.load(Ordering::Relaxed);
-        app.send(WhisperUpdate::Level {
-            device: device_name.clone(),
-            level: rms,
-            muted,
-        })?;
         if muted {
+            app.send(WhisperUpdate::Level {
+                device: device_name.clone(),
+                level: rms,
+                vad_prob: 0.0,
+                muted,
+            })?;
             continue;
         }
 
@@ -138,9 +139,11 @@ pub fn filter_audio_loop(
         let threshold = f32::from_bits(threshold_bits.load(Ordering::Relaxed));
         let mut speech_end = false;
         let mut speech_rejected = false;
+        let mut max_vad_prob: f32 = 0.0;
         while vad_buffer.len() >= vad::FRAME_SIZE {
             let frame: Vec<f32> = vad_buffer.drain(..vad::FRAME_SIZE).collect();
-            let (_prob, decision) = vad.process_frame(&frame, threshold);
+            let (prob, decision) = vad.process_frame(&frame, threshold);
+            max_vad_prob = max_vad_prob.max(prob);
             match decision {
                 VadDecision::SpeechEnd => speech_end = true,
                 VadDecision::SpeechRejected => speech_rejected = true,
@@ -148,6 +151,13 @@ pub fn filter_audio_loop(
                 _ => {}
             }
         }
+        // Re-send the level update with the actual VAD probability for this chunk
+        app.send(WhisperUpdate::Level {
+            device: device_name.clone(),
+            level: rms,
+            vad_prob: max_vad_prob,
+            muted,
+        })?;
         let is_speaking = vad.is_speaking();
 
         // Gate: buffer audio when speaking, flush on silence after speech

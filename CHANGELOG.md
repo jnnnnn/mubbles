@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.3 (2026-07-22)
+ - Per-device VAD probability overlay on level charts (bars = audio, line = VAD)
+ - Devices tab layout: device name moved to end of row, controls aligned
+ - Fast 60fps repaint when Devices tab is active
+
 ## 3.2 (2026-07-22)
  - Configurable silence timeout (200ms–5s, default 1s) — pause before transcription
  - Fix output device (speaker/headphone) transcription — unified VAD pipeline
