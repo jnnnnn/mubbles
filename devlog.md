@@ -1512,3 +1512,12 @@ headsets.
 Configurable silence timeout (200ms–5s, default 1s) for pause-before-
 transcription. Slider in Settings tab under "Speech Detection". Stops
 utterances being split mid-thought.
+
+## 2026-07-22
+
+Output device transcription was broken — separate RMS energy gate used a
+VAD probability threshold (~0.75) as an RMS floor, which real speaker
+audio (~0.001–0.05 RMS) never reached. Deleted the output-specific code
+path entirely. All devices now route through the same Earshot VAD
+pipeline. Output VAD-driven echo cancel is actually better: only mutes
+mic when speaker emits speech, not music/system sounds. 3.2 release.

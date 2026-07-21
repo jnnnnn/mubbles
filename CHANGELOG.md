@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2 (2026-07-22)
+ - Configurable silence timeout (200ms–5s, default 1s) — pause before transcription
+ - Fix output device (speaker/headphone) transcription — unified VAD pipeline
+
 ## 3.1 (2026-07-21)
  - Audio devices auto-refresh on focus gain + 30s polling
  - AI Summary moved to own tab
@@ -8,8 +12,6 @@
 ## 3.0 (2026-07-21)
  - Neural VAD via Earshot — no more ONNX, better speech detection
  - Ignored Phrases tab to filter common false positives ("Thank you." etc.)
- - Audio devices auto-refresh on window focus and poll every 30s
- - AI Summary moved to its own dedicated tab
  - Audio pipeline refactored and documented
 
 ## 2.8 (2026-04-01)
