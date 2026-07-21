@@ -12,8 +12,8 @@ pub const FRAME_SIZE: usize = 256;
 /// Minimum speech duration in frames (192ms = 12 frames) — rejects keystroke transients
 /// but accepts single words like "yes" or "no".
 const MIN_SPEECH_FRAMES: usize = 12;
-/// Frames of silence before ending a speech segment (256ms = 16 frames)
-const MIN_SILENCE_FRAMES: usize = 16;
+/// Default frames of silence before ending a speech segment (1s = 63 frames at 16kHz)
+pub const DEFAULT_SILENCE_FRAMES: usize = 63;
 /// Maximum speech duration in frames before forced split (30s)
 const MAX_SPEECH_FRAMES: usize = (30 * 16000) / FRAME_SIZE;
 
@@ -33,9 +33,12 @@ pub enum VadDecision {
 ///
 /// Feed 256-sample f32 frames at 16kHz via [`process_frame`](VadSession::process_frame).
 /// Speech must persist for [`MIN_SPEECH_FRAMES`] (192ms) to be considered valid.
-/// Silence for [`MIN_SILENCE_FRAMES`] (256ms) ends a speech segment.
+/// Silence for `silence_timeout_frames` (e.g., 63 frames = ~1s) ends a speech segment.
 pub struct VadSession {
     detector: Detector,
+
+    /// Frames of silence before ending a speech segment
+    silence_timeout_frames: usize,
 
     // State machine
     current_sample: usize,
@@ -47,10 +50,14 @@ pub struct VadSession {
 }
 
 impl VadSession {
-    /// Create a new VAD session. No model download — weights are embedded.
-    pub fn new() -> Self {
+    /// Create a new VAD session with the given silence timeout in frames.
+    /// No model download — earshot weights are embedded.
+    /// `silence_timeout_frames` controls how many silent frames must pass
+    /// before an utterance is considered complete (e.g., 63 frames = ~1s at 16kHz).
+    pub fn new(silence_timeout_frames: usize) -> Self {
         Self {
             detector: Detector::default(),
+            silence_timeout_frames,
             current_sample: 0,
             triggered: false,
             temp_end: 0,
@@ -99,7 +106,7 @@ impl VadSession {
                 self.reset_state();
                 VadDecision::SpeechEnd
             } else if self.current_sample.saturating_sub(self.temp_end)
-                >= MIN_SILENCE_FRAMES * FRAME_SIZE
+                >= self.silence_timeout_frames * FRAME_SIZE
             {
                 // Enough consecutive silence — evaluate the utterance
                 let speech_duration = self.temp_end as i64 - self.current_speech_start;

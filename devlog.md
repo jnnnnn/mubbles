@@ -1508,3 +1508,7 @@ Added Ignored Phrases tab for filtering common false positives like
 Audio devices now auto-refresh on window focus gain and poll every 30s.
 No more manual "Refresh Devices" button clicking when plugging/unplugging
 headsets.
+
+Configurable silence timeout (200ms–5s, default 1s) for pause-before-
+transcription. Slider in Settings tab under "Speech Detection". Stops
+utterances being split mid-thought.

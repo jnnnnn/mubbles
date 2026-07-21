@@ -6,7 +6,7 @@
 
 [package]
 name = "mubbles"
-version = "3.1.0"
+version = "3.2.0"
 authors = ["Jonathan Newnham"]
 edition = "2021"
 rust-version = "1.81"

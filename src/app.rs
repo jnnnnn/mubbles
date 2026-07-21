@@ -34,6 +34,11 @@ const ALIGNED_WORD_ROWS: usize = 6;
 const ALIGNED_WORD_ROW_HEIGHT: f32 = 12.0;
 const WORD_CHAR_WIDTH: f32 = 7.0;
 const DEFAULT_THRESHOLD: f32 = 0.75; // Earshot VAD speech probability threshold
+const DEFAULT_SILENCE_TIMEOUT_MS: f32 = 1000.0; // Pause before transcription triggers
+
+fn default_silence_timeout() -> f32 {
+    DEFAULT_SILENCE_TIMEOUT_MS
+}
 
 /// Application tab selection
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -195,6 +200,8 @@ pub struct MubblesApp {
     #[serde(skip)]
     device_muted: HashMap<String, bool>,
     device_thresholds: HashMap<String, f32>,
+    #[serde(default = "default_silence_timeout")]
+    silence_timeout_ms: f32,
     #[serde(skip)]
     mel: DisplayMel,
 
@@ -289,6 +296,7 @@ impl Default for MubblesApp {
             device_levels: HashMap::new(),
             device_muted: HashMap::new(),
             device_thresholds: HashMap::new(),
+            silence_timeout_ms: DEFAULT_SILENCE_TIMEOUT_MS,
             mel: DisplayMel::new(),
 
             // UI state
@@ -590,6 +598,7 @@ impl MubblesApp {
                 self.whisper_paused.clone(),
                 self.echo_cancel,
                 &self.device_thresholds,
+                self.silence_timeout_ms,
             ) {
                 Ok(new_worker) => {
                     self.worker = Some(new_worker);
@@ -987,6 +996,36 @@ impl MubblesApp {
                     egui::vec2(ui.available_width(), 100.0),
                     egui::TextEdit::multiline(&mut self.ai_summary.user_prompt),
                 );
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("Speech Detection");
+                ui.add_space(10.0);
+
+                ui.add(
+                    egui::Slider::new(&mut self.silence_timeout_ms, 200.0..=5000.0)
+                        .text("Pause before transcription")
+                        .custom_formatter(|n, _| format!("{:.1}s", n / 1000.0))
+                        .custom_parser(|s| {
+                            s.trim_end_matches('s')
+                                .parse::<f64>()
+                                .ok()
+                                .map(|v| v * 1000.0)
+                        }),
+                );
+                ui.label(
+                    "How long to wait after you stop speaking before triggering transcription.\n\
+                     Lower = snappier but may split utterances. Higher = more thinking time.",
+                );
+                if ui
+                    .button("Restart to apply")
+                    .on_hover_text("Changes take effect next time you start recording")
+                    .clicked()
+                {
+                    self.worker = None;
+                }
 
                 ui.add_space(20.0);
                 ui.separator();
@@ -1586,6 +1625,7 @@ struct Worker {
     output_active: Arc<AtomicBool>,
     echo_cancel: Arc<AtomicBool>,
     device_threshold_atoms: HashMap<String, Arc<AtomicU32>>,
+    silence_timeout_atom: Arc<AtomicU32>,
     partial_thread: Option<JoinHandle<()>>,
     whisper_thread: Option<JoinHandle<()>>,
 }
@@ -1611,6 +1651,7 @@ impl Worker {
             self.output_active.clone(),
             self.echo_cancel.clone(),
             threshold_atom.clone(),
+            self.silence_timeout_atom.clone(),
         ) {
             Ok(stream) => {
                 tracing::info!("Started audio stream for: {}", device.name);
@@ -1640,6 +1681,7 @@ fn start_listening(
     paused: Arc<AtomicBool>,
     echo_cancel_enabled: bool,
     device_thresholds: &HashMap<String, f32>,
+    silence_timeout_ms: f32,
 ) -> Result<Worker, anyhow::Error> {
     // Start partial transcription thread if enabled
     let (partial_thread, partial_tx) = if params.partials {
@@ -1660,6 +1702,7 @@ fn start_listening(
     // Start an audio stream for each selected device
     let mut audio_streams = HashMap::new();
     let mut device_threshold_atoms = HashMap::new();
+    let silence_timeout_atom = Arc::new(AtomicU32::new(silence_timeout_ms.to_bits()));
     for (i, device) in devices.iter().enumerate() {
         // Only send partial audio from the first device
         let ptx = if i == 0 { partial_tx.clone() } else { None };
@@ -1676,6 +1719,7 @@ fn start_listening(
             output_active.clone(),
             echo_cancel.clone(),
             threshold_atom.clone(),
+            silence_timeout_atom.clone(),
         )?;
         audio_streams.insert(device.name.clone(), stream);
         device_threshold_atoms.insert(device.name.clone(), threshold_atom);
@@ -1693,6 +1737,7 @@ fn start_listening(
         output_active,
         echo_cancel,
         device_threshold_atoms,
+        silence_timeout_atom,
         partial_thread,
         whisper_thread: Some(whisper_thread),
     })

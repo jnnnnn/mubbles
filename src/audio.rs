@@ -91,6 +91,7 @@ pub fn filter_audio_loop(
     output_active: Arc<AtomicBool>,
     echo_cancel: Arc<AtomicBool>,
     threshold_bits: Arc<AtomicU32>,
+    silence_timeout_bits: Arc<AtomicU32>,
 ) -> Result<(), anyhow::Error> {
     use crate::vad::{self, VadDecision, VadSession};
 
@@ -109,7 +110,13 @@ pub fn filter_audio_loop(
 
     // ── Input devices: Earshot VAD gated buffer ────────────
 
-    let mut vad = VadSession::new();
+    let timeout_ms = f32::from_bits(silence_timeout_bits.load(Ordering::Relaxed));
+    let silence_frames = if timeout_ms > 0.0 {
+        ((timeout_ms / 16.0) as usize).max(1)
+    } else {
+        vad::DEFAULT_SILENCE_FRAMES
+    };
+    let mut vad = VadSession::new(silence_frames);
     let mut recording_buffer: Vec<f32> = Vec::new();
     let mut vad_buffer: Vec<f32> = Vec::new(); // 16kHz samples waiting to be framed
     let mut was_speaking = false;
@@ -397,6 +404,7 @@ mod platform {
         output_active: Arc<AtomicBool>,
         echo_cancel: Arc<AtomicBool>,
         threshold_bits: Arc<AtomicU32>,
+        silence_timeout_bits: Arc<AtomicU32>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!("Starting PipeWire audio capture on: {}", app_device.name);
 
@@ -420,6 +428,7 @@ mod platform {
                 output_active,
                 echo_cancel,
                 threshold_bits,
+                silence_timeout_bits,
             ) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
@@ -531,6 +540,7 @@ mod platform {
         output_active: Arc<AtomicBool>,
         echo_cancel: Arc<AtomicBool>,
         threshold_bits: Arc<AtomicU32>,
+        silence_timeout_bits: Arc<AtomicU32>,
     ) -> anyhow::Result<StreamState> {
         tracing::info!(
             "Listening on device: {}",
@@ -592,6 +602,7 @@ mod platform {
                 output_active,
                 echo_cancel,
                 threshold_bits,
+                silence_timeout_bits,
             ) {
                 Ok(_) => tracing::info!("Audio filter thread finished successfully"),
                 Err(e) => tracing::error!("Audio filter thread failed: {:?}", e),
