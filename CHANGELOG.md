@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.3.1 (2026-08-10)
+ - Extract AudioWorker and WhisperWorker into src/workers.rs for cleaner architecture
+
 ## 3.3 (2026-07-22)
  - Per-device VAD probability overlay on level charts (bars = audio, line = VAD)
  - Devices tab layout: device name moved to end of row, controls aligned
