@@ -278,19 +278,23 @@ pub fn load_whisper_model(
     })
 }
 
-// thread closes when the receiver is closed
+/// Start the whisper thread. Returns a handle that, when joined, gives back the
+/// utterance receiver so it can be reused by a subsequent whisper instance
+/// (e.g. after a model change without restarting audio).
+///
+/// The thread exits when either:
+/// - `stop` is set to true (caller requested shutdown)
+/// - `filtered_rx` is closed (audio subsystem was dropped)
 pub fn start_whisper_thread(
     app: Sender<WhisperUpdate>,
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
     paused: Arc<AtomicBool>,
-) -> Result<JoinHandle<()>, anyhow::Error> {
+    stop: Arc<AtomicBool>,
+) -> Result<JoinHandle<Receiver<PcmAudio>>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("whisper".to_string())
-        .spawn(move || match whisper_loop(app, filtered_rx, params, paused) {
-            Ok(_) => tracing::info!("Whisper thread finished successfully"),
-            Err(e) => tracing::error!("Whisper thread failed: {:?}", e),
-        });
+        .spawn(move || whisper_loop(app, filtered_rx, params, paused, stop));
     Ok(result?)
 }
 
@@ -299,6 +303,21 @@ fn whisper_loop(
     filtered_rx: Receiver<PcmAudio>,
     params: WhisperParams,
     paused: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+) -> Receiver<PcmAudio> {
+    if let Err(e) = whisper_loop_inner(&app, &filtered_rx, &params, &paused, &stop) {
+        tracing::error!("Whisper thread failed: {:?}", e);
+    }
+    tracing::info!("Whisper thread finished");
+    filtered_rx
+}
+
+fn whisper_loop_inner(
+    app: &Sender<WhisperUpdate>,
+    filtered_rx: &Receiver<PcmAudio>,
+    params: &WhisperParams,
+    paused: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(), anyhow::Error> {
     app.send(WhisperUpdate::Status(
         "Loading whisper model...".to_string(),
@@ -309,17 +328,27 @@ fn whisper_loop(
     })?);
     app.send(WhisperUpdate::Status("Model loaded".to_string()))?;
     loop {
+        // Check for explicit stop signal
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         // When paused, drop the model and stop reading audio (channel buffers it)
         while paused.load(Ordering::Relaxed) {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             if ctx.is_some() {
                 tracing::info!("Whisper paused — dropping model to free GPU memory");
                 ctx = None;
-                app.send(WhisperUpdate::Status("Model unloaded (GPU freed)".to_string()))?;
+                app.send(WhisperUpdate::Status(
+                    "Model unloaded (GPU freed)".to_string(),
+                ))?;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        ensure_model_loaded(&mut ctx, &params, &app)?;
+        ensure_model_loaded(&mut ctx, params, app)?;
 
         // first recv needs to be blocking to prevent the thread from spinning
         let PcmAudio {
@@ -339,9 +368,9 @@ fn whisper_loop(
                 Err(_) => break,
             }
         }
-        let result = whisperize(ctx.as_mut().unwrap(), &aggregated, &app);
-        if !result.is_ok() {
-            tracing::error!("Failed to perform partial transcription: {:?}", result);
+        let result = whisperize(ctx.as_mut().unwrap(), &aggregated, app);
+        if result.is_err() {
+            tracing::error!("Failed to perform transcription: {:?}", result);
         }
     }
 }
@@ -352,7 +381,9 @@ fn ensure_model_loaded(
     app: &Sender<WhisperUpdate>,
 ) -> Result<(), anyhow::Error> {
     if ctx.is_none() {
-        app.send(WhisperUpdate::Status("Reloading whisper model...".to_string()))?;
+        app.send(WhisperUpdate::Status(
+            "Reloading whisper model...".to_string(),
+        ))?;
         let app_status = app.clone();
         *ctx = Some(load_whisper_model(params.model, move |s| {
             app_status.send(WhisperUpdate::Status(s)).ok();
@@ -411,11 +442,14 @@ pub fn whisperize(
     let decode_start = std::time::Instant::now();
 
     let per_token_callback = Some(|text: String| {
-        app.send(WhisperUpdate::Status(text.clone())).unwrap_or_default();
+        app.send(WhisperUpdate::Status(text.clone()))
+            .unwrap_or_default();
     });
 
     let (segments_results, last_segment_content_tokens) =
-        state.decoder.run(&mel_tensor, None, None, &per_token_callback)?;
+        state
+            .decoder
+            .run(&mel_tensor, None, None, &per_token_callback)?;
     state.previous_content_tokens = last_segment_content_tokens;
 
     for segment in segments_results.iter() {
@@ -537,8 +571,10 @@ mod tests {
 
         let mut state = load_whisper_model(WhichModel::Tiny, |_| {})?;
 
-        let token_callback = Some(|_: String| { });
-        let (segments, _) = state.decoder.run(&mel_tensor, None, None, &token_callback)?;
+        let token_callback = Some(|_: String| {});
+        let (segments, _) = state
+            .decoder
+            .run(&mel_tensor, None, None, &token_callback)?;
         assert_eq!(
             segments.first().unwrap().dr.text,
             vec!["This is a test transcription for .com"]

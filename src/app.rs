@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc::{self, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender, TryRecvError},
         Arc,
     },
     thread::JoinHandle,
@@ -15,7 +15,8 @@ use egui_plot::{HLine, Line, Plot, PlotPoints};
 
 use crate::{
     audio::{
-        check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, StreamState,
+        check_device_enumeration, get_devices, AppDevice, DeviceEnumerationReceiver, PcmAudio,
+        StreamState,
     },
     file_transcription::{self, FileUpdate},
     partial::PARTIAL_MEL_BINS,
@@ -184,9 +185,15 @@ pub struct MubblesApp {
     #[serde(skip)]
     always_on_top: bool,
 
-    // Worker threads
+    // Audio subsystem (capture + VAD) — can run independently of whisper
     #[serde(skip)]
-    worker: Option<Worker>,
+    audio_worker: Option<AudioWorker>,
+    // Whisper subsystem (transcription) — can start/stop without restarting audio
+    #[serde(skip)]
+    whisper_worker: Option<WhisperWorker>,
+    // Held when audio is running but whisper isn't (e.g. between model changes)
+    #[serde(skip)]
+    pending_filtered_rx: Option<Receiver<PcmAudio>>,
     #[serde(skip)]
     whisper_paused: Arc<AtomicBool>,
     #[serde(skip)]
@@ -289,7 +296,9 @@ impl Default for MubblesApp {
             always_on_top: false,
 
             // Worker threads
-            worker: None,
+            audio_worker: None,
+            whisper_worker: None,
+            pending_filtered_rx: None,
             whisper_paused: Arc::new(AtomicBool::new(false)),
             from_whisper: rx,
             whisper_tx: tx,
@@ -560,7 +569,7 @@ impl MubblesApp {
                 plot_levels(&self.device_levels, ui);
 
                 // Start/Stop button
-                let started = self.worker.is_some();
+                let started = self.audio_worker.is_some();
                 let button_text = if started { "Stop" } else { "Start" };
                 if ui.button(button_text).clicked() {
                     self.toggle_recording();
@@ -573,7 +582,7 @@ impl MubblesApp {
                         WhichModel::from(i).to_string()
                     });
                 if model.changed() {
-                    self.worker = None;
+                    self.restart_whisper();
                 }
 
                 if ui.button("Devices…").clicked() {
@@ -583,10 +592,16 @@ impl MubblesApp {
         );
     }
 
-    /// Toggle recording on/off
+    /// Toggle recording on/off. Starts or stops both audio capture and
+    /// whisper transcription together. Audio and whisper can also be
+    /// controlled independently: dropping and recreating the whisper worker
+    /// (e.g. after a model change) does not interrupt audio capture.
     fn toggle_recording(&mut self) {
-        if self.worker.is_some() {
-            self.worker = None;
+        if self.audio_worker.is_some() {
+            // Stop whisper first so it cleanly exits before audio stops
+            self.whisper_worker = None;
+            self.audio_worker = None;
+            self.pending_filtered_rx = None;
             self.ai_summary.whisper_paused = None;
         } else {
             let device_refs: Vec<&AppDevice> = self
@@ -599,27 +614,81 @@ impl MubblesApp {
                     "No devices selected. Go to the Devices tab to select devices.".to_string();
                 return;
             }
-            match start_listening(
+
+            // Start audio
+            match start_audio(
                 &self.whisper_tx,
                 &device_refs,
+                self.echo_cancel,
+                &self.device_thresholds,
+                self.silence_timeout_ms,
+                self.partials,
+            ) {
+                Ok((audio_worker, filtered_rx)) => {
+                    self.audio_worker = Some(audio_worker);
+                    self.pending_filtered_rx = Some(filtered_rx);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start audio: {}", e);
+                    self.audio_worker = None;
+                    self.pending_filtered_rx = None;
+                    return;
+                }
+            }
+
+            // Start whisper
+            let filtered_rx = self.pending_filtered_rx.take().unwrap();
+            match start_whisper(
+                &self.whisper_tx,
+                filtered_rx,
                 WhisperParams {
                     accuracy: self.accuracy,
                     model: WhichModel::from(self.selected_model),
                     partials: self.partials,
                 },
                 self.whisper_paused.clone(),
-                self.echo_cancel,
-                &self.device_thresholds,
-                self.silence_timeout_ms,
             ) {
-                Ok(new_worker) => {
-                    self.worker = Some(new_worker);
+                Ok(whisper_worker) => {
+                    self.whisper_worker = Some(whisper_worker);
                     self.ai_summary.whisper_paused = Some(self.whisper_paused.clone());
                 }
                 Err(e) => {
-                    tracing::error!("Failed to start listening: {}", e);
-                    self.worker = None;
+                    tracing::error!("Failed to start whisper: {}", e);
+                    self.audio_worker = None;
                 }
+            }
+        }
+    }
+
+    /// Restart whisper transcription without restarting audio.
+    /// Used when model, accuracy, or other whisper-only settings change.
+    fn restart_whisper(&mut self) {
+        if let Some(whisper) = self.whisper_worker.take() {
+            self.pending_filtered_rx = Some(whisper.stop());
+        }
+        // If audio isn't running, nothing to do
+        let filtered_rx = match self.pending_filtered_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
+        match start_whisper(
+            &self.whisper_tx,
+            filtered_rx,
+            WhisperParams {
+                accuracy: self.accuracy,
+                model: WhichModel::from(self.selected_model),
+                partials: self.partials,
+            },
+            self.whisper_paused.clone(),
+        ) {
+            Ok(whisper_worker) => {
+                self.whisper_worker = Some(whisper_worker);
+            }
+            Err(e) => {
+                tracing::error!("Failed to restart whisper: {}", e);
+                // Audio is still running; whisper just failed to restart.
+                // Drop audio too since transcription is unavailable.
+                self.audio_worker = None;
             }
         }
     }
@@ -675,7 +744,7 @@ impl MubblesApp {
                     .add(egui::Slider::new(&mut self.accuracy, 1..=8).text("Accuracy"))
                     .changed()
                 {
-                    self.worker = None;
+                    self.restart_whisper();
                 }
             },
         );
@@ -696,7 +765,7 @@ impl MubblesApp {
                     .changed();
 
                 if partials_changed {
-                    self.worker = None;
+                    self.restart_whisper();
                 }
 
                 if ui.button("Clear").clicked() {
@@ -1036,7 +1105,9 @@ impl MubblesApp {
                     .on_hover_text("Changes take effect next time you start recording")
                     .clicked()
                 {
-                    self.worker = None;
+                    self.whisper_worker = None;
+                    self.audio_worker = None;
+                    self.pending_filtered_rx = None;
                 }
 
                 ui.add_space(20.0);
@@ -1229,10 +1300,6 @@ impl MubblesApp {
         ui.horizontal(|ui| {
             if ui.button("Refresh Devices").clicked() {
                 self.refresh_devices();
-                if self.worker.is_some() {
-                    self.worker = None;
-                    self.status = "Stopped: devices refreshed".to_string();
-                }
             }
             ui.label(format!("{} devices found", self.devices.len()));
         });
@@ -1242,10 +1309,8 @@ impl MubblesApp {
             .on_hover_text("Mute mic input while speaker output is active")
             .changed()
         {
-            if let Some(worker) = &self.worker {
-                worker
-                    .echo_cancel
-                    .store(self.echo_cancel, Ordering::Relaxed);
+            if let Some(audio) = &self.audio_worker {
+                audio.echo_cancel.store(self.echo_cancel, Ordering::Relaxed);
             }
         }
 
@@ -1265,20 +1330,20 @@ impl MubblesApp {
                 if ui.checkbox(&mut selected, "").changed() {
                     if selected {
                         self.selected_device_names.insert(name.clone());
-                        if let Some(worker) = &mut self.worker {
+                        if let Some(audio) = &mut self.audio_worker {
                             if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
                                 let threshold = self
                                     .device_thresholds
                                     .get(name)
                                     .copied()
                                     .unwrap_or(DEFAULT_THRESHOLD);
-                                worker.add_device(device, threshold);
+                                audio.add_device(device, threshold);
                             }
                         }
                     } else {
                         self.selected_device_names.remove(name);
-                        if let Some(worker) = &mut self.worker {
-                            worker.remove_device(name);
+                        if let Some(audio) = &mut self.audio_worker {
+                            audio.remove_device(name);
                         }
                     }
                 }
@@ -1304,8 +1369,8 @@ impl MubblesApp {
                     .changed()
                 {
                     // Push updated threshold to the running audio thread
-                    if let Some(worker) = &self.worker {
-                        if let Some(atom) = worker.device_threshold_atoms.get(name.as_str()) {
+                    if let Some(audio) = &self.audio_worker {
+                        if let Some(atom) = audio.device_threshold_atoms.get(name.as_str()) {
                             atom.store(threshold.to_bits(), Ordering::Relaxed);
                         }
                     }
@@ -1426,8 +1491,8 @@ impl eframe::App for MubblesApp {
         ctx.request_repaint_after(Duration::from_millis(interval));
 
         // Check for thread panics
-        if let Some(worker) = &mut self.worker {
-            check_thread_error(&mut worker.whisper_thread);
+        if let Some(whisper) = &mut self.whisper_worker {
+            whisper.check_panic();
         }
         check_thread_error(&mut self.file_transcription_thread);
 
@@ -1444,7 +1509,7 @@ impl eframe::App for MubblesApp {
             self.refresh_devices();
             // If focus gained, also re-sync selected devices with worker
             if focus_gained {
-                if let Some(worker) = &mut self.worker {
+                if let Some(audio) = &mut self.audio_worker {
                     for name in &self.selected_device_names {
                         if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
                             let threshold = self
@@ -1452,7 +1517,7 @@ impl eframe::App for MubblesApp {
                                 .get(name)
                                 .copied()
                                 .unwrap_or(DEFAULT_THRESHOLD);
-                            worker.add_device(device, threshold);
+                            audio.add_device(device, threshold);
                         }
                     }
                 }
@@ -1664,38 +1729,31 @@ fn draw_mel(mel: &DisplayMel, ui: &mut egui::Ui) {
 // Worker Thread Management
 // =============================================================================
 
-/// Holds handles to keep audio streams and worker threads alive
-struct Worker {
+/// Holds handles to keep audio capture streams and filter threads alive.
+/// Drop = stop all audio capture. The filtered_tx is dropped, which closes the
+/// channel and causes the whisper thread to exit naturally.
+struct AudioWorker {
     audio_streams: HashMap<String, StreamState>,
-    filtered_tx: Sender<crate::audio::PcmAudio>,
-    partial_tx: Option<Sender<crate::audio::PcmAudio>>,
     app_tx: Sender<WhisperUpdate>,
+    filtered_tx: Sender<PcmAudio>,
     output_active: Arc<AtomicBool>,
     echo_cancel: Arc<AtomicBool>,
     device_threshold_atoms: HashMap<String, Arc<AtomicU32>>,
     silence_timeout_atom: Arc<AtomicU32>,
-    partial_thread: Option<JoinHandle<()>>,
-    whisper_thread: Option<JoinHandle<()>>,
 }
 
-impl Worker {
+impl AudioWorker {
     /// Add an audio stream for a device
     fn add_device(&mut self, device: &AppDevice, threshold: f32) {
         if self.audio_streams.contains_key(&device.name) {
             return;
         }
-        // Only give partial_tx to first device (if none are streaming yet)
-        let ptx = if self.audio_streams.is_empty() {
-            self.partial_tx.clone()
-        } else {
-            None
-        };
         let threshold_atom = Arc::new(AtomicU32::new(threshold.to_bits()));
         match crate::audio::start_audio_thread(
             self.app_tx.clone(),
             device,
             self.filtered_tx.clone(),
-            ptx,
+            None, // partial_tx — only first device gets it, handled at setup
             self.output_active.clone(),
             self.echo_cancel.clone(),
             threshold_atom.clone(),
@@ -1721,39 +1779,105 @@ impl Worker {
     }
 }
 
-/// Start audio capture and transcription
-fn start_listening(
+/// Holds handles to keep whisper and partial transcription threads alive.
+/// When stopped via [`WhisperWorker::stop`], returns the utterance receiver
+/// so it can be reused by a new whisper instance without restarting audio.
+struct WhisperWorker {
+    whisper_thread: Option<JoinHandle<Receiver<PcmAudio>>>,
+    whisper_stop: Arc<AtomicBool>,
+    partial_thread: Option<JoinHandle<()>>,
+    partial_tx: Option<Sender<PcmAudio>>,
+}
+
+impl WhisperWorker {
+    /// Check if the whisper thread has panicked and log the error.
+    fn check_panic(&mut self) {
+        if let Some(thread) = self.whisper_thread.as_mut() {
+            if thread.is_finished() {
+                let handle = self.whisper_thread.take().unwrap();
+                if let Err(e) = handle.join() {
+                    let msg = if let Some(s) = e.downcast_ref::<&'static str>() {
+                        s.to_string()
+                    } else if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        format!("{:?}", e)
+                    };
+                    tracing::error!("Whisper thread panicked: {}", msg);
+                }
+            }
+        }
+    }
+
+    /// Stop whisper transcription, wait for threads to exit, and recover the
+    /// utterance receiver so it can be reused by a new whisper instance.
+    fn stop(mut self) -> Receiver<PcmAudio> {
+        self.whisper_stop.store(true, Ordering::Relaxed);
+        // Drop partial_tx to signal the partial thread
+        drop(self.partial_tx.take());
+        // Wait for partial thread
+        if let Some(pt) = self.partial_thread.take() {
+            let _ = pt.join();
+        }
+        // Wait for whisper thread and recover the rx
+        if let Some(thread) = self.whisper_thread.take() {
+            match thread.join() {
+                Ok(rx) => rx,
+                Err(_) => {
+                    let (_, rx) = mpsc::channel();
+                    rx
+                }
+            }
+        } else {
+            let (_, rx) = mpsc::channel();
+            rx
+        }
+    }
+}
+
+impl Drop for WhisperWorker {
+    fn drop(&mut self) {
+        self.whisper_stop.store(true, Ordering::Relaxed);
+        drop(self.partial_tx.take());
+        if let Some(pt) = self.partial_thread.take() {
+            let _ = pt.join();
+        }
+        if let Some(thread) = self.whisper_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Start audio capture for the selected devices.
+/// Returns the audio worker and the utterance receiver for whisper to consume.
+fn start_audio(
     app: &Sender<WhisperUpdate>,
     devices: &[&AppDevice],
-    params: WhisperParams,
-    paused: Arc<AtomicBool>,
     echo_cancel_enabled: bool,
     device_thresholds: &HashMap<String, f32>,
     silence_timeout_ms: f32,
-) -> Result<Worker, anyhow::Error> {
-    // Start partial transcription thread if enabled
-    let (partial_thread, partial_tx) = if params.partials {
-        let (partial_tx, partial_rx) = mpsc::channel();
-        let thread = crate::partial::start_partial_thread(app.clone(), partial_rx)?;
-        (Some(thread), Some(partial_tx))
-    } else {
-        (None, None)
-    };
-
-    // Start filtered audio channel (shared by all devices)
+    partials_enabled: bool,
+) -> Result<(AudioWorker, Receiver<PcmAudio>), anyhow::Error> {
+    // Shared filtered audio channel: filter threads send complete utterances here
     let (filtered_tx, filtered_rx) = mpsc::channel();
 
-    // Shared flag: set by output device threads when audio is playing
+    // Partial channel: first device sends raw audio here for real-time preview
+    let (partial_tx, _partial_rx) = mpsc::channel();
+
+    // Shared flags
     let output_active = Arc::new(AtomicBool::new(false));
     let echo_cancel = Arc::new(AtomicBool::new(echo_cancel_enabled));
+    let silence_timeout_atom = Arc::new(AtomicU32::new(silence_timeout_ms.to_bits()));
 
-    // Start an audio stream for each selected device
     let mut audio_streams = HashMap::new();
     let mut device_threshold_atoms = HashMap::new();
-    let silence_timeout_atom = Arc::new(AtomicU32::new(silence_timeout_ms.to_bits()));
+
     for (i, device) in devices.iter().enumerate() {
-        // Only send partial audio from the first device
-        let ptx = if i == 0 { partial_tx.clone() } else { None };
+        let ptx = if partials_enabled && i == 0 {
+            Some(partial_tx.clone())
+        } else {
+            None
+        };
         let threshold = device_thresholds
             .get(&device.name)
             .copied()
@@ -1773,20 +1897,48 @@ fn start_listening(
         device_threshold_atoms.insert(device.name.clone(), threshold_atom);
     }
 
-    // Start whisper transcription thread
-    let whisper_thread =
-        crate::whisper::start_whisper_thread(app.clone(), filtered_rx, params, paused)?;
+    Ok((
+        AudioWorker {
+            audio_streams,
+            app_tx: app.clone(),
+            filtered_tx,
+            output_active,
+            echo_cancel,
+            device_threshold_atoms,
+            silence_timeout_atom,
+        },
+        filtered_rx,
+    ))
+}
 
-    Ok(Worker {
-        audio_streams,
-        filtered_tx,
-        partial_tx,
-        app_tx: app.clone(),
-        output_active,
-        echo_cancel,
-        device_threshold_atoms,
-        silence_timeout_atom,
+/// Start whisper transcription, consuming the utterance receiver.
+fn start_whisper(
+    app: &Sender<WhisperUpdate>,
+    filtered_rx: Receiver<PcmAudio>,
+    params: WhisperParams,
+    paused: Arc<AtomicBool>,
+) -> Result<WhisperWorker, anyhow::Error> {
+    let (partial_thread, partial_tx) = if params.partials {
+        let (tx, rx) = mpsc::channel();
+        let thread = crate::partial::start_partial_thread(app.clone(), rx)?;
+        (Some(thread), Some(tx))
+    } else {
+        (None, None)
+    };
+
+    let whisper_stop = Arc::new(AtomicBool::new(false));
+    let whisper_thread = Some(crate::whisper::start_whisper_thread(
+        app.clone(),
+        filtered_rx,
+        params,
+        paused,
+        whisper_stop.clone(),
+    )?);
+
+    Ok(WhisperWorker {
+        whisper_thread,
+        whisper_stop,
         partial_thread,
-        whisper_thread: Some(whisper_thread),
+        partial_tx,
     })
 }
