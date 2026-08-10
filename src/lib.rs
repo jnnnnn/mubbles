@@ -4,6 +4,7 @@
 
 mod app;
 pub use app::MubblesApp;
+mod workers;
 
 mod mel;
 mod multilingual;
