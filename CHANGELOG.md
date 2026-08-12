@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.3.2 (2026-08-12)
+ - Crash-resilience: replace panic on whisper channel disconnect with graceful shutdown
+ - Track filter thread health — detect and log dead audio threads (suspend/wake, device removal)
+ - Replace unwrap/expect in PipeWire callbacks with proper error handling
+
 ## 3.3.1 (2026-08-10)
  - Extract AudioWorker and WhisperWorker into src/workers.rs for cleaner architecture
 
