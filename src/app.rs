@@ -400,7 +400,8 @@ impl MubblesApp {
                 Ok(update) => update,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    panic!("Whisper channel disconnected")
+                    tracing::warn!("Whisper channel disconnected — all senders have gone away");
+                    break;
                 }
             };
 
@@ -1492,6 +1493,9 @@ impl eframe::App for MubblesApp {
         // Check for thread panics
         if let Some(whisper) = &mut self.whisper_worker {
             whisper.check_panic();
+        }
+        if let Some(audio) = &mut self.audio_worker {
+            audio.check_panic(&self.whisper_tx);
         }
         check_thread_error(&mut self.file_transcription_thread);
 

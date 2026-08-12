@@ -339,10 +339,10 @@ fn run_pipewire_stream(
             }
 
             // call a helper function to parse the format for us.
-            user_data
-                .format
-                .parse(param)
-                .expect("Failed to parse param changed to AudioInfoRaw");
+            if let Err(e) = user_data.format.parse(param) {
+                tracing::warn!("Failed to parse PipeWire format: {}", e);
+                return;
+            }
 
             tracing::info!(
                 "PipeWire capturing rate:{} channels:{}",
@@ -367,12 +367,11 @@ fn run_pipewire_stream(
     let values: Vec<u8> = pw::spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
         &pw::spa::pod::Value::Object(obj),
-    )
-    .unwrap()
+    )?
     .0
     .into_inner();
 
-    let mut params = [Pod::from_bytes(&values).unwrap()];
+    let mut params = [Pod::from_bytes(&values)?];
 
     // Connect the stream
     let flags = pw::stream::StreamFlags::AUTOCONNECT

@@ -70,6 +70,36 @@ impl AudioWorker {
             tracing::info!("Stopped audio stream for: {}", name);
         }
     }
+
+    /// Check all filter threads for panics. Removes dead devices from the stream map.
+    pub(crate) fn check_panic(&mut self, app_tx: &Sender<WhisperUpdate>) {
+        let dead: Vec<String> = self
+            .audio_streams
+            .iter()
+            .filter(|(_, s)| s.filter_thread.is_finished())
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            if let Some(stream) = self.audio_streams.remove(&name) {
+                match stream.filter_thread.join() {
+                    Ok(()) => {
+                        tracing::warn!("Filter thread for '{}' exited", name);
+                    }
+                    Err(e) => {
+                        let msg = if let Some(s) = e.downcast_ref::<&'static str>() {
+                            s.to_string()
+                        } else if let Some(s) = e.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            format!("{:?}", e)
+                        };
+                        tracing::error!("Filter thread for '{}' panicked: {}", name, msg);
+                    }
+                }
+                let _ = app_tx.send(WhisperUpdate::Recording(false));
+            }
+        }
+    }
 }
 
 // =============================================================================

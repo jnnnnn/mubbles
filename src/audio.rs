@@ -281,6 +281,8 @@ mod platform {
     pub struct StreamState {
         #[allow(dead_code)]
         pub(crate) inner: PwStreamState,
+        #[allow(dead_code)]
+        pub(crate) filter_thread: std::thread::JoinHandle<()>,
     }
 
     /// Receiver for async device enumeration results
@@ -356,7 +358,7 @@ mod platform {
         let app2 = app.clone();
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
-        thread::spawn(move || {
+        let filter_thread = thread::spawn(move || {
             match filter_audio_loop(
                 app2,
                 audio_rx,
@@ -373,7 +375,10 @@ mod platform {
             }
         });
 
-        Ok(StreamState { inner: pw_state })
+        Ok(StreamState {
+            inner: pw_state,
+            filter_thread,
+        })
     }
 }
 
@@ -400,6 +405,8 @@ mod platform {
     pub struct StreamState {
         #[allow(dead_code)]
         pub(crate) stream: cpal::Stream,
+        #[allow(dead_code)]
+        pub(crate) filter_thread: std::thread::JoinHandle<()>,
     }
 
     /// Receiver for async device enumeration results (not used on non-Linux)
@@ -530,7 +537,7 @@ mod platform {
         let app2 = app.clone();
         let device_name = app_device.name.clone();
         let is_output = app_device.is_output;
-        thread::spawn(move || {
+        let filter_thread = thread::spawn(move || {
             match filter_audio_loop(
                 app2,
                 audio_rx,
@@ -547,7 +554,10 @@ mod platform {
             }
         });
 
-        Ok(StreamState { stream })
+        Ok(StreamState {
+            stream,
+            filter_thread,
+        })
     }
 }
 
