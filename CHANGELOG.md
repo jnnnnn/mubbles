@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.3.3 (2026-08-13)
+ - Fix deadlock when stopping recording (whisper thread now honors stop flag during receive)
+
 ## 3.3.2 (2026-08-12)
  - Crash-resilience: replace panic on whisper channel disconnect with graceful shutdown
  - Track filter thread health — detect and log dead audio threads (suspend/wake, device removal)
