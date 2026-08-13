@@ -4,3 +4,7 @@
 *.log
 test*.wav
 test*.mel
+
+# Windows reserved device name — gets created if a shell command redirects
+# output to `nul` under a POSIX shell. Never a real source file.
+/nul
