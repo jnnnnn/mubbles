@@ -1,7 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
         Arc,
     },
     thread::JoinHandle,
@@ -350,15 +350,24 @@ fn whisper_loop_inner(
 
         ensure_model_loaded(&mut ctx, params, app)?;
 
-        // first recv needs to be blocking to prevent the thread from spinning
+        // Block on the next utterance, but wake periodically to honor the
+        // stop flag. Otherwise the UI thread deadlocks in Drop when it joins
+        // this thread while it's still waiting on filtered_rx.
         let PcmAudio {
             data: mut aggregated,
             sample_rate,
-        } = match filtered_rx.recv() {
-            Ok(pcm) => pcm,
-            Err(_) => {
-                tracing::info!("Filtered stream closed");
-                return Ok(());
+        } = loop {
+            match filtered_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(pcm) => break pcm,
+                Err(RecvTimeoutError::Timeout) => {
+                    if stop.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    tracing::info!("Filtered stream closed");
+                    return Ok(());
+                }
             }
         };
         // Aggregate up to 30s of audio before processing
