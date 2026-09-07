@@ -252,6 +252,20 @@ fn split_long_buffer(
     Ok(())
 }
 
+/// Join an audio filter thread, logging a clear error if it panicked.
+fn join_filter_thread(thread: std::thread::JoinHandle<()>) {
+    if let Err(e) = thread.join() {
+        let msg = if let Some(s) = e.downcast_ref::<&'static str>() {
+            s.to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", e)
+        };
+        tracing::error!("Audio filter thread panicked: {}", msg);
+    }
+}
+
 // ============================================================================
 // Platform-specific implementations
 // ============================================================================
@@ -279,10 +293,22 @@ mod platform {
 
     /// Stream handle that keeps audio capture alive
     pub struct StreamState {
-        #[allow(dead_code)]
         pub(crate) inner: PwStreamState,
-        #[allow(dead_code)]
         pub(crate) filter_thread: std::thread::JoinHandle<()>,
+    }
+
+    impl StreamState {
+        /// Stop capture and wait for the filter thread to exit.
+        pub(crate) fn stop(self) {
+            let Self {
+                inner,
+                filter_thread,
+            } = self;
+            // Dropping `inner` signals the PipeWire thread and joins it, which
+            // closes the audio channel and unblocks the filter thread.
+            drop(inner);
+            join_filter_thread(filter_thread);
+        }
     }
 
     /// Receiver for async device enumeration results
@@ -403,10 +429,22 @@ mod platform {
 
     /// Stream handle that keeps audio capture alive
     pub struct StreamState {
-        #[allow(dead_code)]
         pub(crate) stream: cpal::Stream,
-        #[allow(dead_code)]
         pub(crate) filter_thread: std::thread::JoinHandle<()>,
+    }
+
+    impl StreamState {
+        /// Stop capture and wait for the filter thread to exit.
+        pub(crate) fn stop(self) {
+            let Self {
+                stream,
+                filter_thread,
+            } = self;
+            // Drop the stream first so the data callback stops and the audio
+            // channel disconnects, unblocking the filter thread.
+            drop(stream);
+            join_filter_thread(filter_thread);
+        }
     }
 
     /// Receiver for async device enumeration results (not used on non-Linux)

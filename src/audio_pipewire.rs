@@ -44,16 +44,22 @@ impl std::fmt::Debug for PwDevice {
 
 /// Holds the state for an active PipeWire audio stream
 pub struct PwStreamState {
-    /// Handle to the thread running the main loop - dropping this stops capture
-    pub thread: JoinHandle<()>,
+    /// Handle to the thread running the main loop
+    thread: Option<JoinHandle<()>>,
     /// Sender to signal the thread to stop
     pub stop_tx: Sender<()>,
 }
 
 impl Drop for PwStreamState {
     fn drop(&mut self) {
-        // Signal the thread to stop
+        // Signal the thread to stop, then wait for it to exit so it can't
+        // outlive the worker (and so its audio sender is dropped cleanly).
         let _ = self.stop_tx.send(());
+        if let Some(thread) = self.thread.take() {
+            if let Err(e) = thread.join() {
+                tracing::error!("PipeWire stream thread panicked: {:?}", e);
+            }
+        }
     }
 }
 
@@ -263,7 +269,10 @@ pub fn start_pipewire_stream(
         }
     });
 
-    Ok(PwStreamState { thread, stop_tx })
+    Ok(PwStreamState {
+        thread: Some(thread),
+        stop_tx,
+    })
 }
 
 /// Internal function that runs the PipeWire main loop

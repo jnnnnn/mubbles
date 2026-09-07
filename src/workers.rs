@@ -64,10 +64,12 @@ impl AudioWorker {
         }
     }
 
-    /// Remove an audio stream for a device (dropping it stops capture)
+    /// Remove an audio stream for a device (drops the capture source and joins
+    /// its filter thread).
     pub(crate) fn remove_device(&mut self, name: &str) {
-        if self.audio_streams.remove(name).is_some() {
+        if let Some(stream) = self.audio_streams.remove(name) {
             tracing::info!("Stopped audio stream for: {}", name);
+            stream.stop();
         }
     }
 
@@ -81,23 +83,20 @@ impl AudioWorker {
             .collect();
         for name in dead {
             if let Some(stream) = self.audio_streams.remove(&name) {
-                match stream.filter_thread.join() {
-                    Ok(()) => {
-                        tracing::warn!("Filter thread for '{}' exited", name);
-                    }
-                    Err(e) => {
-                        let msg = if let Some(s) = e.downcast_ref::<&'static str>() {
-                            s.to_string()
-                        } else if let Some(s) = e.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            format!("{:?}", e)
-                        };
-                        tracing::error!("Filter thread for '{}' panicked: {}", name, msg);
-                    }
-                }
+                tracing::warn!("Filter thread for '{}' exited", name);
+                stream.stop();
                 let _ = app_tx.send(WhisperUpdate::Recording(false));
             }
+        }
+    }
+}
+
+impl Drop for AudioWorker {
+    fn drop(&mut self) {
+        // Stop every active stream: drop the capture source and join the filter
+        // thread so no audio threads outlive the worker.
+        for (_, stream) in self.audio_streams.drain() {
+            stream.stop();
         }
     }
 }
