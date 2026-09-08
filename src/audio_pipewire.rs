@@ -324,6 +324,11 @@ fn run_pipewire_stream(
 
     let stream = pw::stream::Stream::new(&core, "mubbles-audio-capture", props)?;
 
+    // Handle to the main loop so the stream's error/disconnect callback can
+    // tear the loop down without holding a strong reference (which would leak
+    // an Rc cycle through the loop's own timers).
+    let state_ml_weak = mainloop.downgrade();
+
     // Set up the stream listener for callbacks
     let app_clone = app.clone();
     let _listener = stream
@@ -358,6 +363,28 @@ fn run_pipewire_stream(
                 user_data.format.rate(),
                 user_data.format.channels()
             );
+        })
+        .state_changed(move |_stream, _user_data, _old, new| {
+            // When the target device goes away (unplugged / failed), PipeWire
+            // transitions the stream into an error or disconnected state. Quit
+            // the main loop so `run()` returns, the audio sender is dropped, and
+            // the filter thread's `recv()` returns `Err` instead of blocking
+            // until the next device re-enumeration.
+            match new {
+                pw::stream::StreamState::Error(err) => {
+                    tracing::error!("PipeWire stream entered error state: {}", err);
+                    if let Some(ml) = state_ml_weak.upgrade() {
+                        ml.quit();
+                    }
+                }
+                pw::stream::StreamState::Unconnected => {
+                    tracing::warn!("PipeWire stream disconnected");
+                    if let Some(ml) = state_ml_weak.upgrade() {
+                        ml.quit();
+                    }
+                }
+                _ => {}
+            }
         })
         .process(move |stream, user_data| {
             process_audio_buffer(stream, user_data, &app_clone);

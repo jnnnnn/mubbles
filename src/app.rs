@@ -548,6 +548,70 @@ impl MubblesApp {
         tracing::info!("Device refresh triggered, {} devices", self.devices.len());
     }
 
+    /// Reconcile the running audio worker with the current device selection and
+    /// the freshly enumerated device list. Adds streams for newly selected or
+    /// re-plugged devices, removes streams for deselected or vanished devices,
+    /// and clears stale visualization state so removed devices disappear from
+    /// the charts.
+    fn resync_audio_devices(&mut self) {
+        // On Linux the device list is placeholder data while an async
+        // enumeration is in flight; defer until the real list lands.
+        if self.device_enumeration_rx.is_some() {
+            return;
+        }
+
+        // Devices that should be actively capturing: selected AND still present
+        // in the enumerated device list.
+        let active: HashSet<String> = self
+            .selected_device_names
+            .iter()
+            .filter(|name| {
+                self.devices
+                    .iter()
+                    .any(|d| d.name.as_str() == name.as_str())
+            })
+            .cloned()
+            .collect();
+
+        if let Some(audio) = self.audio_worker.as_mut() {
+            // Start streams that are missing.
+            for name in &active {
+                if !audio.audio_streams.contains_key(name) {
+                    if let Some(device) = self
+                        .devices
+                        .iter()
+                        .find(|d| d.name.as_str() == name.as_str())
+                    {
+                        let threshold = self
+                            .device_thresholds
+                            .get(name)
+                            .copied()
+                            .unwrap_or(workers::DEFAULT_THRESHOLD);
+                        audio.add_device(device, threshold);
+                    }
+                }
+            }
+
+            // Stop streams that are no longer selected or whose device vanished.
+            let stale: Vec<String> = audio
+                .audio_streams
+                .keys()
+                .filter(|name| !active.contains(*name))
+                .cloned()
+                .collect();
+            for name in stale {
+                audio.remove_device(&name);
+            }
+        }
+
+        // Drop chart state for devices that are no longer active, so their
+        // lines/bars don't linger in the main level plot or the Devices tab.
+        self.device_levels.retain(|name, _| active.contains(name));
+        self.device_vad_levels
+            .retain(|name, _| active.contains(name));
+        self.device_muted.retain(|name, _| active.contains(name));
+    }
+
     /// Render the top panel with controls
     fn render_top_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -1510,25 +1574,15 @@ impl eframe::App for MubblesApp {
         let interval_elapsed = self.last_device_refresh.elapsed() >= refresh_interval;
         if focus_gained || interval_elapsed {
             self.refresh_devices();
-            // If focus gained, also re-sync selected devices with worker
-            if focus_gained {
-                if let Some(audio) = &mut self.audio_worker {
-                    for name in &self.selected_device_names {
-                        if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                            let threshold = self
-                                .device_thresholds
-                                .get(name)
-                                .copied()
-                                .unwrap_or(workers::DEFAULT_THRESHOLD);
-                            audio.add_device(device, threshold);
-                        }
-                    }
-                }
-            }
         }
 
         // Process updates from Whisper thread
         self.process_whisper_updates(ctx);
+
+        // Re-sync the running audio worker with the current device list
+        // (adds missing selected devices, removes deselected/vanished ones,
+        // and clears their chart state).
+        self.resync_audio_devices();
 
         // Process updates from file transcription thread
         self.process_file_updates();

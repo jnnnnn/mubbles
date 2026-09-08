@@ -34,7 +34,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, Sender},
-        Arc,
+        Arc, Mutex,
     },
     thread,
 };
@@ -535,26 +535,39 @@ mod platform {
 
         let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
 
-        let err_fn = move |err| tracing::error!("an error occurred on stream: {}", err);
+        // The data callback and the error callback both need access to the
+        // sender. The sender is shared so that, when the device is unplugged
+        // and cpal fires the error callback, we can drop it. Dropping the last
+        // sender closes the channel and unblocks the filter thread's `recv()`,
+        // instead of leaving it waiting forever for audio that will never come.
+        let audio_tx = Arc::new(Mutex::new(Some(audio_tx)));
+
+        let err_tx = audio_tx.clone();
+        let err_fn = move |err| {
+            tracing::error!("an error occurred on stream: {}", err);
+            if let Ok(mut tx) = err_tx.lock() {
+                *tx = None;
+            }
+        };
 
         let audio_config = &app_device.config;
         let channel_count = audio_config.channels() as usize;
         let sample_rate = audio_config.sample_rate().0 as usize;
+        let data_tx = audio_tx.clone();
         let data_callback = move |raw: &[f32], _: &_| {
             let data = raw
                 .iter()
                 .step_by(channel_count)
                 .copied()
                 .collect::<Vec<f32>>();
-            audio_tx
-                .send(PcmAudio {
-                    data: data.clone(),
-                    sample_rate,
-                })
-                .unwrap_or_else(|_| {
-                    // this is too noisy.
-                    // tracing::debug!("Audio channel closed, can't send audio data");
-                });
+            if let Ok(guard) = data_tx.lock() {
+                if let Some(tx) = guard.as_ref() {
+                    let _ = tx.send(PcmAudio {
+                        data: data.clone(),
+                        sample_rate,
+                    });
+                }
+            }
             if let Some(partial_tx) = &partial_tx {
                 partial_tx
                     .send(PcmAudio { data, sample_rate })
@@ -604,3 +617,54 @@ pub use platform::{
     check_device_enumeration, get_devices, start_audio_thread, AppDevice,
     DeviceEnumerationReceiver, StreamState,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::WhisperUpdate;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU32},
+        mpsc, Arc,
+    };
+    use std::thread;
+
+    /// Dropping the capture-side sender must unblock `filter_audio_loop`'s
+    /// `recv()` and make it signal the UI and exit, rather than blocking
+    /// forever (which is what happens if a device is unplugged without any
+    /// error callback closing the channel).
+    #[test]
+    fn filter_audio_loop_exits_when_channel_closes() {
+        let (app_tx, app_rx) = mpsc::channel::<WhisperUpdate>();
+        let (audio_tx, audio_rx) = mpsc::channel::<PcmAudio>();
+        let (filtered_tx, _filtered_rx) = mpsc::channel::<PcmAudio>();
+
+        let handle = thread::spawn(move || {
+            filter_audio_loop(
+                app_tx,
+                audio_rx,
+                filtered_tx,
+                "test-device".to_string(),
+                false,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU32::new(0.75f32.to_bits())),
+                Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            )
+        });
+
+        // Simulate the capture source disappearing (unplugged device).
+        drop(audio_tx);
+
+        let result = handle.join().expect("filter thread panicked");
+        assert!(result.is_ok(), "filter_audio_loop returned an error");
+
+        match app_rx.recv() {
+            Ok(WhisperUpdate::Recording(false)) => {}
+            Ok(WhisperUpdate::Recording(true)) => {
+                panic!("expected Recording(false), got Recording(true)")
+            }
+            Ok(_) => panic!("expected Recording(false), got a different update"),
+            Err(e) => panic!("expected a Recording update, got recv error: {e}"),
+        }
+    }
+}
