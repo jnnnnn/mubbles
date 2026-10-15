@@ -40,7 +40,7 @@ Everything that owns or spawns a thread, plus the channels that connect them:
 
 | ID | Title | Severity | Status | Commit | Notes |
 | --- | --- | --- | --- | --- | --- |
-| [P1](01-partial-preview-wiring.md) | Partial preview is completely dead | High (regression) | done | | Option B (audio-owned partials) |
+| [P1](01-partial-preview-wiring.md) | Partial preview is completely dead | High (regression) | done | b0b2650 | Option B (audio-owned partials) |
 | [P2](02-device-failure-restart-storm.md) | Failed/unplugged device re-added every frame | High | open | | |
 | [P3](03-whisper-lost-receiver.md) | Whisper exit loses `filtered_rx`; restart wires a dead channel | High | open | | |
 | [P4](04-ui-thread-join-blocks.md) | UI thread joins during decode / model load | Medium | open | | needs scope decision (cancellation token) |
