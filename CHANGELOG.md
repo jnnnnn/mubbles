@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.4 (2026-10-15)
+ - Updated to Rust 1.99.0
+ - Fix partial preview — the mel/partial overlay had been silently disconnected from audio capture
+ - Stability: unplugged or failing audio devices are detected and their threads exit cleanly instead of blocking forever
+ - Reconcile selected devices against the live device list, clearing stale chart state for removed devices
+ - Toggling Partials now restarts capture rather than whisper
+
 ## 3.3.3 (2026-08-13)
  - Fix deadlock when stopping recording (whisper thread now honors stop flag during receive)
 

@@ -6,10 +6,10 @@
 
 [package]
 name = "mubbles"
-version = "3.3.3"
+version = "3.3.4"
 authors = ["Jonathan Newnham"]
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.99.0"
 
 [package.metadata.docs.rs]
 all-features = true
