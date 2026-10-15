@@ -21,7 +21,9 @@ paths.
 - `src/audio.rs:71` — `resampler.process(..).unwrap()`
 - `src/audio.rs:179` — `convert_sample_rate(..).unwrap()` (filter loop)
 - `src/audio.rs:246` — `convert_sample_rate(..).unwrap()` (split path)
-- `src/partial.rs:193` — `convert_sample_rate(..).unwrap()`
+- `src/partial.rs:193` — `convert_sample_rate(..).unwrap()` — **fixed in P1**
+  (now `map_err(..)?`, so a bad rate ends the partial thread cleanly instead of
+  panicking). The four `audio.rs` sites remain.
 
 A device reporting `sample_rate == 0` (or an otherwise invalid rate) makes the
 ratio `inf`/`NaN` and panics the filter thread. It is caught by `check_panic`,

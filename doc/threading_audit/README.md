@@ -40,16 +40,16 @@ Everything that owns or spawns a thread, plus the channels that connect them:
 
 | ID | Title | Severity | Status | Commit | Notes |
 | --- | --- | --- | --- | --- | --- |
-| [P1](01-partial-preview-wiring.md) | Partial preview is completely dead | High (regression) | open | | needs decision: Option A vs B |
+| [P1](01-partial-preview-wiring.md) | Partial preview is completely dead | High (regression) | done | | Option B (audio-owned partials) |
 | [P2](02-device-failure-restart-storm.md) | Failed/unplugged device re-added every frame | High | open | | |
 | [P3](03-whisper-lost-receiver.md) | Whisper exit loses `filtered_rx`; restart wires a dead channel | High | open | | |
 | [P4](04-ui-thread-join-blocks.md) | UI thread joins during decode / model load | Medium | open | | needs scope decision (cancellation token) |
-| [P5](05-partial-thread-panic.md) | Partial thread panics on model load; loads a second model | Medium | open | | depends on P1 decision |
+| [P5](05-partial-thread-panic.md) | Partial thread panics on model load; loads a second model | Medium | open | | panic removed in P1; model reuse still open |
 | [P6](06-ollama-blocking-ui.md) | Blocking Ollama HTTP on the UI thread, no timeout | Medium | open | | |
 | [P7](07-ai-summary-thread.md) | AI summary thread fire-and-forget; abort/race issues | Medium | open | | |
 | [P8](08-file-transcription-thread.md) | File transcription thread not joined or cancelled | Low | open | | |
 | [P9](09-pipewire-enumeration-thread.md) | PipeWire enumeration thread fire-and-forget; can spin | Low | open | | |
-| [P10](10-minor-cleanups.md) | Minor cleanup gaps | Low | open | | |
+| [P10](10-minor-cleanups.md) | Minor cleanup gaps | Low | open | | 10.2 partial.rs unwrap fixed in P1; rest open |
 
 ## What is correct today
 
@@ -85,6 +85,12 @@ These paths were verified and should not be disturbed without care:
 
 Newest first. One line per decision, with the finding ID.
 
+- **2026-10-15** — P1 fixed with **Option B**: partials owned by the audio
+  lifecycle (`AudioWorker`); toggling Partials restarts capture rather than
+  whisper. Option A rejected because a runtime toggle would require parking the
+  receiver while capture keeps sending into an unbounded, never-drained channel.
+  Side effects bundled into the P1 commit: the P5 model-load panic and the P10.2
+  `partial.rs` unwrap.
 - **2026-09-11** — Delivery order agreed: P1 + P2 first, then P3; P4 scoped
   after. P1 still needs a call between Option A (thread the receiver through)
   and Option B (partials owned by the audio lifecycle).

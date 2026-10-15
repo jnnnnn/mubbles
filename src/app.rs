@@ -662,65 +662,83 @@ impl MubblesApp {
     /// (e.g. after a model change) does not interrupt audio capture.
     fn toggle_recording(&mut self) {
         if self.audio_worker.is_some() {
-            // Stop whisper first so it cleanly exits before audio stops
-            self.whisper_worker = None;
-            self.audio_worker = None;
-            self.pending_filtered_rx = None;
-            self.ai_summary.whisper_paused = None;
+            self.stop_recording();
         } else {
-            let device_refs: Vec<&AppDevice> = self
-                .devices
-                .iter()
-                .filter(|d| self.selected_device_names.contains(&d.name))
-                .collect();
-            if device_refs.is_empty() {
-                self.status =
-                    "No devices selected. Go to the Devices tab to select devices.".to_string();
+            self.start_recording();
+        }
+    }
+
+    /// Tear down audio capture and whisper transcription together.
+    fn stop_recording(&mut self) {
+        // Stop whisper first so it cleanly exits before audio stops
+        self.whisper_worker = None;
+        self.audio_worker = None;
+        self.pending_filtered_rx = None;
+        self.ai_summary.whisper_paused = None;
+    }
+
+    /// Start audio capture followed by whisper transcription.
+    fn start_recording(&mut self) {
+        let device_refs: Vec<&AppDevice> = self
+            .devices
+            .iter()
+            .filter(|d| self.selected_device_names.contains(&d.name))
+            .collect();
+        if device_refs.is_empty() {
+            self.status =
+                "No devices selected. Go to the Devices tab to select devices.".to_string();
+            return;
+        }
+
+        // Start audio
+        match workers::start_audio(
+            &self.whisper_tx,
+            &device_refs,
+            self.echo_cancel,
+            &self.device_thresholds,
+            self.silence_timeout_ms,
+            self.partials,
+        ) {
+            Ok((audio_worker, filtered_rx)) => {
+                self.audio_worker = Some(audio_worker);
+                self.pending_filtered_rx = Some(filtered_rx);
+            }
+            Err(e) => {
+                tracing::error!("Failed to start audio: {}", e);
+                self.audio_worker = None;
+                self.pending_filtered_rx = None;
                 return;
             }
+        }
 
-            // Start audio
-            match workers::start_audio(
-                &self.whisper_tx,
-                &device_refs,
-                self.echo_cancel,
-                &self.device_thresholds,
-                self.silence_timeout_ms,
-                self.partials,
-            ) {
-                Ok((audio_worker, filtered_rx)) => {
-                    self.audio_worker = Some(audio_worker);
-                    self.pending_filtered_rx = Some(filtered_rx);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start audio: {}", e);
-                    self.audio_worker = None;
-                    self.pending_filtered_rx = None;
-                    return;
-                }
+        // Start whisper
+        let filtered_rx = self.pending_filtered_rx.take().unwrap();
+        match workers::start_whisper(
+            &self.whisper_tx,
+            filtered_rx,
+            WhisperParams {
+                accuracy: self.accuracy,
+                model: WhichModel::from(self.selected_model),
+            },
+            self.whisper_paused.clone(),
+        ) {
+            Ok(whisper_worker) => {
+                self.whisper_worker = Some(whisper_worker);
+                self.ai_summary.whisper_paused = Some(self.whisper_paused.clone());
             }
+            Err(e) => {
+                tracing::error!("Failed to start whisper: {}", e);
+                self.audio_worker = None;
+            }
+        }
+    }
 
-            // Start whisper
-            let filtered_rx = self.pending_filtered_rx.take().unwrap();
-            match workers::start_whisper(
-                &self.whisper_tx,
-                filtered_rx,
-                WhisperParams {
-                    accuracy: self.accuracy,
-                    model: WhichModel::from(self.selected_model),
-                    partials: self.partials,
-                },
-                self.whisper_paused.clone(),
-            ) {
-                Ok(whisper_worker) => {
-                    self.whisper_worker = Some(whisper_worker);
-                    self.ai_summary.whisper_paused = Some(self.whisper_paused.clone());
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start whisper: {}", e);
-                    self.audio_worker = None;
-                }
-            }
+    /// Restart both audio and whisper, e.g. after a setting that changes how
+    /// audio is captured (such as toggling partials). No-op when stopped.
+    fn restart_recording(&mut self) {
+        if self.audio_worker.is_some() {
+            self.stop_recording();
+            self.start_recording();
         }
     }
 
@@ -741,7 +759,6 @@ impl MubblesApp {
             WhisperParams {
                 accuracy: self.accuracy,
                 model: WhichModel::from(self.selected_model),
-                partials: self.partials,
             },
             self.whisper_paused.clone(),
         ) {
@@ -829,7 +846,9 @@ impl MubblesApp {
                     .changed();
 
                 if partials_changed {
-                    self.restart_whisper();
+                    // Partials are captured and rendered by the audio worker, so
+                    // changing them restarts capture rather than whisper.
+                    self.restart_recording();
                 }
 
                 if ui.button("Clear").clicked() {

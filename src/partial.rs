@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, thread::JoinHandle};
+use std::{collections::VecDeque, sync::mpsc::Receiver, thread::JoinHandle};
 
 use crate::{
     app::WhisperUpdate,
@@ -7,43 +7,45 @@ use crate::{
     whisper::{load_whisper_model, WhichModel, WhisperContext},
 };
 
+/// Spawn the partial-preview thread. It runs until the capture side closes the
+/// channel (i.e. every sender is dropped), then exits.
 pub(crate) fn start_partial_thread(
-    app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
-    partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
+    app: std::sync::mpsc::Sender<WhisperUpdate>,
+    partial_rx: Receiver<PcmAudio>,
 ) -> Result<JoinHandle<()>, anyhow::Error> {
     let result = std::thread::Builder::new()
         .name("partials".to_string())
-        .spawn(move || match partial_loop(app, partial_rx) {
-            Ok(_) => tracing::info!("Partials thread finished successfully"),
-            Err(e) => tracing::error!("Partials thread failed: {:?}", e),
+        .spawn(move || {
+            if let Err(e) = partial_loop_inner(&app, &partial_rx) {
+                tracing::error!("Partials thread failed: {:?}", e);
+            }
+            tracing::info!("Partials thread finished");
         });
     Ok(result?)
 }
 
-fn partial_loop(
-    app: std::sync::mpsc::Sender<crate::app::WhisperUpdate>,
-    partial_rx: std::sync::mpsc::Receiver<PcmAudio>,
+fn partial_loop_inner(
+    app: &std::sync::mpsc::Sender<WhisperUpdate>,
+    partial_rx: &Receiver<PcmAudio>,
 ) -> Result<(), anyhow::Error> {
     let mut recent_samples = VecDeque::<f32>::new();
     let mut offset: usize = 0;
 
     let app_status = app.clone();
-    let mut whisper_context =
-        load_whisper_model(WhichModel::Tiny, move |s| {
-            app_status.send(WhisperUpdate::Status(s)).ok();
-        }).expect("Failed to load whisper model");
+    let mut whisper_context = load_whisper_model(WhichModel::Tiny, move |s| {
+        app_status.send(WhisperUpdate::Status(s)).ok();
+    })?;
 
     // Create MelProcessor with cached FFT planner for efficient incremental processing
-    let mel_processor = MelProcessor::new(
-        PARTIAL_MEL_BINS,
-        whisper_context.mel_filters.clone(),
-    );
+    let mel_processor = MelProcessor::new(PARTIAL_MEL_BINS, whisper_context.mel_filters.clone());
 
     let mut last_5s_mel = VecDeque::<[f32; PARTIAL_MEL_BINS]>::new();
     loop {
-        if let Err(e) = accumulate_audio(&mut recent_samples, &mut offset, &partial_rx) {
+        // Blocks until the next chunk arrives. The capture side closing the
+        // channel is the only way the thread stops, and that unblocks `recv`.
+        if let Err(e) = accumulate_audio(&mut recent_samples, &mut offset, partial_rx) {
             tracing::debug!("Accumulate ended: {:?}", e);
-            break Ok(())
+            return Ok(());
         }
 
         generate_new_mel_frames(
@@ -51,15 +53,14 @@ fn partial_loop(
             &mut offset,
             &mut last_5s_mel,
             &mel_processor,
-            &app,
+            app,
         )?;
 
         if last_5s_mel.is_empty() {
             continue;
         }
 
-        let result = perform_partial_transcription(&last_5s_mel, &mut whisper_context, &app);
-        if let Err(e) = result {
+        if let Err(e) = perform_partial_transcription(&last_5s_mel, &mut whisper_context, app) {
             tracing::debug!("Failed to perform partial transcription: {:?}", e);
         }
     }
@@ -169,7 +170,7 @@ fn generate_new_mel_frames(
 fn accumulate_audio(
     recent_samples: &mut VecDeque<f32>,
     offset: &mut usize,
-    partial_rx: &std::sync::mpsc::Receiver<PcmAudio>,
+    partial_rx: &Receiver<PcmAudio>,
 ) -> Result<(), anyhow::Error> {
     let PcmAudio {
         mut data,
@@ -190,7 +191,8 @@ fn accumulate_audio(
         data.extend(other);
     }
     let max_size = (5 * TARGET_SAMPLE_RATE) as usize;
-    let mut extra = crate::audio::convert_sample_rate(&data, sample_rate).unwrap();
+    let mut extra = crate::audio::convert_sample_rate(&data, sample_rate)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     extra.truncate(max_size);
     let extra_len = extra.len();
     recent_samples.extend(extra);
@@ -206,4 +208,41 @@ fn accumulate_audio(
         offset
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// The partial thread only stops when the capture side closes the channel,
+    /// so `accumulate_audio` must surface that as an error rather than blocking
+    /// forever (the bug that left the preview channel unfed).
+    #[test]
+    fn accumulate_audio_errors_when_channel_closes() {
+        let (tx, rx) = mpsc::channel::<PcmAudio>();
+        drop(tx);
+
+        let mut samples = VecDeque::new();
+        let mut offset = 0usize;
+        assert!(accumulate_audio(&mut samples, &mut offset, &rx).is_err());
+    }
+
+    /// A chunk that arrives at the target rate is resampled (a no-op here) and
+    /// appended to the rolling preview buffer.
+    #[test]
+    fn accumulate_audio_appends_received_samples() {
+        let (tx, rx) = mpsc::channel::<PcmAudio>();
+        tx.send(PcmAudio {
+            data: vec![0.1; 1600],
+            sample_rate: TARGET_SAMPLE_RATE,
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut samples = VecDeque::new();
+        let mut offset = 0usize;
+        accumulate_audio(&mut samples, &mut offset, &rx).expect("accumulate failed");
+        assert!(!samples.is_empty(), "no samples were buffered");
+    }
 }

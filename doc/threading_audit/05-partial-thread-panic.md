@@ -2,6 +2,10 @@
 
 **Status:** open · **Verified:** 7cd9e95
 
+> **Update (P1):** the `.expect()` was replaced with `?` when partials moved to the
+> audio lifecycle, so a failed load now exits the thread cleanly instead of
+> panicking. The "loads a second model" half of this finding is still open.
+
 **Severity:** Medium.
 **Type:** Unhandled panic + duplicated model.
 

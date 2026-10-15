@@ -131,7 +131,6 @@ const FIRST_TIMESTAMP_TOKEN: usize = 50364; // <|0.00|>
 pub struct WhisperParams {
     pub accuracy: usize, // 1 for greedy, more for beam search
     pub model: WhichModel,
-    pub partials: bool,
 }
 
 pub struct WhisperContext {
